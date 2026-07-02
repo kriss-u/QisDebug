@@ -24,6 +24,12 @@ from ._events import (
 )
 
 
+TRACK_LABELS = {
+    "circuit": "Circuit (construction)",
+    "transpiled": "Circuit (transpiled)",
+}
+
+
 def show(timeline: Timeline) -> Any:
     """Build and display an interactive timeline explorer widget.
 
@@ -39,6 +45,8 @@ def show(timeline: Timeline) -> Any:
     if not timeline.events:
         return widgets.HTML(value=f"<i>Timeline {timeline.circuit_id} has no events.</i>")
 
+    tracks = _circuit_tracks(timeline)
+
     slider = widgets.IntSlider(
         value=1,
         min=1,
@@ -49,6 +57,7 @@ def show(timeline: Timeline) -> Any:
     )
     header = widgets.HTML()
     body = widgets.HTML()
+    circuits = widgets.HTML()
 
     def render(change: Any = None) -> None:
         event = timeline.events[slider.value - 1]
@@ -58,6 +67,7 @@ def show(timeline: Timeline) -> Any:
             f"{_escape(event.describe())}"
         )
         body.value = f"<pre style='line-height:1.2'>{_escape(_render_event(timeline, event))}</pre>"
+        circuits.value = _render_tracks_html(tracks[slider.value - 1])
 
     slider.observe(render, names="value")
     render()
@@ -65,7 +75,48 @@ def show(timeline: Timeline) -> Any:
         value=f"<h4>QDebug timeline &mdash; {_escape(str(timeline.name))} "
         f"({timeline.num_qubits} qubits, {len(timeline.events)} events)</h4>"
     )
-    return widgets.VBox([title, slider, header, body])
+    return widgets.VBox([title, slider, header, circuits, body])
+
+
+def _circuit_tracks(timeline: Timeline) -> list[dict[str, str]]:
+    """Return, per event, the latest known circuit drawing for each track.
+
+    A "track" is a distinct circuit lineage (the circuit as constructed, the
+    circuit as last seen mid-transpile, ...). Once a track has a value it is
+    carried forward to every later event until a newer snapshot replaces it,
+    so the circuit panel always shows the most recent known state instead of
+    only appearing on the event that happened to produce it.
+    """
+    current: dict[str, str] = {}
+    series: list[dict[str, str]] = []
+    gate_count = 0
+    for event in timeline.events:
+        if isinstance(event, GateEvent):
+            gate_count += 1
+            circuit = timeline.circuit_at(gate_count)
+            if circuit is not None:
+                try:
+                    current["circuit"] = str(circuit.draw(output="text"))
+                except Exception:
+                    pass
+        elif isinstance(event, TranspilePassEvent) and event.circuit is not None:
+            try:
+                current["transpiled"] = str(event.circuit.draw(output="text"))
+            except Exception:
+                pass
+        series.append(dict(current))
+    return series
+
+
+def _render_tracks_html(tracks: dict[str, str]) -> str:
+    """Render the circuit panel HTML for one point in the timeline."""
+    if not tracks:
+        return "<i>no circuit recorded yet</i>"
+    sections = []
+    for key, text in tracks.items():
+        label = TRACK_LABELS.get(key, key)
+        sections.append(f"<b>{_escape(label)}</b><pre style='line-height:1.2'>{_escape(text)}</pre>")
+    return "".join(sections)
 
 
 def show_browser(timeline: Timeline, path: str | None = None, *, open_browser: bool = True) -> Path:
@@ -74,6 +125,7 @@ def show_browser(timeline: Timeline, path: str | None = None, *, open_browser: b
     Unlike :func:`show`, this has no ipywidgets/Jupyter dependency; it works
     from a plain Python script. Returns the path to the written HTML file.
     """
+    tracks = _circuit_tracks(timeline)
     frames = [
         {
             "header": (
@@ -81,8 +133,11 @@ def show_browser(timeline: Timeline, path: str | None = None, *, open_browser: b
                 f"{_escape(event.describe())}"
             ),
             "body": _escape(_render_event(timeline, event)),
+            "circuits": {
+                TRACK_LABELS.get(key, key): _escape(text) for key, text in tracks[i].items()
+            },
         }
-        for event in timeline.events
+        for i, event in enumerate(timeline.events)
     ]
     html = _BROWSER_TEMPLATE.format(
         title=_escape(f"QDebug timeline — {timeline.name} "
@@ -116,6 +171,9 @@ _BROWSER_TEMPLATE = """<!doctype html>
   h4 {{ margin-bottom: 0.5rem; }}
   input[type=range] {{ width: 70%; }}
   #header {{ margin: 0.75rem 0; font-size: 0.95rem; }}
+  #circuits {{ display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 1rem; }}
+  #circuits > div {{ flex: 1 1 auto; min-width: 0; }}
+  #circuits h5 {{ margin: 0 0 0.25rem; }}
   pre {{ background: #f5f5f5; padding: 1rem; border-radius: 6px; overflow-x: auto; line-height: 1.2; }}
 </style>
 </head>
@@ -123,17 +181,23 @@ _BROWSER_TEMPLATE = """<!doctype html>
   <h4>{title}</h4>
   <input id="slider" type="range" min="1" value="1">
   <div id="header"></div>
+  <div id="circuits"></div>
   <pre id="body"></pre>
 <script>
   const frames = {frames};
   const slider = document.getElementById("slider");
   const header = document.getElementById("header");
   const body = document.getElementById("body");
+  const circuits = document.getElementById("circuits");
   slider.max = frames.length;
   function render() {{
     const f = frames[slider.value - 1];
     header.innerHTML = `<b>${{slider.value}}/${{frames.length}}</b> &mdash; ${{f.header}}`;
     body.innerHTML = f.body;
+    const labels = Object.keys(f.circuits);
+    circuits.innerHTML = labels.length
+      ? labels.map(label => `<div><h5>${{label}}</h5><pre>${{f.circuits[label]}}</pre></div>`).join("")
+      : "<i>no circuit recorded yet</i>";
   }}
   slider.addEventListener("input", render);
   render();
@@ -144,9 +208,14 @@ _BROWSER_TEMPLATE = """<!doctype html>
 
 
 def _render_event(timeline: Timeline, event: TelemetryEvent) -> str:
-    """Return the detail panel text for one event."""
+    """Return the detail panel text for one event.
+
+    The circuit itself is rendered separately by the always-on circuit
+    panel (see :func:`_circuit_tracks`), so this only covers per-event
+    metadata that panel doesn't show.
+    """
     if isinstance(event, GateEvent):
-        return _render_gate(timeline, event)
+        return event.describe()
     if isinstance(event, StateSnapshotEvent):
         return format_statevector(event)
     if isinstance(event, TranspilePassEvent):
@@ -158,33 +227,14 @@ def _render_event(timeline: Timeline, event: TelemetryEvent) -> str:
     return "\n".join(lines) or event.describe()
 
 
-def _render_gate(timeline: Timeline, event: GateEvent) -> str:
-    """Draw the circuit as it looked once this gate had been appended."""
-    gates = timeline.gate_events
-    position = next((i for i, e in enumerate(gates) if e.seq == event.seq), len(gates) - 1)
-    circuit = timeline.circuit_at(position + 1)
-    if circuit is None:
-        return event.describe()
-    try:
-        return str(circuit.draw(output="text"))
-    except Exception:
-        return event.describe()
-
-
 def _render_pass(event: TranspilePassEvent) -> str:
-    """Show pass statistics plus the circuit snapshot when one was kept."""
-    lines = [
-        f"pass:     {event.pass_name}",
-        f"duration: {event.duration:.6f}s",
-        f"depth:    {event.depth}   size: {event.size}   changed: {event.changed}",
-        f"ops:      {event.ops}",
-    ]
-    if event.circuit is not None:
-        try:
-            lines += ["", str(event.circuit.draw(output="text"))]
-        except Exception:
-            pass
-    return "\n".join(lines)
+    """Show pass statistics for one transpiler pass."""
+    return (
+        f"pass:     {event.pass_name}\n"
+        f"duration: {event.duration:.6f}s\n"
+        f"depth:    {event.depth}   size: {event.size}   changed: {event.changed}\n"
+        f"ops:      {event.ops}"
+    )
 
 
 def format_statevector(event: StateSnapshotEvent, max_terms: int = 16) -> str:

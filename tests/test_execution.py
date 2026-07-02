@@ -58,6 +58,38 @@ def test_snapshot_data_is_stripped_from_user_result():
     assert set(result.data(0).keys()) == {"counts"}
 
 
+def test_basic_simulator_run_records_execution_events():
+    """The non-Aer BasicSimulator gets timing telemetry, minus snapshots."""
+    from qiskit.providers.basic_provider import BasicSimulator
+
+    qdebug.activate()
+    qc = _bell("basic")
+    counts = BasicSimulator().run(qc, shots=50).result().get_counts()
+    assert sum(counts.values()) == 50
+    timeline = qdebug.timeline(qc)
+    submitted = timeline.filter(EventType.EXECUTION_SUBMITTED)
+    assert len(submitted) == 1
+    assert not submitted[0].instrumented
+    finished = timeline.filter(EventType.EXECUTION_FINISHED)
+    assert len(finished) == 1
+    assert finished[0].counts == counts
+    assert not timeline.snapshots
+
+
+def test_backend_sampler_v2_records_execution_events():
+    """BackendSamplerV2 pubs are tracked like the other primitives."""
+    from qiskit.primitives import BackendSamplerV2
+
+    qdebug.activate()
+    qc = _bell("backend-sampler")
+    sampler = BackendSamplerV2(backend=AerSimulator())
+    sampler.run([qc], shots=64).result()
+    timeline = qdebug.timeline(qc)
+    submitted = timeline.filter(EventType.EXECUTION_SUBMITTED)
+    assert any(s.backend == "BackendSamplerV2" for s in submitted)
+    assert timeline.filter(EventType.EXECUTION_FINISHED)
+
+
 def test_noise_model_construction_does_not_flood_the_store():
     """from_backend builds many internal circuits; none may become timelines.
 

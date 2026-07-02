@@ -3,8 +3,13 @@
 The backend hook intercepts ``AerBackend.run``. For eligible circuits it
 builds a copy with ``SaveStatevector`` instructions inserted after every
 gate, runs that copy instead of the original, then strips the snapshot data
-out of the result before the user sees it. Primitive classes (Sampler and
-Estimator flavors) are patched for execution timing events only.
+out of the result before the user sees it. ``BasicSimulator.run`` gets the
+same wrapper without instrumentation (it cannot execute Aer save
+instructions), and primitive classes (Sampler and Estimator flavors,
+including the Backend* wrappers) are patched for execution timing events
+only. Aer factory methods that mass-produce internal circuits
+(``from_backend``) run with recording suspended so they cannot flood the
+store.
 """
 
 from __future__ import annotations
@@ -35,6 +40,10 @@ _UNSUPPORTED_OPS = frozenset(
 _PRIMITIVE_TARGETS = (
     ("qiskit.primitives", "StatevectorSampler"),
     ("qiskit.primitives", "StatevectorEstimator"),
+    ("qiskit.primitives", "BackendSamplerV2"),
+    ("qiskit.primitives", "BackendEstimatorV2"),
+    ("qiskit.primitives", "Sampler"),
+    ("qiskit.primitives", "Estimator"),
     ("qiskit_aer.primitives", "SamplerV2"),
     ("qiskit_aer.primitives", "EstimatorV2"),
 )
@@ -89,6 +98,9 @@ def install(registry: PatchRegistry) -> bool:
                 registry.patch(owner, attribute, _suspended_call_wrapper)
     else:
         logger.info("qdebug: qiskit-aer not installed; backend statevector capture unavailable")
+    basic_simulator = resolve("qiskit.providers.basic_provider.basic_simulator", "BasicSimulator")
+    if basic_simulator is not None:
+        applied = registry.patch(basic_simulator, "run", _plain_backend_run_wrapper) or applied
     for module_path, class_name in _PRIMITIVE_TARGETS:
         primitive_cls = resolve(module_path, class_name)
         if primitive_cls is not None:
@@ -116,15 +128,20 @@ def _suspended_call_wrapper(original: Callable) -> Callable:
     return wrapper
 
 
-def _backend_run_wrapper(original: Callable) -> Callable:
-    """Wrap ``AerBackend.run`` with instrumentation and result interception."""
+def _backend_run_wrapper(original: Callable, instrument: bool = True) -> Callable:
+    """Wrap a backend ``run`` with telemetry and result interception.
+
+    With ``instrument`` the payload may be swapped for a statevector-saving
+    copy; that must stay False for non-Aer backends, which would reject the
+    Aer-specific save instructions.
+    """
 
     @functools.wraps(original)
     def run(self: Any, circuits: Any, *args: Any, **run_options: Any) -> Any:
         if STORE.is_suspended():
             return original(self, circuits, *args, **run_options)
         try:
-            plan = _plan_backend_run(self, circuits, run_options)
+            plan = _plan_backend_run(self, circuits, run_options, instrument)
         except Exception:
             logger.debug("qdebug: failed to plan instrumented run", exc_info=True)
             plan = None
@@ -149,6 +166,11 @@ def _backend_run_wrapper(original: Callable) -> Callable:
     return run
 
 
+def _plain_backend_run_wrapper(original: Callable) -> Callable:
+    """Wrap a non-Aer backend's ``run`` for submission and completion telemetry."""
+    return _backend_run_wrapper(original, instrument=False)
+
+
 def _plan_circuit_ids(plan: RunPlan) -> set[str]:
     """Return the qdebug ids of every circuit actually submitted to the backend.
 
@@ -161,7 +183,9 @@ def _plan_circuit_ids(plan: RunPlan) -> set[str]:
     return {circuit_id for c in payload if (circuit_id := getattr(c, ID_ATTRIBUTE, None))}
 
 
-def _plan_backend_run(backend: Any, circuits: Any, run_options: dict) -> RunPlan | None:
+def _plan_backend_run(
+    backend: Any, circuits: Any, run_options: dict, instrument: bool = True
+) -> RunPlan | None:
     """Build the run plan, swapping eligible circuits for instrumented copies.
 
     Returns None when the input is not made of QuantumCircuits, which tells
@@ -193,7 +217,7 @@ def _plan_backend_run(backend: Any, circuits: Any, run_options: dict) -> RunPlan
         timeline = STORE.timeline_for(circuit, adopt_by_name=True)
         entry = RunEntry(index=index, timeline=timeline, backend_name=backend_name, shots=shots)
         replacement = circuit
-        if timeline is not None and config.capture_statevectors:
+        if instrument and timeline is not None and config.capture_statevectors:
             if has_binds:
                 STORE.add_event(
                     timeline,
@@ -424,7 +448,16 @@ def _primitive_run_factory(primitive_name: str) -> Callable[[Callable], Callable
             timelines = _pub_timelines(pubs)
             shots = kwargs.get("shots")
             started = time.time()
-            job = original(self, pubs, *args, **kwargs)
+            # Primitives bind and rework id-carrying copies of the pub
+            # circuits internally (often on job threads); suspending the ids
+            # keeps that rework from being recorded as user construction.
+            circuit_ids = {t.circuit_id for t in timelines}
+            STORE.suspend_circuit_ids(circuit_ids)
+            try:
+                job = original(self, pubs, *args, **kwargs)
+            except BaseException:
+                STORE.resume_circuit_ids(circuit_ids)
+                raise
             try:
                 job_id = getattr(job, "job_id", None)
                 if callable(job_id):
@@ -438,9 +471,12 @@ def _primitive_run_factory(primitive_name: str) -> Callable[[Callable], Callable
                         job_id=str(job_id) if job_id is not None else None,
                         instrumented=False,
                     )
-                _intercept_primitive_result(job, timelines, primitive_name, started, shots)
+                _intercept_primitive_result(
+                    job, timelines, primitive_name, started, shots, circuit_ids
+                )
             except Exception:
                 logger.debug("qdebug: failed to record primitive submission", exc_info=True)
+                STORE.resume_circuit_ids(circuit_ids)
             return job
 
         return run
@@ -477,15 +513,30 @@ def _pub_circuit(pub: Any, circuit_cls: type) -> Any | None:
 
 
 def _intercept_primitive_result(
-    job: Any, timelines: list[Timeline], primitive_name: str, started: float, shots: int | None
+    job: Any,
+    timelines: list[Timeline],
+    primitive_name: str,
+    started: float,
+    shots: int | None,
+    circuit_ids: set[str],
 ) -> None:
-    """Override the primitive job's result to record completion timing."""
+    """Override the primitive job's result to record completion timing.
+
+    Like the backend variant, this also releases ``circuit_ids`` from
+    suspension once results are in and the primitive's internal circuit
+    rework is guaranteed to be over.
+    """
     original_result = job.result
-    state = {"done": False}
+    state = {"done": False, "resumed": False}
 
     @functools.wraps(original_result)
     def result(*args: Any, **kwargs: Any) -> Any:
-        outcome = original_result(*args, **kwargs)
+        try:
+            outcome = original_result(*args, **kwargs)
+        finally:
+            if not state["resumed"]:
+                state["resumed"] = True
+                STORE.resume_circuit_ids(circuit_ids)
         if not state["done"]:
             state["done"] = True
             duration = time.time() - started

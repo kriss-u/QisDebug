@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
@@ -63,16 +63,22 @@ class GateEvent(TelemetryEvent):
 
 
 class TranspileStartedEvent(TelemetryEvent):
-    """A pass manager began running on the circuit."""
+    """A pass manager began running on the circuit.
+
+    ``phase`` distinguishes user-driven transpilation from pass manager runs
+    a backend performs internally while executing the circuit.
+    """
 
     type: EventType = EventType.TRANSPILE_STARTED
     pass_manager: str
     depth: int | None = None
     size: int | None = None
+    phase: Literal["user", "backend"] = "user"
 
     def describe(self) -> str:
         """Return the pass manager name with the input circuit shape."""
-        return f"transpile started ({self.pass_manager}, depth={self.depth}, size={self.size})"
+        verb = "backend compile started" if self.phase == "backend" else "transpile started"
+        return f"{verb} ({self.pass_manager}, depth={self.depth}, size={self.size})"
 
 
 class TranspilePassEvent(TelemetryEvent):
@@ -85,12 +91,14 @@ class TranspilePassEvent(TelemetryEvent):
     size: int | None = None
     ops: dict[str, int] = Field(default_factory=dict)
     changed: bool = False
+    phase: Literal["user", "backend"] = "user"
     circuit: Any = Field(default=None, exclude=True, repr=False)
 
     def describe(self) -> str:
         """Return the pass name and whether it changed the circuit."""
         marker = "*" if self.changed else " "
-        return f"pass{marker} {self.pass_name} (depth={self.depth}, size={self.size})"
+        prefix = "backend pass" if self.phase == "backend" else "pass"
+        return f"{prefix}{marker} {self.pass_name} (depth={self.depth}, size={self.size})"
 
 
 class TranspileFinishedEvent(TelemetryEvent):
@@ -100,11 +108,13 @@ class TranspileFinishedEvent(TelemetryEvent):
     duration: float = 0.0
     depth: int | None = None
     size: int | None = None
+    phase: Literal["user", "backend"] = "user"
     circuit: Any = Field(default=None, exclude=True, repr=False)
 
     def describe(self) -> str:
         """Return the total duration and output circuit shape."""
-        return f"transpile finished in {self.duration:.4f}s (depth={self.depth}, size={self.size})"
+        verb = "backend compile finished" if self.phase == "backend" else "transpile finished"
+        return f"{verb} in {self.duration:.4f}s (depth={self.depth}, size={self.size})"
 
 
 class ExecutionSubmittedEvent(TelemetryEvent):

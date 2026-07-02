@@ -33,6 +33,7 @@ DEFAULT_AUTOPLAY_INTERVAL_MS = 800
 TRACK_LABELS = {
     "circuit": "Circuit (construction)",
     "transpiled": "Circuit (transpiled)",
+    "backend": "Circuit (backend compiled)",
 }
 
 
@@ -167,9 +168,10 @@ def _circuit_tracks(timeline: Timeline) -> tuple[list[dict[str, str]], list[str 
             isinstance(event, (TranspilePassEvent, TranspileFinishedEvent))
             and event.circuit is not None
         ):
+            key = "backend" if getattr(event, "phase", "user") == "backend" else "transpiled"
             try:
-                current["transpiled"] = str(event.circuit.draw(output="text", fold=-1))
-                active_key = "transpiled"
+                current[key] = str(event.circuit.draw(output="text", fold=-1))
+                active_key = key
             except Exception:
                 pass
         series.append(dict(current))
@@ -573,8 +575,9 @@ def _render_event(timeline: Timeline, event: TelemetryEvent) -> str:
 
 def _render_pass(event: TranspilePassEvent) -> str:
     """Show pass statistics for one transpiler pass."""
+    suffix = "   (backend-internal)" if event.phase == "backend" else ""
     return (
-        f"pass:     {event.pass_name}\n"
+        f"pass:     {event.pass_name}{suffix}\n"
         f"duration: {event.duration:.6f}s\n"
         f"depth:    {event.depth}   size: {event.size}   changed: {event.changed}\n"
         f"ops:      {event.ops}"

@@ -152,25 +152,61 @@ def test_transpiling_a_list_of_circuits_records_start_and_finish():
         assert timeline.filter(EventType.TRANSPILE_FINISHED)
 
 
-def test_backend_internal_compilation_records_no_transpile_events():
-    """Aer's own control-flow compilation during run() stays off the timeline.
-
-    Aer compiles on a worker thread where context-var suspension is not
-    visible, so this exercises the suspended-circuit-id path instead.
-    """
-    qdebug.activate()
-    qc = QuantumCircuit(2, 2, name="dynamic")
+def _dynamic(name="dynamic"):
+    """Return a circuit with control flow, which Aer compiles internally."""
+    qc = QuantumCircuit(2, 2, name=name)
     qc.h(0)
     qc.measure(0, 0)
     with qc.if_test((qc.clbits[0], 1)):
         qc.x(1)
     qc.measure(1, 1)
+    return qc
+
+
+def test_backend_internal_compilation_is_recorded_as_backend_phase():
+    """Aer's own control-flow compilation during run() lands as phase='backend'.
+
+    Aer compiles on a worker thread where context-var suspension is not
+    visible, so this exercises the suspended-circuit-id path.
+    """
+    qdebug.activate()
+    qc = _dynamic()
     AerSimulator().run(qc, shots=10).result()
     timeline = qdebug.timeline(qc)
     assert timeline.filter(EventType.EXECUTION_FINISHED)
+    assert timeline.transpile_events
+    assert all(e.phase == "backend" for e in timeline.transpile_events)
+    passes = timeline.filter(EventType.TRANSPILE_PASS)
+    assert any("jump" in p.ops or "mark" in p.ops for p in passes if p.ops)
+
+
+def test_backend_compilation_capture_can_be_disabled():
+    """With capture off, backend-internal runs leave only a note event."""
+    qdebug.configure(capture_backend_compilation=False)
+    qdebug.activate()
+    qc = _dynamic("dynamic-off")
+    AerSimulator().run(qc, shots=10).result()
+    timeline = qdebug.timeline(qc)
     assert not timeline.transpile_events
-    notes = timeline.filter(EventType.NOTE)
-    assert any("backend-internal" in n.message for n in notes)
+    assert any("backend-internal" in n.message for n in timeline.filter(EventType.NOTE))
+
+
+def test_directly_applied_pass_is_recorded():
+    """SomePass()(circuit) never enters PassManager.run but is still captured."""
+    from qiskit.transpiler.passes import Optimize1qGatesDecomposition
+
+    qdebug.activate()
+    qc = QuantumCircuit(1, name="standalone")
+    qc.h(0)
+    qc.h(0)
+    out = Optimize1qGatesDecomposition(basis=["u"])(qc)
+    timeline = qdebug.timeline(qc)
+    passes = timeline.filter(EventType.TRANSPILE_PASS)
+    assert len(passes) == 1
+    assert passes[0].pass_name == "Optimize1qGatesDecomposition"
+    assert passes[0].changed
+    assert passes[0].circuit is not None
+    assert getattr(out, "_qdebug_id") == timeline.circuit_id
 
 
 def test_hand_built_pass_manager_is_recorded():

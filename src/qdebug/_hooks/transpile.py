@@ -1,12 +1,19 @@
 """Layer three: record per-pass circuit snapshots during transpilation.
 
-``PassManager.run`` is the single choke point for both ``qiskit.transpile``
-and user-constructed pass managers (StagedPassManager delegates to it via
-``super()``). Per-pass recording goes through Qiskit's own supported
-``callback`` parameter rather than patching pass internals, which makes this
-the most version-stable layer. The wrapper also propagates the hidden circuit
-id onto transpiled outputs, since Qiskit drops custom attributes there; that
-is what links construction, transpilation and execution into one timeline.
+``PassManager.run`` is the choke point for ``qiskit.transpile``, preset and
+user-constructed pass managers alike (StagedPassManager delegates to it via
+``super()``); ``BasePass.__call__`` covers the standalone
+``SomePass()(circuit)`` form that never enters a pass manager. Per-pass
+recording goes through Qiskit's own supported ``callback`` parameter rather
+than patching pass internals, which makes this the most version-stable
+layer. The wrapper also propagates the hidden circuit id onto transpiled
+outputs, since Qiskit drops custom attributes there; that is what links
+construction, transpilation and execution into one timeline.
+
+Pass manager runs a backend performs internally while executing a circuit
+(detected via the execution hook's suspended circuit ids) are recorded as
+``phase="backend"`` events so backend-internal lowering is visible without
+masquerading as user transpilation.
 """
 
 from __future__ import annotations
@@ -31,12 +38,18 @@ _local = threading.local()
 
 
 def install(registry: PatchRegistry) -> bool:
-    """Patch ``PassManager.run``; True when applied."""
+    """Patch ``PassManager.run`` and ``BasePass.__call__``; True when the former applied."""
     pass_manager_cls = resolve("qiskit.transpiler.passmanager", "PassManager")
     if pass_manager_cls is None:
         registry.warn("PassManager not found; transpile layer disabled")
         return False
-    return registry.patch(pass_manager_cls, "run", _run_wrapper)
+    applied = registry.patch(pass_manager_cls, "run", _run_wrapper)
+    base_pass_cls = resolve("qiskit.transpiler.basepasses", "BasePass")
+    if base_pass_cls is not None:
+        registry.patch(base_pass_cls, "__call__", _pass_call_wrapper)
+    else:
+        registry.warn("BasePass not found; directly-applied passes not recorded")
+    return applied
 
 
 def _run_wrapper(original: Callable) -> Callable:
@@ -74,8 +87,10 @@ def _run_wrapper(original: Callable) -> Callable:
         else:
             return original(self, circuits, output_name, callback, num_processes, **kwargs)
 
-        timelines = [_timeline_unless_suspended(c) for c in items]
-        for circuit, timeline in zip(items, timelines):
+        resolved = [_resolve_timeline(c) for c in items]
+        timelines = [timeline for timeline, _ in resolved]
+        phases = [phase for _, phase in resolved]
+        for circuit, timeline, phase in zip(items, timelines, phases):
             if timeline is not None:
                 STORE.add_event(
                     timeline,
@@ -83,9 +98,10 @@ def _run_wrapper(original: Callable) -> Callable:
                     pass_manager=type(self).__name__,
                     depth=circuit.depth(),
                     size=circuit.size(),
+                    phase=phase,
                 )
         if len(items) == 1 and timelines[0] is not None:
-            callback = _chained_callback(callback, timelines[0])
+            callback = _chained_callback(callback, timelines[0], phases[0])
 
         started = time.perf_counter()
         _local.depth = 1
@@ -97,7 +113,7 @@ def _run_wrapper(original: Callable) -> Callable:
         duration = time.perf_counter() - started
 
         outputs = [result] if single else list(result)
-        for timeline, output in zip(timelines, outputs):
+        for timeline, phase, output in zip(timelines, phases, outputs):
             if timeline is None:
                 continue
             snapshot = _output_snapshot(output)
@@ -111,6 +127,7 @@ def _run_wrapper(original: Callable) -> Callable:
                 duration=duration,
                 depth=output.depth(),
                 size=output.size(),
+                phase=phase,
                 circuit=snapshot,
             )
         return result
@@ -118,32 +135,34 @@ def _run_wrapper(original: Callable) -> Callable:
     return run
 
 
-def _timeline_unless_suspended(circuit: Any) -> Timeline | None:
-    """Resolve the circuit's timeline, or None while its id is suspended.
+def _resolve_timeline(circuit: Any) -> tuple[Timeline | None, str]:
+    """Resolve the circuit's timeline and which compilation phase this run is.
 
-    Backends compile handed-off circuits on internal worker threads where
-    context-var suspension is invisible, so the execution hook marks their
-    ids as suspended instead; honoring that here keeps backend-internal
-    pass manager runs (e.g. Aer lowering control flow to jumps and marks)
-    from overwriting the user-facing transpile history. A note event is
-    left behind so the timeline says why nothing was recorded. Suspension
-    is checked after resolution so copies that lost the id but re-adopt a
-    suspended timeline by name are silenced too.
+    A pass manager run on a circuit whose id the execution hook marked
+    suspended is the backend compiling internally while executing it (Aer
+    does this on worker threads, where context-var suspension is invisible).
+    Those runs are recorded with ``phase="backend"`` so they land on their
+    own visualizer track instead of overwriting the user-facing transpile
+    history -- or, when ``capture_backend_compilation`` is off, suppressed
+    with a note event. Suspension is checked after resolution so copies that
+    lost the id but re-adopt a suspended timeline by name are classified too.
     """
     timeline = STORE.timeline_for(circuit, adopt_by_name=True)
     if timeline is None:
-        return None
-    if STORE.is_circuit_suspended(circuit):
-        STORE.add_event(
-            timeline,
-            NoteEvent,
-            message=(
-                "pass manager run during execution not recorded "
-                "(backend-internal compilation)"
-            ),
-        )
-        return None
-    return timeline
+        return None, "user"
+    if not STORE.is_circuit_suspended(circuit):
+        return timeline, "user"
+    if get_config().capture_backend_compilation:
+        return timeline, "backend"
+    STORE.add_event(
+        timeline,
+        NoteEvent,
+        message=(
+            "pass manager run during execution not recorded "
+            "(backend-internal compilation)"
+        ),
+    )
+    return None, "user"
 
 
 def _output_snapshot(output: Any) -> Any | None:
@@ -163,13 +182,15 @@ def _output_snapshot(output: Any) -> Any | None:
         return None
 
 
-def _chained_callback(user_callback: Callable | None, timeline: Timeline) -> Callable:
+def _chained_callback(
+    user_callback: Callable | None, timeline: Timeline, phase: str = "user"
+) -> Callable:
     """Build a pass callback that records telemetry then defers to the user's."""
     state: dict[str, Any] = {"signature": None}
 
     def callback(**details: Any) -> None:
         try:
-            _record_pass(timeline, details, state)
+            _record_pass(timeline, details, state, phase)
         except Exception:
             logger.debug("qdebug: failed to record transpiler pass", exc_info=True)
         if user_callback is not None:
@@ -203,7 +224,7 @@ def _fingerprint(dag: Any, depth: int | None, size: int | None, ops: dict) -> tu
     return (bits, depth, size, tuple(sorted(ops.items())), nodes)
 
 
-def _record_pass(timeline: Timeline, details: dict, state: dict) -> None:
+def _record_pass(timeline: Timeline, details: dict, state: dict, phase: str = "user") -> None:
     """Record one transpiler pass, snapshotting the circuit when configured."""
     pass_instance = details.get("pass_")
     dag = details.get("dag")
@@ -244,5 +265,86 @@ def _record_pass(timeline: Timeline, details: dict, state: dict) -> None:
         size=size,
         ops=ops,
         changed=changed,
+        phase=phase,
         circuit=circuit,
+    )
+
+
+def _pass_call_wrapper(original: Callable) -> Callable:
+    """Wrap ``BasePass.__call__`` so directly-applied passes are recorded.
+
+    Covers the standalone form ``SomePass()(circuit)``, which converts and
+    runs the pass itself without ever entering ``PassManager.run``.
+    """
+
+    @functools.wraps(original)
+    def call(self: Any, circuit: Any, *args: Any, **kwargs: Any) -> Any:
+        if (
+            STORE.is_suspended()
+            or STORE.is_circuit_suspended(circuit)
+            or getattr(_local, "depth", 0) > 0
+        ):
+            return original(self, circuit, *args, **kwargs)
+        started = time.perf_counter()
+        _local.depth = 1
+        try:
+            with STORE.suspended():
+                result = original(self, circuit, *args, **kwargs)
+        finally:
+            _local.depth = 0
+        try:
+            _record_standalone_pass(self, circuit, result, time.perf_counter() - started)
+        except Exception:
+            logger.debug("qdebug: failed to record standalone pass", exc_info=True)
+        return result
+
+    return call
+
+
+def _record_standalone_pass(
+    pass_instance: Any, circuit: Any, result: Any, duration: float
+) -> None:
+    """Record one directly-applied pass as a transpile_pass event.
+
+    The result circuit inherits the timeline id, so later transpiles or runs
+    of it stay on the same timeline, mirroring ``PassManager.run`` outputs.
+    """
+    timeline = STORE.timeline_for(circuit, adopt_by_name=True)
+    if timeline is None:
+        return
+    namer = getattr(pass_instance, "name", None)
+    name = namer() if callable(namer) else str(pass_instance)
+    if result is circuit:
+        changed = False
+    else:
+        try:
+            changed = result != circuit
+        except Exception:
+            changed = True
+    try:
+        depth = result.depth()
+        size = result.size()
+        ops = dict(result.count_ops())
+    except Exception:
+        depth = None
+        size = None
+        ops = {}
+    policy = get_config().transpile_snapshots
+    snapshot = None
+    if policy == "all" or (policy == "changed" and changed):
+        snapshot = _output_snapshot(result)
+    try:
+        setattr(result, ID_ATTRIBUTE, timeline.circuit_id)
+    except Exception:
+        pass
+    STORE.add_event(
+        timeline,
+        TranspilePassEvent,
+        pass_name=name or "unknown",
+        duration=duration,
+        depth=depth,
+        size=size,
+        ops=ops,
+        changed=changed,
+        circuit=snapshot,
     )

@@ -22,6 +22,10 @@ class QDebugConfig(BaseModel):
         transpile_snapshots: Which transpiler passes get a full circuit
             snapshot attached: every pass, only passes that changed the
             circuit, or none.
+        capture_backend_compilation: Whether pass manager runs a backend
+            performs internally while executing a circuit (e.g. Aer lowering
+            control flow) are recorded as ``phase="backend"`` transpile
+            events. When off they are suppressed with a note event instead.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -31,6 +35,7 @@ class QDebugConfig(BaseModel):
     max_statevector_qubits: int = Field(default=12, ge=1, le=30)
     max_snapshots_per_circuit: int = Field(default=256, ge=1)
     transpile_snapshots: Literal["all", "changed", "none"] = "changed"
+    capture_backend_compilation: bool = True
 
 
 _config = QDebugConfig()

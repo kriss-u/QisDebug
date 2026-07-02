@@ -243,18 +243,124 @@ _BROWSER_TEMPLATE = """<!doctype html>
 <title>{title}</title>
 <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 <style>
-  body {{ font-family: -apple-system, sans-serif; margin: 2rem; color: #1a1a1a; }}
-  h4 {{ margin-bottom: 0.5rem; }}
-  #nav {{ display: flex; align-items: center; gap: 0.5rem; margin: 0.75rem 0; }}
-  #nav button {{ padding: 0.3rem 0.7rem; cursor: pointer; }}
+  :root {{
+    --bg: #f6f7f9;
+    --surface: #ffffff;
+    --border: #d8dce2;
+    --text: #1c2128;
+    --text-muted: #57606a;
+    --accent: #2f6feb;
+    --accent-soft: #eaf1ff;
+    --mono: "SFMono-Regular", "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }}
+  * {{ box-sizing: border-box; }}
+  body {{
+    font-family: var(--sans);
+    margin: 0;
+    padding: 2rem 2.5rem 3rem;
+    background: var(--bg);
+    color: var(--text);
+  }}
+  h4 {{
+    margin: 0 0 1rem;
+    font-size: 1.05rem;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }}
+  #nav {{
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.6rem 0.75rem;
+    margin-bottom: 1rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }}
+  #nav button {{
+    font-family: var(--sans);
+    font-size: 0.85rem;
+    font-weight: 500;
+    padding: 0.4rem 0.85rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--text);
+    cursor: pointer;
+    transition: background 0.1s ease, border-color 0.1s ease;
+  }}
+  #nav button:hover:not(:disabled) {{ background: var(--accent-soft); border-color: var(--accent); }}
   #nav button:disabled {{ cursor: default; opacity: 0.4; }}
-  #nav input[type=number] {{ width: 4.5rem; text-align: center; }}
-  #header {{ margin: 0.75rem 0; font-size: 0.95rem; }}
-  #circuits {{ display: flex; gap: 1rem; overflow-x: auto; scroll-behavior: smooth; padding-bottom: 0.75rem; margin-bottom: 1rem; }}
-  .circuit-card {{ flex: 0 0 auto; border: 2px solid transparent; border-radius: 8px; padding: 0.25rem 0.5rem; }}
-  .circuit-card.active {{ border-color: #3b82f6; }}
-  .circuit-card h5 {{ margin: 0 0 0.25rem; }}
-  pre {{ background: #f5f5f5; padding: 1rem; border-radius: 6px; overflow-x: auto; line-height: 1.2; }}
+  #nav .event-count {{
+    font-family: var(--mono);
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    margin: 0 0.25rem;
+  }}
+  #nav input[type=number] {{
+    font-family: var(--mono);
+    width: 3.75rem;
+    text-align: center;
+    padding: 0.35rem 0.25rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--text);
+  }}
+  #nav input[type=number]:focus {{ outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }}
+  #header {{
+    margin-bottom: 1rem;
+    padding: 0.65rem 0.9rem;
+    font-family: var(--mono);
+    font-size: 0.85rem;
+    line-height: 1.5;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text-muted);
+  }}
+  #header b {{ color: var(--text); font-family: var(--sans); font-weight: 600; }}
+  #header code {{ background: var(--accent-soft); color: var(--accent); padding: 0.1rem 0.35rem; border-radius: 4px; font-size: 0.82rem; }}
+  #circuits {{
+    display: flex;
+    gap: 1rem;
+    overflow-x: auto;
+    scroll-behavior: smooth;
+    padding: 0.25rem 0.25rem 1rem;
+    margin-bottom: 1rem;
+  }}
+  #circuits > i {{ color: var(--text-muted); font-family: var(--sans); font-size: 0.9rem; padding: 0.5rem; }}
+  .circuit-card {{
+    flex: 0 0 auto;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 0.6rem 0.8rem;
+    background: var(--surface);
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  }}
+  .circuit-card.active {{ border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }}
+  .circuit-card h5 {{
+    margin: 0 0 0.4rem;
+    font-family: var(--sans);
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: var(--text-muted);
+  }}
+  .circuit-card.active h5 {{ color: var(--accent); }}
+  .circuit-card pre {{ margin: 0; background: transparent; border: none; padding: 0; }}
+  pre {{
+    font-family: var(--mono);
+    font-size: 0.82rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    padding: 1rem;
+    border-radius: 8px;
+    overflow-x: auto;
+    line-height: 1.45;
+  }}
 </style>
 </head>
 <body>
@@ -286,7 +392,7 @@ _BROWSER_TEMPLATE = """<!doctype html>
     <div id="nav">
       <button @click="first()" :disabled="index === 0">&#9198; First</button>
       <button @click="prev()" :disabled="index === 0">&#9664; Prev</button>
-      <span>event <input type="number" min="1" :max="frames.length" :value="index + 1" @change="jumpTo($event.target.valueAsNumber)"> / <span x-text="frames.length"></span></span>
+      <span class="event-count">event <input type="number" min="1" :max="frames.length" :value="index + 1" @change="jumpTo($event.target.valueAsNumber)"> / <span x-text="frames.length"></span></span>
       <button @click="next()" :disabled="index === frames.length - 1">Next &#9654;</button>
       <button @click="last()" :disabled="index === frames.length - 1">Last &#9197;</button>
     </div>

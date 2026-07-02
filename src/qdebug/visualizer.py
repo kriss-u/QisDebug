@@ -53,7 +53,7 @@ def show(timelines: Timeline | Iterable[Timeline]) -> Any:
         ) from exc
 
     timelines = _as_timelines(timelines)
-    merged, tracks = _merge_timelines(timelines)
+    merged, tracks, _active_labels = _merge_timelines(timelines)
     if not merged:
         ids = ", ".join(t.circuit_id for t in timelines)
         return widgets.HTML(value=f"<i>Timeline(s) {ids} have no events.</i>")
@@ -90,7 +90,7 @@ def show(timelines: Timeline | Iterable[Timeline]) -> Any:
     return widgets.VBox([title, slider, header, circuits, body])
 
 
-def _circuit_tracks(timeline: Timeline) -> list[dict[str, str]]:
+def _circuit_tracks(timeline: Timeline) -> tuple[list[dict[str, str]], list[str | None]]:
     """Return, per event, the latest known circuit drawing for each track.
 
     A "track" is a distinct circuit lineage (the circuit as constructed, the
@@ -98,9 +98,15 @@ def _circuit_tracks(timeline: Timeline) -> list[dict[str, str]]:
     carried forward to every later event until a newer snapshot replaces it,
     so the circuit panel always shows the most recent known state instead of
     only appearing on the event that happened to produce it.
+
+    Also returns, per event, which track was most recently touched (carried
+    forward the same way), so callers can highlight/scroll to the circuit
+    that is actually relevant to the currently selected event.
     """
     current: dict[str, str] = {}
     series: list[dict[str, str]] = []
+    active_series: list[str | None] = []
+    active_key: str | None = None
     gate_count = 0
     for event in timeline.events:
         if isinstance(event, GateEvent):
@@ -109,20 +115,23 @@ def _circuit_tracks(timeline: Timeline) -> list[dict[str, str]]:
             if circuit is not None:
                 try:
                     current["circuit"] = str(circuit.draw(output="text"))
+                    active_key = "circuit"
                 except Exception:
                     pass
         elif isinstance(event, TranspilePassEvent) and event.circuit is not None:
             try:
                 current["transpiled"] = str(event.circuit.draw(output="text"))
+                active_key = "transpiled"
             except Exception:
                 pass
         series.append(dict(current))
-    return series
+        active_series.append(active_key)
+    return series, active_series
 
 
 def _merge_timelines(
     timelines: list[Timeline],
-) -> tuple[list[tuple[Timeline, TelemetryEvent]], list[dict[str, str]]]:
+) -> tuple[list[tuple[Timeline, TelemetryEvent]], list[dict[str, str]], list[str | None]]:
     """Interleave events from several timelines in global sequence order.
 
     ``seq`` is a process-wide monotonic counter (see
@@ -131,6 +140,8 @@ def _merge_timelines(
     Circuit tracks are computed independently per timeline (each carries
     forward its own state) and merged under a per-circuit-prefixed key so
     the panel can show every circuit's latest known state side by side.
+    Also returns, per merged event, the display label of the track most
+    relevant to that event (or ``None``), for scroll/highlight focus.
     """
     per_timeline_tracks = {t.circuit_id: _circuit_tracks(t) for t in timelines}
     merged = sorted(
@@ -140,14 +151,19 @@ def _merge_timelines(
     cursor = {t.circuit_id: 0 for t in timelines}
     combined: dict[str, str] = {}
     series: list[dict[str, str]] = []
+    active_labels: list[str | None] = []
     for source, _event in merged:
-        local = per_timeline_tracks[source.circuit_id][cursor[source.circuit_id]]
+        series_for_source, active_for_source = per_timeline_tracks[source.circuit_id]
+        idx = cursor[source.circuit_id]
+        local = series_for_source[idx]
+        active_key = active_for_source[idx]
         cursor[source.circuit_id] += 1
         prefix = source.name or source.circuit_id
         for key, text in local.items():
             combined[f"{prefix}:{key}"] = text
         series.append(dict(combined))
-    return merged, series
+        active_labels.append(_track_label(f"{prefix}:{active_key}") if active_key else None)
+    return merged, series, active_labels
 
 
 def _render_tracks_html(tracks: dict[str, str]) -> str:
@@ -182,7 +198,7 @@ def show_browser(
     from a plain Python script. Returns the path to the written HTML file.
     """
     timelines = _as_timelines(timelines)
-    merged, tracks = _merge_timelines(timelines)
+    merged, tracks, active_labels = _merge_timelines(timelines)
     frames = [
         {
             "header": (
@@ -194,13 +210,14 @@ def show_browser(
             "circuits": {
                 _track_label(key): _escape(text) for key, text in tracks[i].items()
             },
+            "active": active_labels[i],
         }
         for i, (source, event) in enumerate(merged)
     ]
     names = ", ".join(_escape(str(t.name)) for t in timelines)
     html = _BROWSER_TEMPLATE.format(
         title=_escape(f"QDebug timeline — {names} ({len(merged)} events)"),
-        frames=json.dumps(frames),
+        frames=json.dumps(frames).replace("</", "<\\/"),
     )
 
     if path is None:
@@ -224,42 +241,71 @@ _BROWSER_TEMPLATE = """<!doctype html>
 <head>
 <meta charset="utf-8">
 <title>{title}</title>
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 <style>
   body {{ font-family: -apple-system, sans-serif; margin: 2rem; color: #1a1a1a; }}
   h4 {{ margin-bottom: 0.5rem; }}
-  input[type=range] {{ width: 70%; }}
+  #nav {{ display: flex; align-items: center; gap: 0.5rem; margin: 0.75rem 0; }}
+  #nav button {{ padding: 0.3rem 0.7rem; cursor: pointer; }}
+  #nav button:disabled {{ cursor: default; opacity: 0.4; }}
+  #nav input[type=number] {{ width: 4.5rem; text-align: center; }}
   #header {{ margin: 0.75rem 0; font-size: 0.95rem; }}
-  #circuits {{ display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 1rem; }}
-  #circuits > div {{ flex: 1 1 auto; min-width: 0; }}
-  #circuits h5 {{ margin: 0 0 0.25rem; }}
+  #circuits {{ display: flex; gap: 1rem; overflow-x: auto; scroll-behavior: smooth; padding-bottom: 0.75rem; margin-bottom: 1rem; }}
+  .circuit-card {{ flex: 0 0 auto; border: 2px solid transparent; border-radius: 8px; padding: 0.25rem 0.5rem; }}
+  .circuit-card.active {{ border-color: #3b82f6; }}
+  .circuit-card h5 {{ margin: 0 0 0.25rem; }}
   pre {{ background: #f5f5f5; padding: 1rem; border-radius: 6px; overflow-x: auto; line-height: 1.2; }}
 </style>
 </head>
 <body>
   <h4>{title}</h4>
-  <input id="slider" type="range" min="1" value="1">
-  <div id="header"></div>
-  <div id="circuits"></div>
-  <pre id="body"></pre>
-<script>
-  const frames = {frames};
-  const slider = document.getElementById("slider");
-  const header = document.getElementById("header");
-  const body = document.getElementById("body");
-  const circuits = document.getElementById("circuits");
-  slider.max = frames.length;
-  function render() {{
-    const f = frames[slider.value - 1];
-    header.innerHTML = `<b>${{slider.value}}/${{frames.length}}</b> &mdash; ${{f.header}}`;
-    body.innerHTML = f.body;
-    const labels = Object.keys(f.circuits);
-    circuits.innerHTML = labels.length
-      ? labels.map(label => `<div><h5>${{label}}</h5><pre>${{f.circuits[label]}}</pre></div>`).join("")
-      : "<i>no circuit recorded yet</i>";
-  }}
-  slider.addEventListener("input", render);
-  render();
-</script>
+  <script type="application/json" id="qdebug-frames">{frames}</script>
+  <script>
+    function qdebugViz() {{
+      return {{
+        frames: JSON.parse(document.getElementById("qdebug-frames").textContent),
+        index: 0,
+        first() {{ this.index = 0; }},
+        prev() {{ if (this.index > 0) this.index--; }},
+        next() {{ if (this.index < this.frames.length - 1) this.index++; }},
+        last() {{ this.index = this.frames.length - 1; }},
+        jumpTo(value) {{
+          const n = Math.min(Math.max(1, value), this.frames.length);
+          this.index = n - 1;
+        }},
+        scrollToActive() {{
+          this.$nextTick(() => {{
+            const active = this.$refs.circuitsBox.querySelector('.circuit-card.active');
+            if (active) active.scrollIntoView({{ behavior: 'smooth', inline: 'center', block: 'nearest' }});
+          }});
+        }},
+      }};
+    }}
+  </script>
+  <div x-data="qdebugViz()">
+    <div id="nav">
+      <button @click="first()" :disabled="index === 0">&#9198; First</button>
+      <button @click="prev()" :disabled="index === 0">&#9664; Prev</button>
+      <span>event <input type="number" min="1" :max="frames.length" :value="index + 1" @change="jumpTo($event.target.valueAsNumber)"> / <span x-text="frames.length"></span></span>
+      <button @click="next()" :disabled="index === frames.length - 1">Next &#9654;</button>
+      <button @click="last()" :disabled="index === frames.length - 1">Last &#9197;</button>
+    </div>
+    <div id="header">
+      <b x-text="(index + 1) + '/' + frames.length"></b>&nbsp;&mdash;&nbsp;<span x-html="frames[index].header"></span>
+    </div>
+    <div id="circuits" x-ref="circuitsBox" x-effect="index; scrollToActive()">
+      <template x-if="Object.keys(frames[index].circuits).length === 0">
+        <i>no circuit recorded yet</i>
+      </template>
+      <template x-for="label in Object.keys(frames[index].circuits)" :key="label">
+        <div class="circuit-card" :class="{{ active: label === frames[index].active }}">
+          <h5 x-text="label"></h5>
+          <pre x-html="frames[index].circuits[label]"></pre>
+        </div>
+      </template>
+    </div>
+    <pre x-html="frames[index].body"></pre>
+  </div>
 </body>
 </html>
 """

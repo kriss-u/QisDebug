@@ -19,6 +19,7 @@ from typing import Any, Callable
 from .._compat import PatchRegistry, logger, resolve
 from .._config import get_config
 from .._events import (
+    NoteEvent,
     Timeline,
     TranspileFinishedEvent,
     TranspilePassEvent,
@@ -73,7 +74,7 @@ def _run_wrapper(original: Callable) -> Callable:
         else:
             return original(self, circuits, output_name, callback, num_processes, **kwargs)
 
-        timelines = [STORE.timeline_for(c, adopt_by_name=True) for c in items]
+        timelines = [_timeline_unless_suspended(c) for c in items]
         for circuit, timeline in zip(items, timelines):
             if timeline is not None:
                 STORE.add_event(
@@ -99,6 +100,7 @@ def _run_wrapper(original: Callable) -> Callable:
         for timeline, output in zip(timelines, outputs):
             if timeline is None:
                 continue
+            snapshot = _output_snapshot(output)
             try:
                 setattr(output, ID_ATTRIBUTE, timeline.circuit_id)
             except Exception:
@@ -109,10 +111,56 @@ def _run_wrapper(original: Callable) -> Callable:
                 duration=duration,
                 depth=output.depth(),
                 size=output.size(),
+                circuit=snapshot,
             )
         return result
 
     return run
+
+
+def _timeline_unless_suspended(circuit: Any) -> Timeline | None:
+    """Resolve the circuit's timeline, or None while its id is suspended.
+
+    Backends compile handed-off circuits on internal worker threads where
+    context-var suspension is invisible, so the execution hook marks their
+    ids as suspended instead; honoring that here keeps backend-internal
+    pass manager runs (e.g. Aer lowering control flow to jumps and marks)
+    from overwriting the user-facing transpile history. A note event is
+    left behind so the timeline says why nothing was recorded. Suspension
+    is checked after resolution so copies that lost the id but re-adopt a
+    suspended timeline by name are silenced too.
+    """
+    timeline = STORE.timeline_for(circuit, adopt_by_name=True)
+    if timeline is None:
+        return None
+    if STORE.is_circuit_suspended(circuit):
+        STORE.add_event(
+            timeline,
+            NoteEvent,
+            message=(
+                "pass manager run during execution not recorded "
+                "(backend-internal compilation)"
+            ),
+        )
+        return None
+    return timeline
+
+
+def _output_snapshot(output: Any) -> Any | None:
+    """Copy the final transpiled circuit for the finished event.
+
+    Runs before the timeline id is propagated onto the output, so the copy
+    stays untracked; freezing a copy means later user mutations of the
+    returned circuit don't rewrite the timeline. Returns None when snapshots
+    are disabled or the copy fails.
+    """
+    if get_config().transpile_snapshots == "none":
+        return None
+    try:
+        with STORE.suspended():
+            return output.copy()
+    except Exception:
+        return None
 
 
 def _chained_callback(user_callback: Callable | None, timeline: Timeline) -> Callable:
@@ -130,6 +178,31 @@ def _chained_callback(user_callback: Callable | None, timeline: Timeline) -> Cal
     return callback
 
 
+def _fingerprint(dag: Any, depth: int | None, size: int | None, ops: dict) -> tuple:
+    """Return a structural signature of a dag for change detection.
+
+    Depth, size and op counts alone are blind to passes that only add wires
+    or move operations between them (ancilla allocation, layout, routing),
+    so bit counts and per-node placements are folded in as well.
+    """
+    try:
+        qubits = {bit: i for i, bit in enumerate(dag.qubits)}
+        clbits = {bit: i for i, bit in enumerate(dag.clbits)}
+        nodes = tuple(
+            (
+                getattr(node, "name", None),
+                tuple(qubits.get(q, -1) for q in node.qargs),
+                tuple(clbits.get(c, -1) for c in node.cargs),
+            )
+            for node in dag.topological_op_nodes()
+        )
+        bits = (len(qubits), len(clbits))
+    except Exception:
+        nodes = None
+        bits = None
+    return (bits, depth, size, tuple(sorted(ops.items())), nodes)
+
+
 def _record_pass(timeline: Timeline, details: dict, state: dict) -> None:
     """Record one transpiler pass, snapshotting the circuit when configured."""
     pass_instance = details.get("pass_")
@@ -138,10 +211,14 @@ def _record_pass(timeline: Timeline, details: dict, state: dict) -> None:
     if pass_instance is not None:
         namer = getattr(pass_instance, "name", None)
         name = namer() if callable(namer) else str(pass_instance)
-    depth = dag.depth() if dag is not None else None
-    size = dag.size() if dag is not None else None
+    try:
+        depth = dag.depth(recurse=True) if dag is not None else None
+        size = dag.size(recurse=True) if dag is not None else None
+    except Exception:
+        depth = None
+        size = None
     ops = dict(dag.count_ops()) if dag is not None else {}
-    signature = (depth, size, tuple(sorted(ops.items())))
+    signature = _fingerprint(dag, depth, size, ops)
     changed = state["signature"] is None or signature != state["signature"]
     state["signature"] = signature
 

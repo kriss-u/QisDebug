@@ -23,6 +23,7 @@ from ._events import (
     StateSnapshotEvent,
     TelemetryEvent,
     Timeline,
+    TranspileFinishedEvent,
     TranspilePassEvent,
 )
 
@@ -84,7 +85,10 @@ def show(timelines: Timeline | Iterable[Timeline]) -> Any:
             f"<code>{event.type.value}</code> at {event.timestamp:.3f} &mdash; "
             f"{_escape(event.describe())}"
         )
-        body.value = f"<pre style='line-height:1.2'>{_escape(_render_event(source, event))}</pre>"
+        body.value = (
+            "<pre style='line-height:1.2;white-space:pre;overflow-x:auto'>"
+            f"{_escape(_render_event(source, event))}</pre>"
+        )
         circuits.value = _render_tracks_html(tracks[slider.value - 1])
         label, image = _render_extra_visual(event)
         extra.value = (
@@ -155,13 +159,16 @@ def _circuit_tracks(timeline: Timeline) -> tuple[list[dict[str, str]], list[str 
             circuit = timeline.circuit_at(gate_count)
             if circuit is not None:
                 try:
-                    current["circuit"] = str(circuit.draw(output="text"))
+                    current["circuit"] = str(circuit.draw(output="text", fold=-1))
                     active_key = "circuit"
                 except Exception:
                     pass
-        elif isinstance(event, TranspilePassEvent) and event.circuit is not None:
+        elif (
+            isinstance(event, (TranspilePassEvent, TranspileFinishedEvent))
+            and event.circuit is not None
+        ):
             try:
-                current["transpiled"] = str(event.circuit.draw(output="text"))
+                current["transpiled"] = str(event.circuit.draw(output="text", fold=-1))
                 active_key = "transpiled"
             except Exception:
                 pass
@@ -215,7 +222,8 @@ def _render_tracks_html(tracks: dict[str, str]) -> str:
     for key, text in tracks.items():
         sections.append(
             f"<b>{_escape(_track_label(key))}</b>"
-            f"<pre style='line-height:1.2'>{_escape(text)}</pre>"
+            "<pre style='line-height:1.2;white-space:pre;overflow-x:auto'>"
+            f"{_escape(text)}</pre>"
         )
     return "".join(sections)
 
@@ -338,6 +346,8 @@ _BROWSER_TEMPLATE = """<!doctype html>
   }}
   #nav button:hover:not(:disabled) {{ background: var(--accent-soft); border-color: var(--accent); }}
   #nav button:disabled {{ cursor: default; opacity: 0.4; }}
+  #nav button.playing {{ background: var(--accent); border-color: var(--accent); color: #fff; }}
+  #nav button.playing:hover:not(:disabled) {{ background: var(--accent); border-color: var(--accent); }}
   #nav .event-count {{
     font-family: var(--mono);
     font-size: 0.85rem;
@@ -424,6 +434,7 @@ _BROWSER_TEMPLATE = """<!doctype html>
     padding: 1rem;
     border-radius: 8px;
     overflow-x: auto;
+    white-space: pre;
     line-height: 1.45;
   }}
 </style>
@@ -470,6 +481,13 @@ _BROWSER_TEMPLATE = """<!doctype html>
           this.paused = true;
         }},
         resume() {{ if (this.paused) this.play(); }},
+        togglePlay() {{
+          if (this.playing) {{
+            this.pause();
+          }} else {{
+            this.play();
+          }}
+        }},
         stop() {{
           clearInterval(this.timer);
           this.timer = null;
@@ -499,9 +517,10 @@ _BROWSER_TEMPLATE = """<!doctype html>
       <button @click="next()" :disabled="index === frames.length - 1 || playing">Next &#9654;</button>
       <button @click="last()" :disabled="index === frames.length - 1 || playing">Last &#9197;</button>
       <span class="sep"></span>
-      <button @click="play()" :disabled="playing || index >= frames.length - 1">&#9654; Play</button>
-      <button @click="pause()" :disabled="!playing">&#10074;&#10074; Pause</button>
-      <button @click="resume()" :disabled="!paused">&#9654; Resume</button>
+      <button @click="togglePlay()" :class="{{ playing: playing }}" :disabled="!playing && index >= frames.length - 1">
+        <span x-show="!playing">&#9654; <span x-text="paused ? 'Resume' : 'Play'"></span></span>
+        <span x-show="playing">&#10074;&#10074; Pause</span>
+      </button>
       <button @click="stop()" :disabled="!playing && !paused">&#9632; Stop</button>
       <span class="event-count">ms/step <input type="number" class="interval" min="50" max="10000" step="50" x-model.number="intervalMs" @change="restartTimer()"></span>
     </div>

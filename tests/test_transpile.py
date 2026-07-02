@@ -80,9 +80,52 @@ def test_snapshot_policy_none_records_passes_without_circuits():
     qdebug.activate()
     qc = _bell()
     transpile(qc, basis_gates=["cx", "u"])
-    passes = qdebug.timeline(qc).filter(EventType.TRANSPILE_PASS)
+    timeline = qdebug.timeline(qc)
+    passes = timeline.filter(EventType.TRANSPILE_PASS)
     assert passes
     assert all(p.circuit is None for p in passes)
+    assert timeline.filter(EventType.TRANSPILE_FINISHED)[0].circuit is None
+
+
+def test_layout_widening_is_detected_as_a_change():
+    """Passes that only add wires (ancilla allocation) still get snapshots.
+
+    Depth, size and op counts are identical before and after widening, so
+    this exercises the structural part of the change fingerprint.
+    """
+    qdebug.activate()
+    qc = _bell()
+    transpile(qc, coupling_map=[[0, 1], [1, 2], [2, 3], [3, 4]], basis_gates=["cx", "u"])
+    passes = qdebug.timeline(qc).filter(EventType.TRANSPILE_PASS)
+    widened = [p for p in passes if p.circuit is not None and p.circuit.num_qubits == 5]
+    assert widened
+    assert all(p.changed for p in widened)
+
+
+def test_layout_permutation_is_detected_as_a_change():
+    """A pure qubit relabeling (same depth, size and ops) is still a change."""
+    qdebug.activate()
+    qc = _bell()
+    transpile(qc, coupling_map=[[0, 1], [1, 0]], initial_layout=[1, 0], basis_gates=["cx", "u"])
+    passes = qdebug.timeline(qc).filter(EventType.TRANSPILE_PASS)
+    apply_layout = [p for p in passes if p.pass_name == "ApplyLayout"]
+    assert apply_layout
+    assert apply_layout[0].changed
+    assert apply_layout[0].circuit is not None
+
+
+def test_finished_event_carries_the_final_circuit():
+    """The finished event freezes a copy of the transpiled output."""
+    qdebug.activate()
+    qc = _bell()
+    transpiled = transpile(qc, basis_gates=["cx", "u"], optimization_level=1)
+    finished = qdebug.timeline(qc).filter(EventType.TRANSPILE_FINISHED)[0]
+    assert finished.circuit is not None
+    assert finished.circuit == transpiled
+    assert getattr(finished.circuit, "_qdebug_id", None) is None
+    size_before = finished.circuit.size()
+    transpiled.x(0)
+    assert finished.circuit.size() == size_before
 
 
 def test_preset_pass_manager_run_is_recorded():
@@ -107,6 +150,43 @@ def test_transpiling_a_list_of_circuits_records_start_and_finish():
         timeline = qdebug.timeline(qc)
         assert timeline.filter(EventType.TRANSPILE_STARTED)
         assert timeline.filter(EventType.TRANSPILE_FINISHED)
+
+
+def test_backend_internal_compilation_records_no_transpile_events():
+    """Aer's own control-flow compilation during run() stays off the timeline.
+
+    Aer compiles on a worker thread where context-var suspension is not
+    visible, so this exercises the suspended-circuit-id path instead.
+    """
+    qdebug.activate()
+    qc = QuantumCircuit(2, 2, name="dynamic")
+    qc.h(0)
+    qc.measure(0, 0)
+    with qc.if_test((qc.clbits[0], 1)):
+        qc.x(1)
+    qc.measure(1, 1)
+    AerSimulator().run(qc, shots=10).result()
+    timeline = qdebug.timeline(qc)
+    assert timeline.filter(EventType.EXECUTION_FINISHED)
+    assert not timeline.transpile_events
+    notes = timeline.filter(EventType.NOTE)
+    assert any("backend-internal" in n.message for n in notes)
+
+
+def test_hand_built_pass_manager_is_recorded():
+    """A user-constructed PassManager, not just presets, is instrumented."""
+    from qiskit.transpiler import PassManager
+    from qiskit.transpiler.passes import Depth, Optimize1qGatesDecomposition
+
+    qdebug.activate()
+    qc = _bell("custom-pm")
+    pm = PassManager([Depth(), Optimize1qGatesDecomposition()])
+    pm.run(qc)
+    timeline = qdebug.timeline(qc)
+    assert timeline.filter(EventType.TRANSPILE_STARTED)
+    passes = timeline.filter(EventType.TRANSPILE_PASS)
+    assert {p.pass_name for p in passes} == {"Depth", "Optimize1qGatesDecomposition"}
+    assert timeline.filter(EventType.TRANSPILE_FINISHED)
 
 
 def test_construction_of_transpiled_circuit_not_polluted():

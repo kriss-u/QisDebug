@@ -58,6 +58,24 @@ def test_snapshot_data_is_stripped_from_user_result():
     assert set(result.data(0).keys()) == {"counts"}
 
 
+def test_noise_model_construction_does_not_flood_the_store():
+    """from_backend builds many internal circuits; none may become timelines.
+
+    Without suspension around those factories, the internal noise circuits
+    would evict the user's real timelines from the LRU store.
+    """
+    from qiskit.providers.fake_provider import GenericBackendV2
+
+    qdebug.activate()
+    qc = _bell("kept")
+    before = {t.circuit_id for t in qdebug.timelines()}
+    AerSimulator.from_backend(GenericBackendV2(num_qubits=4, seed=11))
+    after = {t.circuit_id for t in qdebug.timelines()}
+    assert after == before
+    assert qdebug.timeline(qc) is not None
+    assert len(qdebug.timeline(qc).gate_events) == 4
+
+
 def test_result_called_twice_records_once():
     """Repeated job.result() calls do not duplicate telemetry."""
     qdebug.activate()

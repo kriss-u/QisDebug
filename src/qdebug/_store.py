@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import contextvars
 import threading
 import uuid
 from collections import OrderedDict
 from contextlib import contextmanager
-from typing import Any, Iterator, Type, TypeVar
+from typing import Any, Iterable, Iterator, Type, TypeVar
 
 from ._config import get_config
 from ._events import TelemetryEvent, Timeline
@@ -21,14 +22,29 @@ class TelemetryStore:
 
     Recording hooks consult :meth:`is_suspended` before writing, so circuits
     QDebug builds internally (instrumented copies, transpile snapshots) never
-    pollute user telemetry. Suspension is tracked per thread.
+    pollute user telemetry. Suspension is tracked via a context variable
+    rather than ``threading.local`` so it also covers ``asyncio`` tasks
+    spawned while suspended.
+
+    That alone is not enough for backends like Aer: ``AerBackend.run``
+    hands the circuit off to a persistent internal ``ThreadPoolExecutor``
+    whose workers capture their ``contextvars.Context`` once, at thread
+    creation, and reuse it for every task afterwards, so a context variable
+    set immediately before submitting work is never visible inside the
+    worker. :meth:`suspend_circuit_ids`/:meth:`resume_circuit_ids` instead
+    mark the specific circuit id being handed off as suspended in shared,
+    lock-protected state, so recording hooks skip it regardless of which
+    thread eventually touches it.
     """
 
     def __init__(self) -> None:
         self._timelines: OrderedDict[str, Timeline] = OrderedDict()
         self._lock = threading.RLock()
         self._sequence = 0
-        self._local = threading.local()
+        self._depth: contextvars.ContextVar[int] = contextvars.ContextVar(
+            "qdebug_suspend_depth", default=0
+        )
+        self._suspended_ids: dict[str, int] = {}
 
     def next_sequence(self) -> int:
         """Return the next value of the process-wide event counter."""
@@ -38,16 +54,45 @@ class TelemetryStore:
 
     @contextmanager
     def suspended(self) -> Iterator[None]:
-        """Silence all hook recording on the current thread while active."""
-        self._local.depth = getattr(self._local, "depth", 0) + 1
+        """Silence all hook recording in the current context while active."""
+        token = self._depth.set(self._depth.get() + 1)
         try:
             yield
         finally:
-            self._local.depth -= 1
+            self._depth.reset(token)
 
     def is_suspended(self) -> bool:
-        """Return True when recording is suspended on the current thread."""
-        return getattr(self._local, "depth", 0) > 0
+        """Return True when recording is suspended in the current context."""
+        return self._depth.get() > 0
+
+    def suspend_circuit_ids(self, circuit_ids: Iterable[str]) -> None:
+        """Mark circuit ids as suspended regardless of which thread touches them.
+
+        Reference-counted so overlapping runs on the same circuit id (e.g. a
+        second submission before the first's job has resolved) don't resume
+        each other early.
+        """
+        with self._lock:
+            for circuit_id in circuit_ids:
+                self._suspended_ids[circuit_id] = self._suspended_ids.get(circuit_id, 0) + 1
+
+    def resume_circuit_ids(self, circuit_ids: Iterable[str]) -> None:
+        """Undo one :meth:`suspend_circuit_ids` call for each id given."""
+        with self._lock:
+            for circuit_id in circuit_ids:
+                count = self._suspended_ids.get(circuit_id, 0) - 1
+                if count <= 0:
+                    self._suspended_ids.pop(circuit_id, None)
+                else:
+                    self._suspended_ids[circuit_id] = count
+
+    def is_circuit_suspended(self, circuit: Any) -> bool:
+        """Return True when ``circuit``'s id was marked by :meth:`suspend_circuit_ids`."""
+        circuit_id = getattr(circuit, ID_ATTRIBUTE, None)
+        if circuit_id is None:
+            return False
+        with self._lock:
+            return circuit_id in self._suspended_ids
 
     def timeline_for(
         self, circuit: Any, create: bool = True, adopt_by_name: bool = False

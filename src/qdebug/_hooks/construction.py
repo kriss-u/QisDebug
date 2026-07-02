@@ -1,11 +1,13 @@
 """Layer one: record every instruction appended during circuit construction.
 
-On Qiskit 2.x every append path (gate helper methods, the public ``append``,
-``barrier``, ``measure``, ``initialize``) funnels through
+On Qiskit 2.x almost every append path (gate helper methods, the public
+``append``, ``barrier``, ``measure``, ``initialize``) funnels through
 ``QuantumCircuit._append``, so patching it alongside the public ``append``
-covers all construction activity. Instead of parsing the many argument forms
-those methods accept, the wrapper diffs ``circuit.data`` around the original
-call and records exactly the instructions that landed, after broadcasting.
+covers most construction activity. ``compose`` is the exception: it
+bulk-extends the underlying circuit data without going through either, so it
+is patched separately. Instead of parsing the many argument forms those
+methods accept, the wrappers diff ``circuit.data`` around the original call
+and record exactly the instructions that landed, after broadcasting.
 """
 
 from __future__ import annotations
@@ -33,6 +35,11 @@ def install(registry: PatchRegistry) -> bool:
             applied = registry.patch(circuit_cls, attribute, _recording_wrapper) or applied
     if not applied:
         registry.warn("no QuantumCircuit append method found; construction layer disabled")
+        return False
+    if getattr(circuit_cls, "compose", None) is not None:
+        registry.patch(circuit_cls, "compose", _compose_wrapper)
+    else:
+        registry.warn("QuantumCircuit.compose not found; composed circuits not recorded")
     return applied
 
 
@@ -46,7 +53,11 @@ def _recording_wrapper(original: Callable) -> Callable:
 
     @functools.wraps(original)
     def wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
-        if STORE.is_suspended() or getattr(_local, "depth", 0) > 0:
+        if (
+            STORE.is_suspended()
+            or STORE.is_circuit_suspended(self)
+            or getattr(_local, "depth", 0) > 0
+        ):
             return original(self, *args, **kwargs)
         _local.depth = 1
         try:
@@ -62,6 +73,44 @@ def _recording_wrapper(original: Callable) -> Callable:
                 _record_appended(self, before)
             except Exception:
                 logger.debug("qdebug: failed to record appended instructions", exc_info=True)
+        return result
+
+    return wrapper
+
+
+def _compose_wrapper(original: Callable) -> Callable:
+    """Wrap ``compose`` to record instructions merged into ``self``.
+
+    ``compose`` bulk-extends the circuit data without going through the
+    append methods, so it gets the same diff-and-record treatment. Only
+    ``inplace=True`` calls grow ``self.data`` (otherwise the diff is empty
+    and nothing is recorded). ``front=True`` prepends, which a length diff
+    cannot attribute correctly, so those calls are left unrecorded.
+    """
+
+    @functools.wraps(original)
+    def wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
+        if (
+            STORE.is_suspended()
+            or STORE.is_circuit_suspended(self)
+            or getattr(_local, "depth", 0) > 0
+        ):
+            return original(self, *args, **kwargs)
+        front = kwargs.get("front", args[3] if len(args) > 3 else False)
+        _local.depth = 1
+        try:
+            try:
+                before = len(self.data)
+            except Exception:
+                before = None
+            result = original(self, *args, **kwargs)
+        finally:
+            _local.depth = 0
+        if before is not None and not front:
+            try:
+                _record_appended(self, before)
+            except Exception:
+                logger.debug("qdebug: failed to record composed instructions", exc_info=True)
         return result
 
     return wrapper
@@ -103,11 +152,34 @@ def _bit_indices(circuit: Any, bits: Any) -> tuple[int, ...]:
 
 
 def _parameter_values(operation: Any) -> tuple[float | str, ...]:
-    """Coerce operation params to floats, falling back to their repr."""
+    """Coerce operation params to floats, falling back to compact text."""
     values: list[float | str] = []
     for param in getattr(operation, "params", ()) or ():
         try:
             values.append(float(param))
         except (TypeError, ValueError):
-            values.append(str(param))
+            values.append(_format_param(param))
     return tuple(values)
+
+
+def _format_param(param: Any) -> str:
+    """Render one non-numeric param as short single-line text.
+
+    Control-flow ops carry their block bodies as whole circuits in
+    ``params``, and ``str`` of a circuit is its multi-line drawing, so
+    circuit-like params are summarized by their op counts instead. Anything
+    else falls back to whitespace-collapsed, truncated ``str``.
+    """
+    counter = getattr(param, "count_ops", None)
+    if callable(counter):
+        try:
+            ops = ",".join(
+                name if count == 1 else f"{name}*{count}" for name, count in counter().items()
+            )
+            return f"[{ops}]"
+        except Exception:
+            pass
+    text = " ".join(str(param).split())
+    if len(text) > 60:
+        text = text[:57] + "..."
+    return text

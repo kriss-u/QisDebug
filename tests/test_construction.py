@@ -64,6 +64,56 @@ def test_parameters_are_recorded():
     assert event.params == (0.25,)
 
 
+def _sub_circuit():
+    """Two-gate subcircuit used by the compose tests."""
+    sub = QuantumCircuit(2, name="sub")
+    sub.h(0)
+    sub.cx(0, 1)
+    return sub
+
+
+def test_compose_inplace_records_merged_instructions():
+    """compose(inplace=True) bypasses append but is still recorded, remapped."""
+    qdebug.activate()
+    qc = QuantumCircuit(3)
+    qc.x(0)
+    qc.compose(_sub_circuit(), qubits=[1, 2], inplace=True)
+    assert _recorded(qc) == [("x", (0,)), ("h", (1,)), ("cx", (1, 2))]
+
+
+def test_compose_copy_records_nothing_on_the_source():
+    """compose(inplace=False) leaves the source circuit's timeline untouched."""
+    qdebug.activate()
+    qc = QuantumCircuit(2)
+    qc.x(0)
+    qc.compose(_sub_circuit())
+    assert _recorded(qc) == [("x", (0,))]
+
+
+def test_compose_front_records_no_misattributed_events():
+    """front=True prepends, which a data diff cannot attribute, so skip it."""
+    qdebug.activate()
+    qc = QuantumCircuit(2)
+    qc.x(0)
+    qc.compose(_sub_circuit(), front=True, inplace=True)
+    assert _recorded(qc) == [("x", (0,))]
+    assert len(qc.data) == 3
+
+
+def test_control_flow_body_params_are_compact():
+    """Control-flow block bodies render as op summaries, not circuit drawings."""
+    qdebug.activate()
+    qc = QuantumCircuit(2, 1)
+    qc.measure(0, 0)
+    with qc.if_test((qc.clbits[0], 1)):
+        qc.x(1)
+        qc.x(1)
+    event = next(e for e in qdebug.timeline(qc).gate_events if e.gate == "if_else")
+    assert event.params[0] == "[x*2]"
+    assert all("\n" not in str(p) for p in event.params)
+    assert "\n" not in event.describe()
+
+
 def test_recording_does_not_change_circuit_semantics():
     """A circuit built while active equals one built while inactive."""
     qdebug.activate()

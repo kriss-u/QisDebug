@@ -61,7 +61,9 @@ def main() -> None:
 
     print(f"\n{len(qdebug.timelines())} timelines tracked:")
     for timeline in qdebug.timelines():
-        print(f"  - {timeline.name:<6} {len(timeline.events)} events, id={timeline.circuit_id}")
+        print(
+            f"  - {timeline.name:<6} {len(timeline.events)} events, id={timeline.circuit_id}"
+        )
 
     print("\nper-circuit summaries:")
     for qc in circuits:
@@ -75,7 +77,9 @@ def main() -> None:
         assert timeline is not None, f"circuit {qc.name} was not tracked by qdebug"
         timelines.append(timeline)
     html_path = visualizer.show_browser(timelines)
-    print(f"\nopened a merged timeline viewer for all {len(circuits)} circuits: {html_path}")
+    print(
+        f"\nopened a merged timeline viewer for all {len(circuits)} circuits: {html_path}"
+    )
 
     qdebug.deactivate()
 

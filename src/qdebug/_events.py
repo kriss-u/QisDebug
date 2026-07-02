@@ -100,6 +100,7 @@ class TranspileFinishedEvent(TelemetryEvent):
     duration: float = 0.0
     depth: int | None = None
     size: int | None = None
+    circuit: Any = Field(default=None, exclude=True, repr=False)
 
     def describe(self) -> str:
         """Return the total duration and output circuit shape."""
@@ -287,9 +288,12 @@ class Timeline(BaseModel):
         data = event.model_dump(mode="json")
         if isinstance(event, StateSnapshotEvent) and event.statevector is not None:
             data["statevector"] = [[z.real, z.imag] for z in event.amplitudes()]
-        if isinstance(event, TranspilePassEvent) and event.circuit is not None:
+        if (
+            isinstance(event, (TranspilePassEvent, TranspileFinishedEvent))
+            and event.circuit is not None
+        ):
             try:
-                data["circuit_text"] = str(event.circuit.draw(output="text"))
+                data["circuit_text"] = str(event.circuit.draw(output="text", fold=-1))
             except Exception:
                 data["circuit_text"] = None
         return data

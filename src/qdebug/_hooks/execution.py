@@ -24,7 +24,7 @@ from .._events import (
     StateSnapshotEvent,
     Timeline,
 )
-from .._store import STORE
+from .._store import ID_ATTRIBUTE, STORE
 
 SNAPSHOT_LABEL_PREFIX = "qdebug_sv_"
 
@@ -71,12 +71,22 @@ class RunPlan(BaseModel):
     submitted_at: float = Field(default_factory=time.time)
 
 
+_INTERNAL_FACTORY_TARGETS = (
+    ("qiskit_aer.backends.aer_simulator", "AerSimulator", "from_backend"),
+    ("qiskit_aer.noise", "NoiseModel", "from_backend"),
+)
+
+
 def install(registry: PatchRegistry) -> bool:
     """Patch backend and primitive run methods; True if any applied."""
     applied = False
     aer_backend = resolve("qiskit_aer.backends.aerbackend", "AerBackend")
     if aer_backend is not None:
         applied = registry.patch(aer_backend, "run", _backend_run_wrapper) or applied
+        for module_path, class_name, attribute in _INTERNAL_FACTORY_TARGETS:
+            owner = resolve(module_path, class_name)
+            if owner is not None:
+                registry.patch(owner, attribute, _suspended_call_wrapper)
     else:
         logger.info("qdebug: qiskit-aer not installed; backend statevector capture unavailable")
     for module_path, class_name in _PRIMITIVE_TARGETS:
@@ -87,6 +97,23 @@ def install(registry: PatchRegistry) -> bool:
     if not applied:
         registry.warn("no backend or primitive run method found; execution layer disabled")
     return applied
+
+
+def _suspended_call_wrapper(original: Callable) -> Callable:
+    """Run the wrapped callable with all recording suspended.
+
+    Applied to backend and noise-model factory methods that internally build
+    many small circuits (e.g. ``NoiseModel.from_backend`` composes one per
+    quantum error); without suspension those would flood the store and evict
+    the user's real timelines.
+    """
+
+    @functools.wraps(original)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        with STORE.suspended():
+            return original(*args, **kwargs)
+
+    return wrapper
 
 
 def _backend_run_wrapper(original: Callable) -> Callable:
@@ -103,16 +130,35 @@ def _backend_run_wrapper(original: Callable) -> Callable:
             plan = None
         if plan is None:
             return original(self, circuits, *args, **run_options)
-        with STORE.suspended():
-            job = original(self, plan.payload, *args, **run_options)
+        circuit_ids = _plan_circuit_ids(plan)
+        STORE.suspend_circuit_ids(circuit_ids)
+        try:
+            with STORE.suspended():
+                job = original(self, plan.payload, *args, **run_options)
+        except BaseException:
+            STORE.resume_circuit_ids(circuit_ids)
+            raise
         try:
             _record_submission(plan, job)
-            _intercept_result(job, plan)
+            _intercept_result(job, plan, circuit_ids)
         except Exception:
             logger.debug("qdebug: failed to attach result interception", exc_info=True)
+            STORE.resume_circuit_ids(circuit_ids)
         return job
 
     return run
+
+
+def _plan_circuit_ids(plan: RunPlan) -> set[str]:
+    """Return the qdebug ids of every circuit actually submitted to the backend.
+
+    ``AerBackend.run`` hands these circuits to a persistent internal thread
+    pool for compilation (e.g. inlining control-flow bodies), so they need
+    to stay recognized as "ours" for the life of the job -- see
+    :meth:`TelemetryStore.suspend_circuit_ids`.
+    """
+    payload = plan.payload if isinstance(plan.payload, list) else [plan.payload]
+    return {circuit_id for c in payload if (circuit_id := getattr(c, ID_ATTRIBUTE, None))}
 
 
 def _plan_backend_run(backend: Any, circuits: Any, run_options: dict) -> RunPlan | None:
@@ -270,16 +316,26 @@ def _record_submission(plan: RunPlan, job: Any) -> None:
         )
 
 
-def _intercept_result(job: Any, plan: RunPlan) -> None:
-    """Override ``job.result`` so telemetry is ingested when results arrive."""
+def _intercept_result(job: Any, plan: RunPlan, circuit_ids: set[str]) -> None:
+    """Override ``job.result`` so telemetry is ingested when results arrive.
+
+    Also releases ``circuit_ids`` from suspension here, once the backend's
+    internal compilation of them is guaranteed to be finished, rather than
+    when ``run`` merely returns the (still in-flight) job.
+    """
     original_result = job.result
-    state = {"done": False}
+    state = {"resumed": False, "ingested": False}
 
     @functools.wraps(original_result)
     def result(*args: Any, **kwargs: Any) -> Any:
-        outcome = original_result(*args, **kwargs)
-        if not state["done"]:
-            state["done"] = True
+        try:
+            outcome = original_result(*args, **kwargs)
+        finally:
+            if not state["resumed"]:
+                state["resumed"] = True
+                STORE.resume_circuit_ids(circuit_ids)
+        if not state["ingested"]:
+            state["ingested"] = True
             try:
                 _ingest_result(outcome, plan)
             except Exception:

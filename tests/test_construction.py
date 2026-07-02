@@ -7,11 +7,12 @@ from qiskit.circuit.library import XGate
 from qiskit.circuit.quantumcircuit import QuantumCircuit
 
 import qdebug
+from conftest import get_timeline
 
 
 def _recorded(qc):
     """Return (gate, qubits) tuples recorded for a circuit."""
-    return [(e.gate, e.qubits) for e in qdebug.timeline(qc).gate_events]
+    return [(e.gate, e.qubits) for e in get_timeline(qc).gate_events]
 
 
 def test_gate_helper_methods_are_recorded():
@@ -38,7 +39,7 @@ def test_measure_broadcast_records_each_instruction():
     qdebug.activate()
     qc = QuantumCircuit(2, 2)
     qc.measure([0, 1], [0, 1])
-    events = qdebug.timeline(qc).gate_events
+    events = get_timeline(qc).gate_events
     assert [(e.gate, e.qubits, e.clbits) for e in events] == [
         ("measure", (0,), (0,)),
         ("measure", (1,), (1,)),
@@ -51,7 +52,7 @@ def test_barrier_and_reset_are_recorded():
     qc = QuantumCircuit(2)
     qc.barrier()
     qc.reset(0)
-    assert [e.gate for e in qdebug.timeline(qc).gate_events] == ["barrier", "reset"]
+    assert [e.gate for e in get_timeline(qc).gate_events] == ["barrier", "reset"]
 
 
 def test_parameters_are_recorded():
@@ -59,7 +60,7 @@ def test_parameters_are_recorded():
     qdebug.activate()
     qc = QuantumCircuit(1)
     qc.rz(0.25, 0)
-    event = qdebug.timeline(qc).gate_events[0]
+    event = get_timeline(qc).gate_events[0]
     assert event.gate == "rz"
     assert event.params == (0.25,)
 
@@ -108,7 +109,7 @@ def test_control_flow_body_params_are_compact():
     with qc.if_test((qc.clbits[0], 1)):
         qc.x(1)
         qc.x(1)
-    event = next(e for e in qdebug.timeline(qc).gate_events if e.gate == "if_else")
+    event = next(e for e in get_timeline(qc).gate_events if e.gate == "if_else")
     assert event.params[0] == "[x*2]"
     assert all("\n" not in str(p) for p in event.params)
     assert "\n" not in event.describe()
@@ -169,7 +170,7 @@ def test_every_random_gate_sequence_is_fully_recorded(sequence):
         qc = QuantumCircuit(3)
         for name, qubits, params in sequence:
             getattr(qc, name)(*params, *qubits)
-        recorded = qdebug.timeline(qc).gate_events if sequence else []
+        recorded = get_timeline(qc).gate_events if sequence else []
         assert len(recorded) == len(qc.data)
         for event, instruction in zip(recorded, qc.data):
             assert event.gate == instruction.operation.name

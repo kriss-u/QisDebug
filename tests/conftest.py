@@ -4,6 +4,18 @@ import pytest
 
 import qdebug
 from qdebug._config import QDebugConfig
+from qdebug._events import Timeline
+
+
+def get_timeline(circuit=None) -> Timeline:
+    """Return the timeline for ``circuit``, asserting it was captured.
+
+    Narrows ``qdebug.timeline()``'s ``Timeline | None`` return for tests that
+    know instrumentation was active and must have recorded something.
+    """
+    timeline = qdebug.timeline(circuit)
+    assert timeline is not None
+    return timeline
 
 
 @pytest.fixture(autouse=True)

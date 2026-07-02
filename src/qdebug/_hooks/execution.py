@@ -205,9 +205,9 @@ def _plan_backend_run(
         items = list(circuits)
     else:
         return None
-    backend_name = getattr(backend, "name", None)
-    if callable(backend_name):
-        backend_name = backend_name()
+    backend_name_attr = getattr(backend, "name", None)
+    backend_name = backend_name_attr() if callable(backend_name_attr) else backend_name_attr
+    backend_name = str(backend_name) if backend_name is not None else None
     shots = run_options.get("shots")
     config = get_config()
     has_binds = bool(run_options.get("parameter_binds"))

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from enum import Enum
-from typing import Any, Literal
+from typing import Any, Literal, cast, overload
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
@@ -207,7 +207,39 @@ class Timeline(BaseModel):
     created_at: float = Field(default_factory=time.time)
     events: list[TelemetryEvent] = Field(default_factory=list)
 
-    def filter(self, *types: EventType | str) -> list[TelemetryEvent]:
+    @overload
+    def filter(  # pyright: ignore[reportOverlappingOverload]
+        self, event_type: Literal[EventType.GATE_ADDED], /
+    ) -> list[GateEvent]: ...
+    @overload
+    def filter(
+        self, event_type: Literal[EventType.TRANSPILE_STARTED], /
+    ) -> list[TranspileStartedEvent]: ...
+    @overload
+    def filter(
+        self, event_type: Literal[EventType.TRANSPILE_PASS], /
+    ) -> list[TranspilePassEvent]: ...
+    @overload
+    def filter(
+        self, event_type: Literal[EventType.TRANSPILE_FINISHED], /
+    ) -> list[TranspileFinishedEvent]: ...
+    @overload
+    def filter(
+        self, event_type: Literal[EventType.EXECUTION_SUBMITTED], /
+    ) -> list[ExecutionSubmittedEvent]: ...
+    @overload
+    def filter(
+        self, event_type: Literal[EventType.STATE_SNAPSHOT], /
+    ) -> list[StateSnapshotEvent]: ...
+    @overload
+    def filter(
+        self, event_type: Literal[EventType.EXECUTION_FINISHED], /
+    ) -> list[ExecutionFinishedEvent]: ...
+    @overload
+    def filter(self, event_type: Literal[EventType.NOTE], /) -> list[NoteEvent]: ...
+    @overload
+    def filter(self, *types: EventType | str) -> list[TelemetryEvent]: ...
+    def filter(self, *types: EventType | str) -> list[Any]:
         """Return events whose type matches any of ``types``."""
         wanted = {EventType(t) for t in types}
         return [e for e in self.events if e.type in wanted]
@@ -218,10 +250,15 @@ class Timeline(BaseModel):
         return [e for e in self.events if isinstance(e, GateEvent)]
 
     @property
-    def transpile_events(self) -> list[TelemetryEvent]:
+    def transpile_events(
+        self,
+    ) -> list[TranspileStartedEvent | TranspilePassEvent | TranspileFinishedEvent]:
         """All transpilation-related events."""
-        return self.filter(
-            EventType.TRANSPILE_STARTED, EventType.TRANSPILE_PASS, EventType.TRANSPILE_FINISHED
+        return cast(
+            "list[TranspileStartedEvent | TranspilePassEvent | TranspileFinishedEvent]",
+            self.filter(
+                EventType.TRANSPILE_STARTED, EventType.TRANSPILE_PASS, EventType.TRANSPILE_FINISHED
+            ),
         )
 
     @property

@@ -7,6 +7,7 @@ from hypothesis import strategies as st
 from qiskit.circuit.quantumcircuit import QuantumCircuit
 
 import qdebug
+from conftest import get_timeline
 from qdebug._store import STORE
 
 
@@ -41,7 +42,7 @@ def test_suspension_blocks_recording():
         qc.h(0)
     assert qdebug.timeline(qc) is None
     qc.x(0)
-    assert [e.gate for e in qdebug.timeline(qc).gate_events] == ["x"]
+    assert [e.gate for e in get_timeline(qc).gate_events] == ["x"]
 
 
 def test_timeline_lookup_by_object_and_id():
@@ -49,8 +50,8 @@ def test_timeline_lookup_by_object_and_id():
     qdebug.activate()
     qc = QuantumCircuit(1)
     qc.h(0)
-    by_object = qdebug.timeline(qc)
-    assert by_object is qdebug.timeline(by_object.circuit_id)
+    by_object = get_timeline(qc)
+    assert by_object is get_timeline(by_object.circuit_id)
     assert qdebug.timeline() is by_object
 
 
@@ -61,7 +62,7 @@ def test_summary_and_export_are_serializable():
     qc.h(0)
     qc.cx(0, 1)
     qc.measure([0, 1], [0, 1])
-    timeline = qdebug.timeline(qc)
+    timeline = get_timeline(qc)
     assert "bell" in timeline.summary()
     assert "gate_added" in timeline.summary()
     payload = timeline.export()
@@ -76,16 +77,23 @@ def test_circuit_at_rebuilds_partial_circuit():
     qc = QuantumCircuit(2, name="rebuild")
     qc.h(0)
     qc.cx(0, 1)
-    partial = qdebug.timeline(qc).circuit_at(1)
+    partial = get_timeline(qc).circuit_at(1)
+    assert partial is not None
     assert [ci.operation.name for ci in partial.data] == ["h"]
-    full = qdebug.timeline(qc).circuit_at()
+    full = get_timeline(qc).circuit_at()
+    assert full is not None
     assert [ci.operation.name for ci in full.data] == ["h", "cx"]
 
 
 @settings(
-    deadline=None, max_examples=25, suppress_health_check=[HealthCheck.function_scoped_fixture]
+    deadline=None,
+    max_examples=25,
+    suppress_health_check=[HealthCheck.function_scoped_fixture],
 )
-@given(total=st.integers(min_value=1, max_value=20), cap=st.integers(min_value=1, max_value=10))
+@given(
+    total=st.integers(min_value=1, max_value=20),
+    cap=st.integers(min_value=1, max_value=10),
+)
 def test_eviction_never_exceeds_cap(total, cap):
     """For any cap and insert count, the store never grows past the cap."""
     qdebug.deactivate()

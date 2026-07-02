@@ -32,14 +32,20 @@ def install(registry: PatchRegistry) -> bool:
     applied = False
     for attribute in ("append", "_append"):
         if getattr(circuit_cls, attribute, None) is not None:
-            applied = registry.patch(circuit_cls, attribute, _recording_wrapper) or applied
+            applied = (
+                registry.patch(circuit_cls, attribute, _recording_wrapper) or applied
+            )
     if not applied:
-        registry.warn("no QuantumCircuit append method found; construction layer disabled")
+        registry.warn(
+            "no QuantumCircuit append method found; construction layer disabled"
+        )
         return False
     if getattr(circuit_cls, "compose", None) is not None:
         registry.patch(circuit_cls, "compose", _compose_wrapper)
     else:
-        registry.warn("QuantumCircuit.compose not found; composed circuits not recorded")
+        registry.warn(
+            "QuantumCircuit.compose not found; composed circuits not recorded"
+        )
     return applied
 
 
@@ -72,7 +78,9 @@ def _recording_wrapper(original: Callable) -> Callable:
             try:
                 _record_appended(self, before)
             except Exception:
-                logger.debug("qdebug: failed to record appended instructions", exc_info=True)
+                logger.debug(
+                    "qdebug: failed to record appended instructions", exc_info=True
+                )
         return result
 
     return wrapper
@@ -110,7 +118,9 @@ def _compose_wrapper(original: Callable) -> Callable:
             try:
                 _record_appended(self, before)
             except Exception:
-                logger.debug("qdebug: failed to record composed instructions", exc_info=True)
+                logger.debug(
+                    "qdebug: failed to record composed instructions", exc_info=True
+                )
         return result
 
     return wrapper
@@ -173,8 +183,10 @@ def _format_param(param: Any) -> str:
     counter = getattr(param, "count_ops", None)
     if callable(counter):
         try:
+            op_counts: Any = counter()
             ops = ",".join(
-                name if count == 1 else f"{name}*{count}" for name, count in counter().items()
+                name if count == 1 else f"{name}*{count}"
+                for name, count in op_counts.items()
             )
             return f"[{ops}]"
         except Exception:

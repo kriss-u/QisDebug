@@ -38,7 +38,9 @@ def test_activate_is_idempotent():
     qc = QuantumCircuit(1)
     qc.h(0)
     qc.x(0)
-    assert len(qdebug.timeline(qc).gate_events) == 2
+    timeline = qdebug.timeline(qc)
+    assert timeline is not None
+    assert len(timeline.gate_events) == 2
 
 
 def test_deactivate_restores_original_methods():

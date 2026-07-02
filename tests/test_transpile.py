@@ -6,6 +6,7 @@ from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
 from qiskit_aer import AerSimulator
 
 import qdebug
+from conftest import get_timeline
 from qdebug import EventType
 
 
@@ -24,7 +25,7 @@ def test_transpile_records_start_passes_and_finish():
     qc = _bell()
     transpiled = transpile(qc, basis_gates=["cx", "u"], optimization_level=1)
 
-    timeline = qdebug.timeline(qc)
+    timeline = get_timeline(qc)
     started = timeline.filter(EventType.TRANSPILE_STARTED)
     passes = timeline.filter(EventType.TRANSPILE_PASS)
     finished = timeline.filter(EventType.TRANSPILE_FINISHED)
@@ -41,10 +42,10 @@ def test_transpiled_output_joins_the_same_timeline():
     qdebug.activate()
     qc = _bell("linked")
     transpiled = transpile(qc, backend=AerSimulator(), optimization_level=1)
-    assert getattr(transpiled, "_qdebug_id") == qdebug.timeline(qc).circuit_id
+    assert getattr(transpiled, "_qdebug_id") == get_timeline(qc).circuit_id
 
     AerSimulator().run(transpiled, shots=10).result()
-    timeline = qdebug.timeline(qc)
+    timeline = get_timeline(qc)
     assert timeline.filter(EventType.TRANSPILE_FINISHED)
     assert timeline.filter(EventType.EXECUTION_FINISHED)
 
@@ -54,8 +55,8 @@ def test_user_callback_still_runs():
     qdebug.activate()
     seen = []
 
-    def callback(**details):
-        seen.append(details["pass_"].name())
+    def callback(pass_, dag, time, property_set, count):
+        seen.append(pass_.name())
 
     transpile(_bell(), basis_gates=["cx", "u"], callback=callback)
     assert seen
@@ -66,7 +67,7 @@ def test_changed_snapshot_policy_keeps_some_circuits():
     qdebug.activate()
     qc = _bell()
     transpile(qc, basis_gates=["cx", "u"], optimization_level=1)
-    passes = qdebug.timeline(qc).filter(EventType.TRANSPILE_PASS)
+    passes = get_timeline(qc).filter(EventType.TRANSPILE_PASS)
     with_snapshot = [p for p in passes if p.circuit is not None]
     without_snapshot = [p for p in passes if p.circuit is None]
     assert with_snapshot
@@ -80,7 +81,7 @@ def test_snapshot_policy_none_records_passes_without_circuits():
     qdebug.activate()
     qc = _bell()
     transpile(qc, basis_gates=["cx", "u"])
-    timeline = qdebug.timeline(qc)
+    timeline = get_timeline(qc)
     passes = timeline.filter(EventType.TRANSPILE_PASS)
     assert passes
     assert all(p.circuit is None for p in passes)
@@ -96,7 +97,7 @@ def test_layout_widening_is_detected_as_a_change():
     qdebug.activate()
     qc = _bell()
     transpile(qc, coupling_map=[[0, 1], [1, 2], [2, 3], [3, 4]], basis_gates=["cx", "u"])
-    passes = qdebug.timeline(qc).filter(EventType.TRANSPILE_PASS)
+    passes = get_timeline(qc).filter(EventType.TRANSPILE_PASS)
     widened = [p for p in passes if p.circuit is not None and p.circuit.num_qubits == 5]
     assert widened
     assert all(p.changed for p in widened)
@@ -107,7 +108,7 @@ def test_layout_permutation_is_detected_as_a_change():
     qdebug.activate()
     qc = _bell()
     transpile(qc, coupling_map=[[0, 1], [1, 0]], initial_layout=[1, 0], basis_gates=["cx", "u"])
-    passes = qdebug.timeline(qc).filter(EventType.TRANSPILE_PASS)
+    passes = get_timeline(qc).filter(EventType.TRANSPILE_PASS)
     apply_layout = [p for p in passes if p.pass_name == "ApplyLayout"]
     assert apply_layout
     assert apply_layout[0].changed
@@ -119,7 +120,7 @@ def test_finished_event_carries_the_final_circuit():
     qdebug.activate()
     qc = _bell()
     transpiled = transpile(qc, basis_gates=["cx", "u"], optimization_level=1)
-    finished = qdebug.timeline(qc).filter(EventType.TRANSPILE_FINISHED)[0]
+    finished = get_timeline(qc).filter(EventType.TRANSPILE_FINISHED)[0]
     assert finished.circuit is not None
     assert finished.circuit == transpiled
     assert getattr(finished.circuit, "_qdebug_id", None) is None
@@ -134,7 +135,7 @@ def test_preset_pass_manager_run_is_recorded():
     qc = _bell("pm-run")
     pm = generate_preset_pass_manager(optimization_level=1, basis_gates=["cx", "u"])
     out = pm.run(qc)
-    timeline = qdebug.timeline(qc)
+    timeline = get_timeline(qc)
     assert timeline.filter(EventType.TRANSPILE_STARTED)
     assert timeline.filter(EventType.TRANSPILE_PASS)
     assert timeline.filter(EventType.TRANSPILE_FINISHED)
@@ -147,7 +148,7 @@ def test_transpiling_a_list_of_circuits_records_start_and_finish():
     circuits = [_bell(f"batch-{i}") for i in range(2)]
     transpile(circuits, basis_gates=["cx", "u"])
     for qc in circuits:
-        timeline = qdebug.timeline(qc)
+        timeline = get_timeline(qc)
         assert timeline.filter(EventType.TRANSPILE_STARTED)
         assert timeline.filter(EventType.TRANSPILE_FINISHED)
 
@@ -172,7 +173,7 @@ def test_backend_internal_compilation_is_recorded_as_backend_phase():
     qdebug.activate()
     qc = _dynamic()
     AerSimulator().run(qc, shots=10).result()
-    timeline = qdebug.timeline(qc)
+    timeline = get_timeline(qc)
     assert timeline.filter(EventType.EXECUTION_FINISHED)
     assert timeline.transpile_events
     assert all(e.phase == "backend" for e in timeline.transpile_events)
@@ -186,7 +187,7 @@ def test_backend_compilation_capture_can_be_disabled():
     qdebug.activate()
     qc = _dynamic("dynamic-off")
     AerSimulator().run(qc, shots=10).result()
-    timeline = qdebug.timeline(qc)
+    timeline = get_timeline(qc)
     assert not timeline.transpile_events
     assert any("backend-internal" in n.message for n in timeline.filter(EventType.NOTE))
 
@@ -200,7 +201,7 @@ def test_directly_applied_pass_is_recorded():
     qc.h(0)
     qc.h(0)
     out = Optimize1qGatesDecomposition(basis=["u"])(qc)
-    timeline = qdebug.timeline(qc)
+    timeline = get_timeline(qc)
     passes = timeline.filter(EventType.TRANSPILE_PASS)
     assert len(passes) == 1
     assert passes[0].pass_name == "Optimize1qGatesDecomposition"
@@ -218,7 +219,7 @@ def test_hand_built_pass_manager_is_recorded():
     qc = _bell("custom-pm")
     pm = PassManager([Depth(), Optimize1qGatesDecomposition()])
     pm.run(qc)
-    timeline = qdebug.timeline(qc)
+    timeline = get_timeline(qc)
     assert timeline.filter(EventType.TRANSPILE_STARTED)
     passes = timeline.filter(EventType.TRANSPILE_PASS)
     assert {p.pass_name for p in passes} == {"Depth", "Optimize1qGatesDecomposition"}

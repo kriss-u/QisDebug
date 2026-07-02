@@ -7,6 +7,7 @@ from qiskit.circuit.quantumcircuit import QuantumCircuit
 from qiskit_aer import AerSimulator
 
 import qdebug
+from conftest import get_timeline
 from qdebug import visualizer
 
 HAS_IPYWIDGETS = importlib.util.find_spec("ipywidgets") is not None
@@ -20,7 +21,7 @@ def _traced_bell():
     qc.cx(0, 1)
     qc.measure([0, 1], [0, 1])
     AerSimulator().run(qc, shots=10).result()
-    return qdebug.timeline(qc)
+    return get_timeline(qc)
 
 
 def test_format_statevector_renders_amplitudes():

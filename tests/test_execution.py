@@ -7,6 +7,7 @@ from qiskit.primitives import StatevectorSampler
 from qiskit_aer import AerSimulator
 
 import qdebug
+from conftest import get_timeline
 from qdebug import EventType
 
 
@@ -29,7 +30,7 @@ def test_backend_run_records_and_captures_statevectors():
     assert set(counts) <= {"00", "11"}
     assert sum(counts.values()) == 200
 
-    timeline = qdebug.timeline(qc)
+    timeline = get_timeline(qc)
     submitted = timeline.filter(EventType.EXECUTION_SUBMITTED)
     assert len(submitted) == 1
     assert submitted[0].backend == "aer_simulator"
@@ -66,7 +67,7 @@ def test_basic_simulator_run_records_execution_events():
     qc = _bell("basic")
     counts = BasicSimulator().run(qc, shots=50).result().get_counts()
     assert sum(counts.values()) == 50
-    timeline = qdebug.timeline(qc)
+    timeline = get_timeline(qc)
     submitted = timeline.filter(EventType.EXECUTION_SUBMITTED)
     assert len(submitted) == 1
     assert not submitted[0].instrumented
@@ -84,7 +85,7 @@ def test_backend_sampler_v2_records_execution_events():
     qc = _bell("backend-sampler")
     sampler = BackendSamplerV2(backend=AerSimulator())
     sampler.run([qc], shots=64).result()
-    timeline = qdebug.timeline(qc)
+    timeline = get_timeline(qc)
     submitted = timeline.filter(EventType.EXECUTION_SUBMITTED)
     assert any(s.backend == "BackendSamplerV2" for s in submitted)
     assert timeline.filter(EventType.EXECUTION_FINISHED)
@@ -104,8 +105,7 @@ def test_noise_model_construction_does_not_flood_the_store():
     AerSimulator.from_backend(GenericBackendV2(num_qubits=4, seed=11))
     after = {t.circuit_id for t in qdebug.timelines()}
     assert after == before
-    assert qdebug.timeline(qc) is not None
-    assert len(qdebug.timeline(qc).gate_events) == 4
+    assert len(get_timeline(qc).gate_events) == 4
 
 
 def test_result_called_twice_records_once():
@@ -116,7 +116,7 @@ def test_result_called_twice_records_once():
     first = job.result()
     second = job.result()
     assert first is second
-    assert len(qdebug.timeline(qc).filter(EventType.EXECUTION_FINISHED)) == 1
+    assert len(get_timeline(qc).filter(EventType.EXECUTION_FINISHED)) == 1
 
 
 def test_circuit_without_measurements_still_snapshots():
@@ -125,7 +125,7 @@ def test_circuit_without_measurements_still_snapshots():
     qc = QuantumCircuit(1, name="nomeasure")
     qc.h(0)
     AerSimulator().run(qc, shots=1).result()
-    timeline = qdebug.timeline(qc)
+    timeline = get_timeline(qc)
     assert [s.step for s in timeline.snapshots] == [0, 1]
     finished = timeline.filter(EventType.EXECUTION_FINISHED)
     assert len(finished) == 1
@@ -141,7 +141,7 @@ def test_wide_circuit_skips_capture_with_note():
     qc.measure(range(3), range(3))
     result = AerSimulator().run(qc, shots=25).result()
     assert sum(result.get_counts().values()) == 25
-    timeline = qdebug.timeline(qc)
+    timeline = get_timeline(qc)
     assert timeline.snapshots == []
     notes = timeline.filter(EventType.NOTE)
     assert any("max_statevector_qubits" in n.message for n in notes)
@@ -158,7 +158,7 @@ def test_mid_circuit_measurement_skips_capture():
     qc.measure(1, 1)
     result = AerSimulator().run(qc, shots=30).result()
     assert sum(result.get_counts().values()) == 30
-    timeline = qdebug.timeline(qc)
+    timeline = get_timeline(qc)
     assert timeline.snapshots == []
     assert any("mid-circuit" in n.message for n in timeline.filter(EventType.NOTE))
 
@@ -172,7 +172,7 @@ def test_run_list_of_circuits():
     assert sum(result.get_counts(0).values()) == 40
     assert sum(result.get_counts(1).values()) == 40
     for qc in (first, second):
-        timeline = qdebug.timeline(qc)
+        timeline = get_timeline(qc)
         assert len(timeline.snapshots) == 3
         assert len(timeline.filter(EventType.EXECUTION_FINISHED)) == 1
 
@@ -185,7 +185,7 @@ def test_statevector_sampler_records_events():
     qc.measure(0, 0)
     job = StatevectorSampler().run([qc], shots=64)
     job.result()
-    timeline = qdebug.timeline(qc)
+    timeline = get_timeline(qc)
     submitted = timeline.filter(EventType.EXECUTION_SUBMITTED)
     finished = timeline.filter(EventType.EXECUTION_FINISHED)
     assert any(e.backend == "StatevectorSampler" for e in submitted)
@@ -202,7 +202,7 @@ def test_aer_sampler_records_events():
     qc.measure(0, 0)
     job = aer_primitives.SamplerV2().run([qc], shots=32)
     job.result()
-    timeline = qdebug.timeline(qc)
+    timeline = get_timeline(qc)
     assert any(
         e.backend == "SamplerV2" for e in timeline.filter(EventType.EXECUTION_SUBMITTED)
     )
@@ -216,6 +216,6 @@ def test_capture_can_be_disabled():
     qc = _bell("nocapture")
     result = AerSimulator().run(qc, shots=20).result()
     assert sum(result.get_counts().values()) == 20
-    timeline = qdebug.timeline(qc)
+    timeline = get_timeline(qc)
     assert timeline.snapshots == []
     assert not timeline.filter(EventType.EXECUTION_SUBMITTED)[0].instrumented

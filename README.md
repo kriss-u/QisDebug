@@ -49,11 +49,15 @@ you already made, and stripped from the results you see.
 
 ## Install
 
+QDebug is currently installed from source; see [INSTALL.md](INSTALL.md) for
+full instructions.
+
 ```bash
 pip install -e .              # core (requires qiskit>=1.0)
 pip install -e ".[aer]"       # + statevector capture on Aer
 pip install -e ".[viz]"       # + Jupyter timeline widget
 pip install -e ".[dev]"       # + test toolchain
+pip install -e ".[docs]"      # + Sphinx documentation toolchain
 ```
 
 ## What gets recorded
@@ -165,6 +169,21 @@ The suite covers each hook independently (construction, execution,
 transpilation), the telemetry store, and the activation lifecycle, including
 hypothesis property tests that any random gate sequence is recorded exactly and
 the store never exceeds its cap.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the contribution workflow and
+ground rules.
+
+## Documentation
+
+Full API documentation is built with Sphinx:
+
+```bash
+pip install -e ".[docs]"
+cd docs
+make html
+```
+
+Open `docs/_build/html/index.html` in a browser.
 
 ## Prior art
 

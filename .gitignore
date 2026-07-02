@@ -9,3 +9,4 @@ dist/
 .ipynb_checkpoints/
 .venv/
 .DS_Store
+docs/_build/

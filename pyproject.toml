@@ -27,6 +27,7 @@ dependencies = [
 aer = ["qiskit-aer>=0.14"]
 viz = ["ipywidgets>=8", "matplotlib>=3.5"]
 dev = ["pytest>=7", "hypothesis>=6", "qiskit-aer>=0.14", "pylint>=3", "pylint-pydantic>=0.3"]
+docs = ["sphinx>=7", "furo>=2024.1", "myst-parser>=2", "sphinx-autodoc-typehints>=1.25"]
 
 [project.urls]
 Homepage = "https://github.com/nullvector/qdebug"

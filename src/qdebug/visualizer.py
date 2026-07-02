@@ -11,7 +11,7 @@ import json
 import tempfile
 import webbrowser
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 import numpy as np
 
@@ -30,9 +30,19 @@ TRACK_LABELS = {
 }
 
 
-def show(timeline: Timeline) -> Any:
+def _as_timelines(timelines: Timeline | Iterable[Timeline]) -> list[Timeline]:
+    """Normalize a single timeline or an iterable of them into a list."""
+    if isinstance(timelines, Timeline):
+        return [timelines]
+    return list(timelines)
+
+
+def show(timelines: Timeline | Iterable[Timeline]) -> Any:
     """Build and display an interactive timeline explorer widget.
 
+    Accepts a single :class:`Timeline` or several; events from multiple
+    timelines are merged into one chronological sequence, with the circuit
+    panel showing each circuit's most recently known state side by side.
     Returns the top-level widget so notebooks render it as the cell output.
     """
     try:
@@ -42,15 +52,16 @@ def show(timeline: Timeline) -> Any:
             "qdebug.visualizer requires ipywidgets; install it with pip install 'qdebug[viz]'"
         ) from exc
 
-    if not timeline.events:
-        return widgets.HTML(value=f"<i>Timeline {timeline.circuit_id} has no events.</i>")
-
-    tracks = _circuit_tracks(timeline)
+    timelines = _as_timelines(timelines)
+    merged, tracks = _merge_timelines(timelines)
+    if not merged:
+        ids = ", ".join(t.circuit_id for t in timelines)
+        return widgets.HTML(value=f"<i>Timeline(s) {ids} have no events.</i>")
 
     slider = widgets.IntSlider(
         value=1,
         min=1,
-        max=len(timeline.events),
+        max=len(merged),
         description="event",
         continuous_update=False,
         layout=widgets.Layout(width="70%"),
@@ -60,20 +71,21 @@ def show(timeline: Timeline) -> Any:
     circuits = widgets.HTML()
 
     def render(change: Any = None) -> None:
-        event = timeline.events[slider.value - 1]
+        source, event = merged[slider.value - 1]
         header.value = (
-            f"<b>{slider.value}/{len(timeline.events)}</b> &mdash; "
+            f"<b>{slider.value}/{len(merged)}</b> &mdash; "
+            f"<code>{_escape(str(source.name))}</code> &mdash; "
             f"<code>{event.type.value}</code> at {event.timestamp:.3f} &mdash; "
             f"{_escape(event.describe())}"
         )
-        body.value = f"<pre style='line-height:1.2'>{_escape(_render_event(timeline, event))}</pre>"
+        body.value = f"<pre style='line-height:1.2'>{_escape(_render_event(source, event))}</pre>"
         circuits.value = _render_tracks_html(tracks[slider.value - 1])
 
     slider.observe(render, names="value")
     render()
+    names = ", ".join(_escape(str(t.name)) for t in timelines)
     title = widgets.HTML(
-        value=f"<h4>QDebug timeline &mdash; {_escape(str(timeline.name))} "
-        f"({timeline.num_qubits} qubits, {len(timeline.events)} events)</h4>"
+        value=f"<h4>QDebug timeline &mdash; {names} ({len(merged)} events)</h4>"
     )
     return widgets.VBox([title, slider, header, circuits, body])
 
@@ -108,40 +120,86 @@ def _circuit_tracks(timeline: Timeline) -> list[dict[str, str]]:
     return series
 
 
+def _merge_timelines(
+    timelines: list[Timeline],
+) -> tuple[list[tuple[Timeline, TelemetryEvent]], list[dict[str, str]]]:
+    """Interleave events from several timelines in global sequence order.
+
+    ``seq`` is a process-wide monotonic counter (see
+    :class:`~qdebug._events.TelemetryEvent`), so sorting by it produces the
+    order things actually happened across circuits, not just within one.
+    Circuit tracks are computed independently per timeline (each carries
+    forward its own state) and merged under a per-circuit-prefixed key so
+    the panel can show every circuit's latest known state side by side.
+    """
+    per_timeline_tracks = {t.circuit_id: _circuit_tracks(t) for t in timelines}
+    merged = sorted(
+        ((t, event) for t in timelines for event in t.events),
+        key=lambda pair: pair[1].seq,
+    )
+    cursor = {t.circuit_id: 0 for t in timelines}
+    combined: dict[str, str] = {}
+    series: list[dict[str, str]] = []
+    for source, _event in merged:
+        local = per_timeline_tracks[source.circuit_id][cursor[source.circuit_id]]
+        cursor[source.circuit_id] += 1
+        prefix = source.name or source.circuit_id
+        for key, text in local.items():
+            combined[f"{prefix}:{key}"] = text
+        series.append(dict(combined))
+    return merged, series
+
+
 def _render_tracks_html(tracks: dict[str, str]) -> str:
     """Render the circuit panel HTML for one point in the timeline."""
     if not tracks:
         return "<i>no circuit recorded yet</i>"
     sections = []
     for key, text in tracks.items():
-        label = TRACK_LABELS.get(key, key)
-        sections.append(f"<b>{_escape(label)}</b><pre style='line-height:1.2'>{_escape(text)}</pre>")
+        sections.append(
+            f"<b>{_escape(_track_label(key))}</b>"
+            f"<pre style='line-height:1.2'>{_escape(text)}</pre>"
+        )
     return "".join(sections)
 
 
-def show_browser(timeline: Timeline, path: str | None = None, *, open_browser: bool = True) -> Path:
-    """Render the timeline as a standalone HTML page and open it in a browser.
+def _track_label(combined_key: str) -> str:
+    """Turn a ``circuit_name:track`` key into a display label."""
+    prefix, _, key = combined_key.rpartition(":")
+    label = TRACK_LABELS.get(key, key)
+    return f"{prefix} — {label}" if prefix else label
 
+
+def show_browser(
+    timelines: Timeline | Iterable[Timeline], path: str | None = None, *, open_browser: bool = True
+) -> Path:
+    """Render one or more timelines as a standalone HTML page and open it in a browser.
+
+    Accepts a single :class:`Timeline` or several; when several are given,
+    their events are merged into one chronological view (see
+    :func:`_merge_timelines`) so you can see how circuits interleaved.
     Unlike :func:`show`, this has no ipywidgets/Jupyter dependency; it works
     from a plain Python script. Returns the path to the written HTML file.
     """
-    tracks = _circuit_tracks(timeline)
+    timelines = _as_timelines(timelines)
+    merged, tracks = _merge_timelines(timelines)
     frames = [
         {
             "header": (
+                f"<code>{_escape(str(source.name))}</code> &mdash; "
                 f"{event.type.value} &mdash; t={event.timestamp:.3f} &mdash; "
                 f"{_escape(event.describe())}"
             ),
-            "body": _escape(_render_event(timeline, event)),
+            "body": _escape(_render_event(source, event)),
             "circuits": {
-                TRACK_LABELS.get(key, key): _escape(text) for key, text in tracks[i].items()
+                _track_label(key): _escape(text) for key, text in tracks[i].items()
             },
         }
-        for i, event in enumerate(timeline.events)
+        for i, (source, event) in enumerate(merged)
     ]
+    names = ", ".join(_escape(str(t.name)) for t in timelines)
     html = _BROWSER_TEMPLATE.format(
-        title=_escape(f"QDebug timeline — {timeline.name} "
-                      f"({timeline.num_qubits} qubits, {len(timeline.events)} events)"),
+        title=_escape(f"QDebug timeline — {names} ({len(merged)} events)"),
         frames=json.dumps(frames),
     )
 

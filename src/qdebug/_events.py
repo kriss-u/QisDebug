@@ -1,0 +1,304 @@
+"""Event models and the per-circuit timeline that the visualizer reads."""
+
+from __future__ import annotations
+
+import time
+from enum import Enum
+from typing import Any
+
+import numpy as np
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class EventType(str, Enum):
+    """Kinds of telemetry events QDebug records."""
+
+    GATE_ADDED = "gate_added"
+    TRANSPILE_STARTED = "transpile_started"
+    TRANSPILE_PASS = "transpile_pass"
+    TRANSPILE_FINISHED = "transpile_finished"
+    EXECUTION_SUBMITTED = "execution_submitted"
+    STATE_SNAPSHOT = "state_snapshot"
+    EXECUTION_FINISHED = "execution_finished"
+    NOTE = "note"
+
+
+class TelemetryEvent(BaseModel):
+    """Base class for all timeline events.
+
+    ``seq`` is a process-wide monotonic counter, so events from different
+    layers interleave in the order they actually happened even when their
+    wall-clock timestamps collide.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    type: EventType
+    seq: int
+    timestamp: float = Field(default_factory=time.time)
+
+    def describe(self) -> str:
+        """Return a one-line human-readable rendering of the event."""
+        return self.type.value
+
+
+class GateEvent(TelemetryEvent):
+    """An instruction appended to a circuit during construction."""
+
+    type: EventType = EventType.GATE_ADDED
+    gate: str
+    qubits: tuple[int, ...] = ()
+    clbits: tuple[int, ...] = ()
+    params: tuple[float | str, ...] = ()
+    operation: Any = Field(default=None, exclude=True, repr=False)
+
+    def describe(self) -> str:
+        """Return e.g. ``h q[0]`` or ``cx q[0, 1]``."""
+        text = f"{self.gate} q{list(self.qubits)}"
+        if self.clbits:
+            text += f" -> c{list(self.clbits)}"
+        if self.params:
+            text += f" ({', '.join(str(p) for p in self.params)})"
+        return text
+
+
+class TranspileStartedEvent(TelemetryEvent):
+    """A pass manager began running on the circuit."""
+
+    type: EventType = EventType.TRANSPILE_STARTED
+    pass_manager: str
+    depth: int | None = None
+    size: int | None = None
+
+    def describe(self) -> str:
+        """Return the pass manager name with the input circuit shape."""
+        return f"transpile started ({self.pass_manager}, depth={self.depth}, size={self.size})"
+
+
+class TranspilePassEvent(TelemetryEvent):
+    """One transpiler pass completed."""
+
+    type: EventType = EventType.TRANSPILE_PASS
+    pass_name: str
+    duration: float = 0.0
+    depth: int | None = None
+    size: int | None = None
+    ops: dict[str, int] = Field(default_factory=dict)
+    changed: bool = False
+    circuit: Any = Field(default=None, exclude=True, repr=False)
+
+    def describe(self) -> str:
+        """Return the pass name and whether it changed the circuit."""
+        marker = "*" if self.changed else " "
+        return f"pass{marker} {self.pass_name} (depth={self.depth}, size={self.size})"
+
+
+class TranspileFinishedEvent(TelemetryEvent):
+    """A pass manager finished running on the circuit."""
+
+    type: EventType = EventType.TRANSPILE_FINISHED
+    duration: float = 0.0
+    depth: int | None = None
+    size: int | None = None
+
+    def describe(self) -> str:
+        """Return the total duration and output circuit shape."""
+        return f"transpile finished in {self.duration:.4f}s (depth={self.depth}, size={self.size})"
+
+
+class ExecutionSubmittedEvent(TelemetryEvent):
+    """The circuit was submitted to a backend or primitive."""
+
+    type: EventType = EventType.EXECUTION_SUBMITTED
+    backend: str | None = None
+    shots: int | None = None
+    job_id: str | None = None
+    instrumented: bool = False
+
+    def describe(self) -> str:
+        """Return the target backend and shot count."""
+        extra = " with statevector capture" if self.instrumented else ""
+        return f"submitted to {self.backend} (shots={self.shots}){extra}"
+
+
+class StateSnapshotEvent(TelemetryEvent):
+    """The simulator state captured after one instruction."""
+
+    type: EventType = EventType.STATE_SNAPSHOT
+    step: int
+    gate_index: int | None = None
+    gate: str | None = None
+    num_qubits: int | None = None
+    statevector: Any = Field(default=None, exclude=True, repr=False)
+
+    def amplitudes(self) -> list[complex]:
+        """Return the statevector as a plain list of complex amplitudes."""
+        if self.statevector is None:
+            return []
+        return [complex(z) for z in np.asarray(self.statevector).ravel()]
+
+    def probabilities(self) -> list[float]:
+        """Return measurement probabilities per basis state."""
+        return [abs(z) ** 2 for z in self.amplitudes()]
+
+    def describe(self) -> str:
+        """Return which instruction the snapshot follows."""
+        if self.gate is None:
+            return "state snapshot (initial state)"
+        return f"state snapshot after {self.gate} (instruction {self.gate_index})"
+
+
+class ExecutionFinishedEvent(TelemetryEvent):
+    """Execution results became available."""
+
+    type: EventType = EventType.EXECUTION_FINISHED
+    backend: str | None = None
+    duration: float | None = None
+    success: bool | None = None
+    shots: int | None = None
+    counts: dict[str, int] | None = None
+
+    def describe(self) -> str:
+        """Return the outcome, duration and counts summary."""
+        text = f"finished on {self.backend}"
+        if self.duration is not None:
+            text += f" in {self.duration:.4f}s"
+        if self.counts is not None:
+            text += f", counts={self.counts}"
+        return text
+
+
+class NoteEvent(TelemetryEvent):
+    """A diagnostic message from QDebug itself, e.g. why capture was skipped."""
+
+    type: EventType = EventType.NOTE
+    message: str
+
+    def describe(self) -> str:
+        """Return the note text."""
+        return self.message
+
+
+class Timeline(BaseModel):
+    """Everything QDebug observed about one circuit, ordered by sequence.
+
+    A timeline follows a circuit through construction, transpilation and
+    execution. The transpile hook propagates the circuit id onto transpiled
+    outputs, so all three phases land on the same timeline.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    circuit_id: str
+    name: str | None = None
+    num_qubits: int = 0
+    num_clbits: int = 0
+    created_at: float = Field(default_factory=time.time)
+    events: list[TelemetryEvent] = Field(default_factory=list)
+
+    def filter(self, *types: EventType | str) -> list[TelemetryEvent]:
+        """Return events whose type matches any of ``types``."""
+        wanted = {EventType(t) for t in types}
+        return [e for e in self.events if e.type in wanted]
+
+    @property
+    def gate_events(self) -> list[GateEvent]:
+        """Construction-time instruction events, in append order."""
+        return [e for e in self.events if isinstance(e, GateEvent)]
+
+    @property
+    def transpile_events(self) -> list[TelemetryEvent]:
+        """All transpilation-related events."""
+        return self.filter(
+            EventType.TRANSPILE_STARTED, EventType.TRANSPILE_PASS, EventType.TRANSPILE_FINISHED
+        )
+
+    @property
+    def execution_events(self) -> list[TelemetryEvent]:
+        """All execution-related events, including state snapshots."""
+        return self.filter(
+            EventType.EXECUTION_SUBMITTED, EventType.STATE_SNAPSHOT, EventType.EXECUTION_FINISHED
+        )
+
+    @property
+    def snapshots(self) -> list[StateSnapshotEvent]:
+        """State snapshot events ordered by step."""
+        found = [e for e in self.events if isinstance(e, StateSnapshotEvent)]
+        return sorted(found, key=lambda e: (e.seq, e.step))
+
+    def circuit_at(self, step: int | None = None) -> Any | None:
+        """Rebuild the circuit as it looked after the first ``step`` gates.
+
+        Returns None when Qiskit is unavailable or the recorded operation
+        objects are missing (e.g. on a timeline restored from an export).
+        """
+        from ._store import STORE
+
+        try:
+            from qiskit.circuit import QuantumCircuit
+        except ImportError:
+            return None
+        gates = self.gate_events
+        if step is not None:
+            gates = gates[:step]
+        if any(e.operation is None for e in gates):
+            return None
+        with STORE.suspended():
+            circuit = QuantumCircuit(self.num_qubits, self.num_clbits, name=self.name or "qdebug")
+            for event in gates:
+                try:
+                    circuit.append(
+                        event.operation,
+                        [circuit.qubits[i] for i in event.qubits],
+                        [circuit.clbits[i] for i in event.clbits],
+                    )
+                except Exception:
+                    return None
+        return circuit
+
+    def summary(self) -> str:
+        """Return a compact plain-text overview of the timeline."""
+        lines = [
+            f"Timeline '{self.name}' (id={self.circuit_id}, "
+            f"{self.num_qubits} qubits, {self.num_clbits} clbits, {len(self.events)} events)"
+        ]
+        order = [t for t in EventType]
+        counts = {t: 0 for t in order}
+        for event in self.events:
+            counts[event.type] = counts.get(event.type, 0) + 1
+        for event_type in order:
+            if counts.get(event_type):
+                lines.append(f"  {event_type.value:<22} {counts[event_type]}")
+        return "\n".join(lines)
+
+    def export(self) -> dict:
+        """Return a JSON-serializable dict of the full timeline.
+
+        Statevectors are expanded into ``[[re, im], ...]`` pairs and circuit
+        snapshots into their text drawings, so the result round-trips through
+        ``json.dumps`` without custom encoders.
+        """
+        payload = self.model_dump(mode="json", exclude={"events"})
+        payload["events"] = [self._export_event(e) for e in self.events]
+        return payload
+
+    def _export_event(self, event: TelemetryEvent) -> dict:
+        """Serialize one event, expanding non-JSON fields."""
+        data = event.model_dump(mode="json")
+        if isinstance(event, StateSnapshotEvent) and event.statevector is not None:
+            data["statevector"] = [[z.real, z.imag] for z in event.amplitudes()]
+        if isinstance(event, TranspilePassEvent) and event.circuit is not None:
+            try:
+                data["circuit_text"] = str(event.circuit.draw(output="text"))
+            except Exception:
+                data["circuit_text"] = None
+        return data
+
+    def show(self) -> Any:
+        """Open the interactive Jupyter widget for this timeline."""
+        from .visualizer import show
+
+        return show(self)
+
+    def __repr__(self) -> str:
+        return f"Timeline(name={self.name!r}, id={self.circuit_id!r}, events={len(self.events)})"

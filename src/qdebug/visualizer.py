@@ -632,12 +632,12 @@ def render_bloch(event: StateSnapshotEvent) -> str | None:
         return None
 
 
-def _render_extra_visual(event: TelemetryEvent) -> tuple[str | None, str | None]:
+def _render_extra_visual(event: TelemetryEvent) -> tuple[str, str | None]:
     """Return (label, data_uri) for an event's supplementary visualization, if any."""
     if isinstance(event, ExecutionFinishedEvent) and event.counts:
         image = render_histogram(event)
-        return ("Counts histogram", image) if image else (None, None)
+        return ("Counts histogram", image) if image else ("", None)
     if isinstance(event, StateSnapshotEvent):
         image = render_bloch(event)
-        return ("Bloch sphere", image) if image else (None, None)
-    return None, None
+        return ("Bloch sphere", image) if image else ("", None)
+    return "", None

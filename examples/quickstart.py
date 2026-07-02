@@ -32,6 +32,7 @@ def main() -> None:
     print(f"counts: {counts}\n")
 
     timeline = qdebug.timeline(qc)
+    assert timeline is not None, "circuit was not tracked by qdebug"
     print(timeline.summary())
 
     print("\nfull event sequence:")
@@ -49,8 +50,10 @@ def main() -> None:
         print(f"  step {snapshot.step} ({label:<7}) {probabilities}")
 
     exported = timeline.export()
-    print(f"\nexport: {len(json.dumps(exported)) / 1024:.1f} KiB of JSON, "
-          f"{len(exported['events'])} events")
+    print(
+        f"\nexport: {len(json.dumps(exported)) / 1024:.1f} KiB of JSON, "
+        f"{len(exported['events'])} events"
+    )
 
     qdebug.deactivate()
 

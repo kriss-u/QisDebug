@@ -300,5 +300,11 @@ class Timeline(BaseModel):
 
         return show(self)
 
+    def show_browser(self, path: str | None = None, *, open_browser: bool = True) -> Any:
+        """Render this timeline as a standalone HTML page and open it in a browser."""
+        from .visualizer import show_browser
+
+        return show_browser(self, path, open_browser=open_browser)
+
     def __repr__(self) -> str:
         return f"Timeline(name={self.name!r}, id={self.circuit_id!r}, events={len(self.events)})"

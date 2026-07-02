@@ -7,6 +7,10 @@ replaced independently. Requires ipywidgets (``pip install "qdebug[viz]"``).
 
 from __future__ import annotations
 
+import json
+import tempfile
+import webbrowser
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -62,6 +66,81 @@ def show(timeline: Timeline) -> Any:
         f"({timeline.num_qubits} qubits, {len(timeline.events)} events)</h4>"
     )
     return widgets.VBox([title, slider, header, body])
+
+
+def show_browser(timeline: Timeline, path: str | None = None, *, open_browser: bool = True) -> Path:
+    """Render the timeline as a standalone HTML page and open it in a browser.
+
+    Unlike :func:`show`, this has no ipywidgets/Jupyter dependency; it works
+    from a plain Python script. Returns the path to the written HTML file.
+    """
+    frames = [
+        {
+            "header": (
+                f"{event.type.value} &mdash; t={event.timestamp:.3f} &mdash; "
+                f"{_escape(event.describe())}"
+            ),
+            "body": _escape(_render_event(timeline, event)),
+        }
+        for event in timeline.events
+    ]
+    html = _BROWSER_TEMPLATE.format(
+        title=_escape(f"QDebug timeline — {timeline.name} "
+                      f"({timeline.num_qubits} qubits, {len(timeline.events)} events)"),
+        frames=json.dumps(frames),
+    )
+
+    if path is None:
+        handle = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".html", prefix="qdebug_", delete=False, encoding="utf-8"
+        )
+        handle.write(html)
+        handle.close()
+        out_path = Path(handle.name)
+    else:
+        out_path = Path(path)
+        out_path.write_text(html, encoding="utf-8")
+
+    if open_browser:
+        webbrowser.open(out_path.resolve().as_uri())
+    return out_path
+
+
+_BROWSER_TEMPLATE = """<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>{title}</title>
+<style>
+  body {{ font-family: -apple-system, sans-serif; margin: 2rem; color: #1a1a1a; }}
+  h4 {{ margin-bottom: 0.5rem; }}
+  input[type=range] {{ width: 70%; }}
+  #header {{ margin: 0.75rem 0; font-size: 0.95rem; }}
+  pre {{ background: #f5f5f5; padding: 1rem; border-radius: 6px; overflow-x: auto; line-height: 1.2; }}
+</style>
+</head>
+<body>
+  <h4>{title}</h4>
+  <input id="slider" type="range" min="1" value="1">
+  <div id="header"></div>
+  <pre id="body"></pre>
+<script>
+  const frames = {frames};
+  const slider = document.getElementById("slider");
+  const header = document.getElementById("header");
+  const body = document.getElementById("body");
+  slider.max = frames.length;
+  function render() {{
+    const f = frames[slider.value - 1];
+    header.innerHTML = `<b>${{slider.value}}/${{frames.length}}</b> &mdash; ${{f.header}}`;
+    body.innerHTML = f.body;
+  }}
+  slider.addEventListener("input", render);
+  render();
+</script>
+</body>
+</html>
+"""
 
 
 def _render_event(timeline: Timeline, event: TelemetryEvent) -> str:

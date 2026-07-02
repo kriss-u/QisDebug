@@ -7,6 +7,8 @@ replaced independently. Requires ipywidgets (``pip install "qdebug[viz]"``).
 
 from __future__ import annotations
 
+import base64
+import io
 import json
 import tempfile
 import webbrowser
@@ -16,12 +18,15 @@ from typing import Any, Iterable
 import numpy as np
 
 from ._events import (
+    ExecutionFinishedEvent,
     GateEvent,
     StateSnapshotEvent,
     TelemetryEvent,
     Timeline,
     TranspilePassEvent,
 )
+
+DEFAULT_AUTOPLAY_INTERVAL_MS = 800
 
 
 TRACK_LABELS = {
@@ -69,6 +74,7 @@ def show(timelines: Timeline | Iterable[Timeline]) -> Any:
     header = widgets.HTML()
     body = widgets.HTML()
     circuits = widgets.HTML()
+    extra = widgets.HTML()
 
     def render(change: Any = None) -> None:
         source, event = merged[slider.value - 1]
@@ -80,6 +86,12 @@ def show(timelines: Timeline | Iterable[Timeline]) -> Any:
         )
         body.value = f"<pre style='line-height:1.2'>{_escape(_render_event(source, event))}</pre>"
         circuits.value = _render_tracks_html(tracks[slider.value - 1])
+        label, image = _render_extra_visual(event)
+        extra.value = (
+            f"<b>{_escape(label)}</b><br><img src='{image}' style='max-width:100%'>"
+            if image
+            else ""
+        )
 
     slider.observe(render, names="value")
     render()
@@ -87,7 +99,36 @@ def show(timelines: Timeline | Iterable[Timeline]) -> Any:
     title = widgets.HTML(
         value=f"<h4>QDebug timeline &mdash; {names} ({len(merged)} events)</h4>"
     )
-    return widgets.VBox([title, slider, header, circuits, body])
+
+    play = widgets.Play(
+        value=1,
+        min=1,
+        max=len(merged),
+        step=1,
+        interval=DEFAULT_AUTOPLAY_INTERVAL_MS,
+        description="Autoplay",
+    )
+    interval_input = widgets.BoundedIntText(
+        value=DEFAULT_AUTOPLAY_INTERVAL_MS,
+        min=50,
+        max=10_000,
+        step=50,
+        description="ms/step",
+        layout=widgets.Layout(width="160px"),
+    )
+    stop_button = widgets.Button(description="Stop", icon="stop", layout=widgets.Layout(width="80px"))
+
+    def on_stop(_button: Any) -> None:
+        """Pause autoplay and jump back to the first event."""
+        play.playing = False
+        slider.value = slider.min
+
+    stop_button.on_click(on_stop)
+    widgets.jslink((play, "value"), (slider, "value"))
+    widgets.jslink((play, "interval"), (interval_input, "value"))
+    controls = widgets.HBox([play, interval_input, stop_button])
+
+    return widgets.VBox([title, controls, slider, header, circuits, body, extra])
 
 
 def _circuit_tracks(timeline: Timeline) -> tuple[list[dict[str, str]], list[str | None]]:
@@ -199,25 +240,30 @@ def show_browser(
     """
     timelines = _as_timelines(timelines)
     merged, tracks, active_labels = _merge_timelines(timelines)
-    frames = [
-        {
-            "header": (
-                f"<code>{_escape(str(source.name))}</code> &mdash; "
-                f"{event.type.value} &mdash; t={event.timestamp:.3f} &mdash; "
-                f"{_escape(event.describe())}"
-            ),
-            "body": _escape(_render_event(source, event)),
-            "circuits": {
-                _track_label(key): _escape(text) for key, text in tracks[i].items()
-            },
-            "active": active_labels[i],
-        }
-        for i, (source, event) in enumerate(merged)
-    ]
+    frames = []
+    for i, (source, event) in enumerate(merged):
+        extra_label, extra_image = _render_extra_visual(event)
+        frames.append(
+            {
+                "header": (
+                    f"<code>{_escape(str(source.name))}</code> &mdash; "
+                    f"{event.type.value} &mdash; t={event.timestamp:.3f} &mdash; "
+                    f"{_escape(event.describe())}"
+                ),
+                "body": _escape(_render_event(source, event)),
+                "circuits": {
+                    _track_label(key): _escape(text) for key, text in tracks[i].items()
+                },
+                "active": active_labels[i],
+                "extraLabel": extra_label,
+                "extraImage": extra_image,
+            }
+        )
     names = ", ".join(_escape(str(t.name)) for t in timelines)
     html = _BROWSER_TEMPLATE.format(
         title=_escape(f"QDebug timeline — {names} ({len(merged)} events)"),
         frames=json.dumps(frames).replace("</", "<\\/"),
+        default_interval=DEFAULT_AUTOPLAY_INTERVAL_MS,
     )
 
     if path is None:
@@ -309,6 +355,25 @@ _BROWSER_TEMPLATE = """<!doctype html>
     color: var(--text);
   }}
   #nav input[type=number]:focus {{ outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }}
+  #nav .sep {{ width: 1px; align-self: stretch; background: var(--border); margin: 0 0.25rem; }}
+  #nav input[type=number].interval {{ width: 4.5rem; }}
+  #extra-viz {{
+    margin-bottom: 1rem;
+    padding: 0.65rem 0.9rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }}
+  #extra-viz h5 {{
+    margin: 0 0 0.5rem;
+    font-family: var(--sans);
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: var(--text-muted);
+  }}
+  #extra-viz img {{ max-width: 100%; display: block; }}
   #header {{
     margin-bottom: 1rem;
     padding: 0.65rem 0.9rem;
@@ -371,13 +436,51 @@ _BROWSER_TEMPLATE = """<!doctype html>
       return {{
         frames: JSON.parse(document.getElementById("qdebug-frames").textContent),
         index: 0,
-        first() {{ this.index = 0; }},
-        prev() {{ if (this.index > 0) this.index--; }},
-        next() {{ if (this.index < this.frames.length - 1) this.index++; }},
-        last() {{ this.index = this.frames.length - 1; }},
+        playing: false,
+        paused: false,
+        timer: null,
+        intervalMs: {default_interval},
+        first() {{ this.stop(); this.index = 0; }},
+        prev() {{ this.stop(); if (this.index > 0) this.index--; }},
+        next() {{ this.stop(); if (this.index < this.frames.length - 1) this.index++; }},
+        last() {{ this.stop(); this.index = this.frames.length - 1; }},
         jumpTo(value) {{
+          this.stop();
           const n = Math.min(Math.max(1, value), this.frames.length);
           this.index = n - 1;
+        }},
+        tick() {{
+          if (this.index < this.frames.length - 1) {{
+            this.index++;
+          }} else {{
+            this.stop();
+          }}
+        }},
+        play() {{
+          if (this.playing || this.index >= this.frames.length - 1) return;
+          this.playing = true;
+          this.paused = false;
+          this.timer = setInterval(() => this.tick(), this.intervalMs);
+        }},
+        pause() {{
+          if (!this.playing) return;
+          clearInterval(this.timer);
+          this.timer = null;
+          this.playing = false;
+          this.paused = true;
+        }},
+        resume() {{ if (this.paused) this.play(); }},
+        stop() {{
+          clearInterval(this.timer);
+          this.timer = null;
+          this.playing = false;
+          this.paused = false;
+        }},
+        restartTimer() {{
+          if (this.playing) {{
+            clearInterval(this.timer);
+            this.timer = setInterval(() => this.tick(), this.intervalMs);
+          }}
         }},
         scrollToActive() {{
           this.$nextTick(() => {{
@@ -390,11 +493,17 @@ _BROWSER_TEMPLATE = """<!doctype html>
   </script>
   <div x-data="qdebugViz()">
     <div id="nav">
-      <button @click="first()" :disabled="index === 0">&#9198; First</button>
-      <button @click="prev()" :disabled="index === 0">&#9664; Prev</button>
-      <span class="event-count">event <input type="number" min="1" :max="frames.length" :value="index + 1" @change="jumpTo($event.target.valueAsNumber)"> / <span x-text="frames.length"></span></span>
-      <button @click="next()" :disabled="index === frames.length - 1">Next &#9654;</button>
-      <button @click="last()" :disabled="index === frames.length - 1">Last &#9197;</button>
+      <button @click="first()" :disabled="index === 0 || playing">&#9198; First</button>
+      <button @click="prev()" :disabled="index === 0 || playing">&#9664; Prev</button>
+      <span class="event-count">event <input type="number" min="1" :max="frames.length" :value="index + 1" :disabled="playing" @change="jumpTo($event.target.valueAsNumber)"> / <span x-text="frames.length"></span></span>
+      <button @click="next()" :disabled="index === frames.length - 1 || playing">Next &#9654;</button>
+      <button @click="last()" :disabled="index === frames.length - 1 || playing">Last &#9197;</button>
+      <span class="sep"></span>
+      <button @click="play()" :disabled="playing || index >= frames.length - 1">&#9654; Play</button>
+      <button @click="pause()" :disabled="!playing">&#10074;&#10074; Pause</button>
+      <button @click="resume()" :disabled="!paused">&#9654; Resume</button>
+      <button @click="stop()" :disabled="!playing && !paused">&#9632; Stop</button>
+      <span class="event-count">ms/step <input type="number" class="interval" min="50" max="10000" step="50" x-model.number="intervalMs" @change="restartTimer()"></span>
     </div>
     <div id="header">
       <b x-text="(index + 1) + '/' + frames.length"></b>&nbsp;&mdash;&nbsp;<span x-html="frames[index].header"></span>
@@ -411,6 +520,12 @@ _BROWSER_TEMPLATE = """<!doctype html>
       </template>
     </div>
     <pre x-html="frames[index].body"></pre>
+    <template x-if="frames[index].extraImage">
+      <div id="extra-viz">
+        <h5 x-text="frames[index].extraLabel"></h5>
+        <img :src="frames[index].extraImage" alt="event visualization">
+      </div>
+    </template>
   </div>
 </body>
 </html>
@@ -472,3 +587,57 @@ def format_statevector(event: StateSnapshotEvent, max_terms: int = 16) -> str:
 def _escape(text: str) -> str:
     """Minimal HTML escaping for widget content."""
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _figure_to_data_uri(fig: Any) -> str:
+    """Encode a matplotlib figure as a base64 PNG data URI, then close it."""
+    import matplotlib.pyplot as plt
+
+    buffer = io.BytesIO()
+    fig.savefig(buffer, format="png", bbox_inches="tight")
+    plt.close(fig)
+    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+    return f"data:image/png;base64,{encoded}"
+
+
+def render_histogram(event: ExecutionFinishedEvent) -> str | None:
+    """Render an execution's counts as a histogram, or None if unavailable.
+
+    Requires matplotlib (``pip install "qdebug[viz]"``); degrades to None
+    rather than raising if it, or the counts themselves, are missing.
+    """
+    if not event.counts:
+        return None
+    try:
+        from qiskit.visualization import plot_histogram
+
+        return _figure_to_data_uri(plot_histogram(event.counts))
+    except Exception:
+        return None
+
+
+def render_bloch(event: StateSnapshotEvent) -> str | None:
+    """Render a state snapshot as one Bloch sphere per qubit, or None if unavailable.
+
+    Requires matplotlib (``pip install "qdebug[viz]"``); degrades to None
+    rather than raising if it, or the statevector itself, are missing.
+    """
+    if event.statevector is None:
+        return None
+    try:
+        from qiskit.visualization import plot_bloch_multivector
+
+        return _figure_to_data_uri(plot_bloch_multivector(np.asarray(event.statevector)))
+    except Exception:
+        return None
+
+
+def _render_extra_visual(event: TelemetryEvent) -> tuple[str | None, str | None]:
+    """Return (label, data_uri) for an event's supplementary visualization, if any."""
+    if isinstance(event, ExecutionFinishedEvent) and event.counts:
+        image = render_histogram(event)
+        return ("Counts histogram", image) if image else (None, None)
+    if isinstance(event, StateSnapshotEvent):
+        image = render_bloch(event)
+        return ("Bloch sphere", image) if image else (None, None)
+    return None, None

@@ -345,17 +345,16 @@ class Timeline(BaseModel):
                 data["circuit_text"] = None
         return data
 
-    def show(self) -> Any:
-        """Open the interactive Jupyter widget for this timeline."""
+    def show(self, frontend: str | None = None) -> Any:
+        """Display this timeline using the best available frontend.
+
+        Auto-detects a Jupyter widget, native GUI window, or text-based CLI.
+        Force one with ``frontend="jupyter"|"gui"|"cli"`` or the
+        ``QDEBUG_FRONTEND`` environment variable.
+        """
         from .visualizer import show
 
-        return show(self)
-
-    def show_browser(self, path: str | None = None, *, open_browser: bool = True) -> Any:
-        """Render this timeline as a standalone HTML page and open it in a browser."""
-        from .visualizer import show_browser
-
-        return show_browser(self, path, open_browser=open_browser)
+        return show(self, frontend=frontend)
 
     def __repr__(self) -> str:
         return f"Timeline(name={self.name!r}, id={self.circuit_id!r}, events={len(self.events)})"

@@ -55,8 +55,7 @@ def main() -> None:
         f"{len(exported['events'])} events"
     )
 
-    html_path = timeline.show_browser()
-    print(f"\nopened timeline viewer in browser: {html_path}")
+    timeline.show()
 
     qdebug.deactivate()
 

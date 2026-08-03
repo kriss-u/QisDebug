@@ -60,5 +60,4 @@ The entire public surface is re-exported from the top-level `qdebug` package.
 
 ```{eval-rst}
 .. autofunction:: qdebug.visualizer.show
-.. autofunction:: qdebug.visualizer.show_browser
 ```

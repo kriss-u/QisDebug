@@ -76,10 +76,7 @@ def main() -> None:
         timeline = qdebug.timeline(qc)
         assert timeline is not None, f"circuit {qc.name} was not tracked by qdebug"
         timelines.append(timeline)
-    html_path = visualizer.show_browser(timelines)
-    print(
-        f"\nopened a merged timeline viewer for all {len(circuits)} circuits: {html_path}"
-    )
+    visualizer.show(timelines)
 
     qdebug.deactivate()
 

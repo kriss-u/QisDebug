@@ -146,10 +146,7 @@ def main() -> None:
         "(mid-circuit measurement + classical control disable capture; see the note event above)"
     )
 
-    html_path = visualizer.show_browser(
-        [payload_timeline, timelines["epr_pair"], teleport_timeline]
-    )
-    print(f"\nopened a merged timeline viewer for all 3 circuits: {html_path}")
+    visualizer.show([payload_timeline, timelines["epr_pair"], teleport_timeline])
 
     qdebug.deactivate()
 

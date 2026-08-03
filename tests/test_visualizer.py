@@ -9,6 +9,7 @@ from qiskit_aer import AerSimulator
 import qdebug
 from conftest import get_timeline
 from qdebug import visualizer
+from qdebug._frontends.jupyter import JupyterFrontend
 
 HAS_IPYWIDGETS = importlib.util.find_spec("ipywidgets") is not None
 
@@ -33,17 +34,23 @@ def test_format_statevector_renders_amplitudes():
 
 
 @pytest.mark.skipif(HAS_IPYWIDGETS, reason="ipywidgets installed")
-def test_show_without_ipywidgets_raises_helpful_error():
-    """Without ipywidgets, show() explains how to install the extra."""
+def test_show_jupyter_without_ipywidgets_raises_helpful_error():
+    """Without ipywidgets, forcing the jupyter frontend explains how to install the extra."""
     timeline = _traced_bell()
-    with pytest.raises(ImportError, match="qdebug\\[viz\\]"):
-        timeline.show()
+    with pytest.raises(RuntimeError, match="qdebug\\[viz\\]"):
+        timeline.show(frontend="jupyter")
 
 
 @pytest.mark.skipif(not HAS_IPYWIDGETS, reason="ipywidgets not installed")
-def test_show_builds_widget():
-    """With ipywidgets, show() returns a renderable widget tree."""
+def test_show_jupyter_builds_widget():
+    """With ipywidgets, the jupyter frontend returns a renderable widget tree."""
     timeline = _traced_bell()
-    widget = visualizer.show(timeline)
+    widget = timeline.show(frontend="jupyter")
     assert widget is not None
     assert widget.children
+
+
+@pytest.mark.skipif(not HAS_IPYWIDGETS, reason="ipywidgets not installed")
+def test_jupyter_frontend_is_available():
+    """JupyterFrontend reports availability based on the ipywidgets import."""
+    assert JupyterFrontend().is_available() is True

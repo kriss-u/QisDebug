@@ -12,10 +12,11 @@ import os
 import sys
 import tkinter
 from tkinter import ttk
-from typing import ClassVar
+from typing import Callable, ClassVar
 
 from .._events import TelemetryEvent, Timeline
 from . import _render
+from ._playback import PlaybackController
 from .base import TimelineFrontend
 
 DEFAULT_AUTOPLAY_INTERVAL_MS = 800
@@ -64,9 +65,16 @@ class TkFrontend(TimelineFrontend):
 class _TimelineWindow:  # pylint: disable=too-many-instance-attributes
     """A single Tk window presenting one merged, navigable timeline.
 
-    Holds one attribute per widget/piece of playback state by design: it's a
-    stateful window object, not a data model, and splitting the widgets into
-    a sub-container would only add indirection without reducing complexity.
+    This class only does two things: lay out Tk widgets and translate Tk
+    events into calls on a :class:`~._playback.PlaybackController`. It also
+    implements the controller's ``Scheduler`` protocol via ``root.after``.
+    All play/pause/step/seek *logic* lives in the controller so a future
+    toolkit (e.g. PyQt6) can reuse it by writing a new thin window class
+    around the same controller instead of re-deriving that state machine.
+
+    Holds one attribute per widget by design: it's a stateful window
+    object, not a data model, and splitting the widgets into a
+    sub-container would only add indirection without reducing complexity.
     """
 
     def __init__(
@@ -75,12 +83,9 @@ class _TimelineWindow:  # pylint: disable=too-many-instance-attributes
         merged: list[tuple[Timeline, TelemetryEvent]],
         tracks: list[dict[str, str]],
     ) -> None:
-        self.merged = merged
         self.tracks = tracks
-        self.index = 0
-        self.playing = False
-        self.after_id: str | None = None
         self.photo: tkinter.PhotoImage | None = None
+        self._syncing_slider = False
 
         self.root = tkinter.Tk()
         self.root.title(f"QDebug timeline — {title}")
@@ -88,12 +93,13 @@ class _TimelineWindow:  # pylint: disable=too-many-instance-attributes
 
         if not merged:
             tkinter.Label(self.root, text="Timeline(s) have no events.").pack(padx=20, pady=20)
+            self.controller: PlaybackController | None = None
             return
 
         self.header_var = tkinter.StringVar()
         self.text = tkinter.Text(self.root, wrap="none", font=("Courier", 11))
         self.image_label = tkinter.Label(self.root)
-        self.play_button = tkinter.Button(self.root, text="Play", command=self.toggle_play)
+        self.play_button = tkinter.Button(self.root, text="Play", command=self._toggle_play)
         self.interval_input = tkinter.Spinbox(
             self.root, from_=50, to=10_000, increment=50, width=6
         )
@@ -101,11 +107,29 @@ class _TimelineWindow:  # pylint: disable=too-many-instance-attributes
             self.root, from_=1, to=len(merged), orient="horizontal", command=self._on_slider
         )
         self._layout_widgets()
-        self.render()
+
+        self.controller = PlaybackController(
+            merged=merged,
+            scheduler=self,
+            get_interval_ms=self._interval_ms,
+            on_render=self._render,
+            on_play_state_changed=self._on_play_state_changed,
+        )
+        self._render()
 
     def run(self) -> None:
         """Enter the Tk event loop. Blocks until the window is closed."""
         self.root.mainloop()
+
+    # -- Scheduler protocol, used by PlaybackController for autoplay -----
+
+    def schedule(self, delay_ms: int, callback: Callable[[], None]) -> object:
+        return self.root.after(delay_ms, callback)
+
+    def cancel(self, handle: object) -> None:
+        self.root.after_cancel(handle)  # type: ignore[arg-type]
+
+    # -- Layout ------------------------------------------------------------
 
     def _layout_widgets(self) -> None:
         tkinter.Label(self.root, textvariable=self.header_var, anchor="w", justify="left").pack(
@@ -116,18 +140,17 @@ class _TimelineWindow:  # pylint: disable=too-many-instance-attributes
 
         controls = tkinter.Frame(self.root)
         controls.pack(fill="x", padx=10, pady=(4, 10))
-        tkinter.Button(controls, text="⏮ First", command=lambda: self.goto(0)).pack(side="left")
+        tkinter.Button(controls, text="⏮ First", command=lambda: self._goto(0)).pack(side="left")
         tkinter.Button(
-            controls, text="◀ Prev", command=lambda: self.goto(self.index - 1)
+            controls, text="◀ Prev", command=lambda: self._goto(self.controller.index - 1)
         ).pack(side="left")
         self.play_button.pack(side="left")
         tkinter.Button(
-            controls, text="Next ▶", command=lambda: self.goto(self.index + 1)
+            controls, text="Next ▶", command=lambda: self._goto(self.controller.index + 1)
         ).pack(side="left")
-        last_index = len(self.merged) - 1
-        tkinter.Button(controls, text="Last ⏭", command=lambda: self.goto(last_index)).pack(
-            side="left"
-        )
+        tkinter.Button(
+            controls, text="Last ⏭", command=lambda: self._goto(self.controller.last_index)
+        ).pack(side="left")
         tkinter.Label(controls, text="ms/step").pack(side="left", padx=(12, 2))
         self.interval_input.delete(0, "end")
         self.interval_input.insert(0, str(DEFAULT_AUTOPLAY_INTERVAL_MS))
@@ -135,21 +158,28 @@ class _TimelineWindow:  # pylint: disable=too-many-instance-attributes
 
         self.slider.pack(fill="x", padx=10, pady=(0, 4))
 
-    def render(self) -> None:
-        """Refresh every widget to reflect the currently selected event."""
-        source, event = self.merged[self.index]
+    # -- Widget <-> PlaybackController glue --------------------------------
+
+    def _render(self) -> None:
+        """Refresh every widget to reflect the controller's current event."""
+        source, event = self.controller.current
+        index = self.controller.index
         self.header_var.set(
-            f"{self.index + 1}/{len(self.merged)} — {source.name} — {event.type.value} "
+            f"{index + 1}/{len(self.controller.merged)} — {source.name} — {event.type.value} "
             f"at {event.timestamp:.3f} — {event.describe()}"
         )
         self.text.delete("1.0", "end")
         self.text.insert(
             "end",
-            _render.render_tracks_text(self.tracks[self.index])
+            _render.render_tracks_text(self.tracks[index])
             + "\n\n"
             + _render.render_event(source, event),
         )
-        self.slider.set(self.index + 1)
+        self._syncing_slider = True
+        try:
+            self.slider.set(index + 1)
+        finally:
+            self._syncing_slider = False
 
         _label, png_bytes = _render.render_extra_visual_bytes(event)
         if png_bytes:
@@ -159,39 +189,14 @@ class _TimelineWindow:  # pylint: disable=too-many-instance-attributes
             self.image_label.configure(image="")
             self.photo = None
 
-    def stop(self) -> None:
-        """Pause autoplay, if running."""
-        self.playing = False
-        if self.after_id is not None:
-            self.root.after_cancel(self.after_id)
-            self.after_id = None
-        self.play_button.configure(text="Play")
+    def _on_play_state_changed(self, playing: bool) -> None:
+        self.play_button.configure(text="Pause" if playing else "Play")
 
-    def goto(self, index: int) -> None:
-        """Jump to ``index``, stopping autoplay first."""
-        self.stop()
-        self.index = min(max(index, 0), len(self.merged) - 1)
-        self.render()
+    def _goto(self, index: int) -> None:
+        self.controller.goto(index)
 
-    def tick(self) -> None:
-        """Advance one step during autoplay, scheduling the next tick."""
-        if self.index >= len(self.merged) - 1:
-            self.stop()
-            return
-        self.index += 1
-        self.render()
-        self.after_id = self.root.after(self._interval_ms(), self.tick)
-
-    def toggle_play(self) -> None:
-        """Start or pause autoplay."""
-        if self.playing:
-            self.stop()
-            return
-        if self.index >= len(self.merged) - 1:
-            return
-        self.playing = True
-        self.play_button.configure(text="Pause")
-        self.after_id = self.root.after(self._interval_ms(), self.tick)
+    def _toggle_play(self) -> None:
+        self.controller.toggle_play()
 
     def _interval_ms(self) -> int:
         try:
@@ -200,4 +205,6 @@ class _TimelineWindow:  # pylint: disable=too-many-instance-attributes
             return DEFAULT_AUTOPLAY_INTERVAL_MS
 
     def _on_slider(self, value: str) -> None:
-        self.goto(int(float(value)) - 1)
+        if self._syncing_slider:
+            return
+        self._goto(int(float(value)) - 1)

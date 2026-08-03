@@ -132,6 +132,9 @@ class _TimelineWindow:  # pylint: disable=too-many-instance-attributes
     # -- Layout ------------------------------------------------------------
 
     def _layout_widgets(self) -> None:
+        assert self.controller is not None
+        controller = self.controller
+
         tkinter.Label(self.root, textvariable=self.header_var, anchor="w", justify="left").pack(
             fill="x", padx=10, pady=(10, 4)
         )
@@ -142,14 +145,14 @@ class _TimelineWindow:  # pylint: disable=too-many-instance-attributes
         controls.pack(fill="x", padx=10, pady=(4, 10))
         tkinter.Button(controls, text="⏮ First", command=lambda: self._goto(0)).pack(side="left")
         tkinter.Button(
-            controls, text="◀ Prev", command=lambda: self._goto(self.controller.index - 1)
+            controls, text="◀ Prev", command=lambda: self._goto(controller.index - 1)
         ).pack(side="left")
         self.play_button.pack(side="left")
         tkinter.Button(
-            controls, text="Next ▶", command=lambda: self._goto(self.controller.index + 1)
+            controls, text="Next ▶", command=lambda: self._goto(controller.index + 1)
         ).pack(side="left")
         tkinter.Button(
-            controls, text="Last ⏭", command=lambda: self._goto(self.controller.last_index)
+            controls, text="Last ⏭", command=lambda: self._goto(controller.last_index)
         ).pack(side="left")
         tkinter.Label(controls, text="ms/step").pack(side="left", padx=(12, 2))
         self.interval_input.delete(0, "end")
@@ -162,10 +165,13 @@ class _TimelineWindow:  # pylint: disable=too-many-instance-attributes
 
     def _render(self) -> None:
         """Refresh every widget to reflect the controller's current event."""
-        source, event = self.controller.current
-        index = self.controller.index
+        assert self.controller is not None
+        controller = self.controller
+
+        source, event = controller.current
+        index = controller.index
         self.header_var.set(
-            f"{index + 1}/{len(self.controller.merged)} — {source.name} — {event.type.value} "
+            f"{index + 1}/{len(controller.merged)} — {source.name} — {event.type.value} "
             f"at {event.timestamp:.3f} — {event.describe()}"
         )
         self.text.delete("1.0", "end")
@@ -193,9 +199,11 @@ class _TimelineWindow:  # pylint: disable=too-many-instance-attributes
         self.play_button.configure(text="Pause" if playing else "Play")
 
     def _goto(self, index: int) -> None:
+        assert self.controller is not None
         self.controller.goto(index)
 
     def _toggle_play(self) -> None:
+        assert self.controller is not None
         self.controller.toggle_play()
 
     def _interval_ms(self) -> int:

@@ -7,7 +7,8 @@ QDebug is not yet published to PyPI. For now, install from source.
 - Python >= 3.10
 - [Qiskit](https://www.ibm.com/quantum/qiskit) >= 1.0
 - `qiskit-aer` >= 0.14, if you want statevector capture during execution
-- `ipywidgets` and `matplotlib`, if you want the Jupyter timeline widget
+- `matplotlib`, if you want histogram/Bloch-sphere image rendering
+- `PySide6`, if you want the native GUI timeline viewer
 
 ## From source
 
@@ -34,7 +35,8 @@ depending on what you need:
 
 ```bash
 pip install -e ".[aer]"        # statevector capture on Aer
-pip install -e ".[viz]"        # Jupyter timeline widget
+pip install -e ".[viz]"        # histogram/Bloch-sphere image rendering
+pip install -e ".[gui]"        # native GUI timeline viewer
 pip install -e ".[dev]"        # test toolchain (pytest, hypothesis, pylint)
 pip install -e ".[docs]"       # Sphinx toolchain for building documentation
 ```

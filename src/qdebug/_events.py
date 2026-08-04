@@ -350,9 +350,9 @@ class Timeline(BaseModel):
     def show(self, frontend: str | None = None) -> Any:
         """Display this timeline using the best available frontend.
 
-        Auto-detects a Jupyter widget, native GUI window, or text-based CLI.
-        Force one with ``frontend="jupyter"|"gui"|"cli"`` or the
-        ``QDEBUG_FRONTEND`` environment variable.
+        Auto-detects a native GUI window or text-based CLI. Force one with
+        ``frontend="gui"|"cli"`` or the ``QDEBUG_FRONTEND`` environment
+        variable.
         """
         from .visualizer import show
 

@@ -1,9 +1,9 @@
-"""Environment-detecting timeline frontends: Jupyter widget, native GUI, or CLI.
+"""Environment-detecting timeline frontends: native GUI or CLI.
 
 :func:`get_frontend` is the factory: it auto-detects the running environment
-(Jupyter kernel, display available, or neither) and returns the matching
-:class:`TimelineFrontend`, or honors an explicit override via the
-``frontend`` argument or the ``QDEBUG_FRONTEND`` environment variable.
+(display available, or not) and returns the matching :class:`TimelineFrontend`,
+or honors an explicit override via the ``frontend`` argument or the
+``QDEBUG_FRONTEND`` environment variable.
 """
 
 from __future__ import annotations

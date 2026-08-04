@@ -11,9 +11,9 @@ from .._events import Timeline
 class TimelineFrontend(ABC):
     """Strategy interface for presenting a timeline to the user.
 
-    Each concrete frontend (Jupyter widget, native GUI window, text-based
-    CLI) overrides the same three methods, so :func:`get_frontend` can pick
-    one without callers needing to know which environment they ended up in.
+    Each concrete frontend (native GUI window, text-based CLI) overrides the
+    same three methods, so :func:`get_frontend` can pick one without callers
+    needing to know which environment they ended up in.
     """
 
     name: ClassVar[str]

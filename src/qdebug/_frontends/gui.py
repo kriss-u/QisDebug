@@ -6,7 +6,7 @@ no separate system Qt install required, and its layout manager (as opposed
 to tkinter's ``pack``) keeps fixed-size widgets like the playback controls
 from ever being squeezed out by a large circuit diagram or histogram image.
 This is why the GUI frontend is behind the ``gui`` extra rather than always
-available like the stdlib-only CLI and Jupyter frontends.
+available like the stdlib-only CLI frontend.
 """
 
 from __future__ import annotations

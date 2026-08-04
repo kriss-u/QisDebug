@@ -1,9 +1,9 @@
 """Environment detection and the frontend factory.
 
-Picks, in order: a Jupyter widget when running inside a Jupyter kernel, a
-native GUI window when a display is available, and a text-based CLI as the
-universal fallback. Any of the three can be forced explicitly, either via
-the ``frontend`` argument or the ``QDEBUG_FRONTEND`` environment variable;
+Picks, in order: a native GUI window when a display is available, and a
+text-based CLI as the universal fallback (including inside a notebook, where
+CLI output renders fine via print). Either can be forced explicitly, via the
+``frontend`` argument or the ``QDEBUG_FRONTEND`` environment variable;
 forcing one that is not actually available raises ``RuntimeError`` instead
 of silently falling back or hanging.
 """
@@ -17,31 +17,11 @@ from ._display import gui_available
 from .base import TimelineFrontend
 
 ENV_VAR = "QDEBUG_FRONTEND"
-FRONTEND_NAMES = ("jupyter", "gui", "cli")
+FRONTEND_NAMES = ("gui", "cli")
 
 
-def in_jupyter() -> bool:
-    """Return whether we're running inside a Jupyter (ZMQ) kernel.
-
-    IPython is an optional, soft dependency (only present when qdebug is
-    used from a notebook), so this import is guarded at runtime. Imported
-    from ``IPython.core.getipython`` rather than the top-level ``IPython``
-    package: the latter re-exports ``get_ipython`` without listing it in
-    ``__all__``, which static checkers don't treat as a public re-export.
-    """
-    try:
-        from IPython.core.getipython import get_ipython
-
-        shell = get_ipython()
-    except ImportError:
-        return False
-    return shell is not None and type(shell).__name__ == "ZMQInteractiveShell"
-
-
-def detect_environment() -> Literal["jupyter", "gui", "cli"]:
+def detect_environment() -> Literal["gui", "cli"]:
     """Auto-detect the best frontend for the current environment."""
-    if in_jupyter():
-        return "jupyter"
     if gui_available():
         return "gui"
     return "cli"
@@ -55,10 +35,6 @@ def _load_frontend(name: str) -> TimelineFrontend:
     module scope -- on a machine that doesn't have the ``gui`` extra
     installed.
     """
-    if name == "jupyter":
-        from .jupyter import JupyterFrontend
-
-        return JupyterFrontend()
     if name == "gui":
         from .gui import QtFrontend
 

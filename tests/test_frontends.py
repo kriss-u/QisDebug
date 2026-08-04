@@ -24,23 +24,14 @@ def _traced_bell():
     return get_timeline(qc)
 
 
-def test_detect_environment_prefers_jupyter(monkeypatch):
-    """A detected Jupyter kernel wins over GUI/CLI."""
-    monkeypatch.setattr("qdebug._frontends.detect.in_jupyter", lambda: True)
-    monkeypatch.setattr("qdebug._frontends.detect.gui_available", lambda: True)
-    assert detect_environment() == "jupyter"
-
-
-def test_detect_environment_falls_back_to_gui(monkeypatch):
-    """Without a Jupyter kernel, a usable display wins over CLI."""
-    monkeypatch.setattr("qdebug._frontends.detect.in_jupyter", lambda: False)
+def test_detect_environment_prefers_gui(monkeypatch):
+    """A usable display wins over CLI."""
     monkeypatch.setattr("qdebug._frontends.detect.gui_available", lambda: True)
     assert detect_environment() == "gui"
 
 
 def test_detect_environment_falls_back_to_cli(monkeypatch):
-    """With neither a kernel nor a display, CLI is the universal fallback."""
-    monkeypatch.setattr("qdebug._frontends.detect.in_jupyter", lambda: False)
+    """With no display, CLI is the universal fallback."""
     monkeypatch.setattr("qdebug._frontends.detect.gui_available", lambda: False)
     assert detect_environment() == "cli"
 

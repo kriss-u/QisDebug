@@ -55,7 +55,7 @@ full instructions.
 ```bash
 pip install -e .              # core (requires qiskit>=1.0)
 pip install -e ".[aer]"       # + statevector capture on Aer
-pip install -e ".[viz]"       # + Jupyter timeline widget
+pip install -e ".[viz]"       # + histogram/Bloch-sphere image rendering
 pip install -e ".[dev]"       # + test toolchain
 pip install -e ".[docs]"      # + Sphinx documentation toolchain
 ```
@@ -102,7 +102,7 @@ tl.snapshots              # state snapshots, each with .amplitudes() / .probabil
 tl.circuit_at(n)          # rebuild the circuit as it looked after its first n gates
 tl.summary()              # compact text overview
 tl.export()               # JSON-serializable dict (amplitudes as [re, im] pairs)
-tl.show()                 # interactive Jupyter widget (requires qdebug[viz])
+tl.show()                 # native GUI window, or a text CLI with no display
 ```
 
 ### Configuration
@@ -115,17 +115,20 @@ tl.show()                 # interactive Jupyter widget (requires qdebug[viz])
 | `max_snapshots_per_circuit` | `256`       | Stop inserting snapshots past this count                                           |
 | `transpile_snapshots`       | `"changed"` | Keep full circuit snapshots for `"all"` passes, only `"changed"` ones, or `"none"` |
 
-## The Jupyter widget
+## The timeline viewer
 
 ```python
 qdebug.timeline(qc).show()
 ```
 
-A slider walks the full event sequence; each position shows the circuit as it
-existed at that moment (drawn with Qiskit's own drawer), the statevector with
-amplitudes and probabilities, or per-pass transpiler statistics. The widget
-reads only the public `Timeline` fields, so the instrumentation and the
-visualizer can evolve independently.
+Auto-detects a native GUI window (PySide6) when a display is available, or
+falls back to a text-based interactive CLI otherwise — force either with
+`show(frontend="gui"|"cli")` or the `QDEBUG_FRONTEND` environment variable.
+Either way, a slider/stepper walks the full event sequence; each position
+shows the circuit as it existed at that moment (drawn with Qiskit's own
+drawer), the statevector with amplitudes and probabilities, or per-pass
+transpiler statistics. Both frontends read only the public `Timeline`
+fields, so the instrumentation and the visualizer can evolve independently.
 
 ## Version compatibility
 

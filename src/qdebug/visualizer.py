@@ -4,7 +4,7 @@ Deliberately decoupled from the instrumentation layers: it only reads the
 public fields of :class:`~qdebug._events.Timeline`, so either side can be
 replaced independently. Presentation itself is delegated to whichever
 :class:`~qdebug._frontends.TimelineFrontend` fits the running environment
-(Jupyter widget, native GUI window, or text-based CLI) — see
+(native GUI window, or text-based CLI) — see
 :func:`qdebug._frontends.get_frontend`.
 """
 
@@ -26,12 +26,11 @@ def show(timelines: Timeline | Iterable[Timeline], frontend: str | None = None) 
     timelines are merged into one chronological sequence, with the circuit
     panel showing each circuit's most recently known state side by side.
 
-    Auto-detects a Jupyter widget, a native GUI window, or a text-based CLI
-    based on the running environment. Force a specific one with
-    ``frontend="jupyter"|"gui"|"cli"``, or set the ``QDEBUG_FRONTEND``
-    environment variable to always use the same one. Forcing a frontend that
-    isn't actually available (e.g. ``"gui"`` with no display) raises
-    ``RuntimeError``.
+    Auto-detects a native GUI window or a text-based CLI based on the
+    running environment. Force a specific one with ``frontend="gui"|"cli"``,
+    or set the ``QDEBUG_FRONTEND`` environment variable to always use the
+    same one. Forcing a frontend that isn't actually available (e.g.
+    ``"gui"`` with no display) raises ``RuntimeError``.
     """
     normalized = [timelines] if isinstance(timelines, Timeline) else list(timelines)
     return get_frontend(frontend).show(normalized)

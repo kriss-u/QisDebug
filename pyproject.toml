@@ -27,6 +27,7 @@ dependencies = [
 aer = ["qiskit-aer>=0.14"]
 viz = ["matplotlib>=3.5"]
 gui = ["PySide6>=6.5"]
+mcp = ["mcp>=1.0"]
 dev = [
     "pytest>=7",
     "hypothesis>=6",
@@ -34,11 +35,15 @@ dev = [
     "pylint>=3",
     "pylint-pydantic>=0.3",
     "PySide6>=6.5",
+    "mcp>=1.0",
 ]
 docs = ["sphinx>=7", "furo>=2024.1", "myst-parser>=2", "sphinx-autodoc-typehints>=1.25"]
 
 [project.urls]
 Homepage = "https://github.com/nullvector/qdebug"
+
+[project.scripts]
+qdebug-mcp = "qdebug._mcp.server:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

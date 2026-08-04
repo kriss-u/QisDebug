@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import base64
 import io
-from typing import Any, Iterable
+from dataclasses import dataclass
+from typing import Any, Iterable, Literal
 
 import numpy as np
 
@@ -342,3 +343,160 @@ def render_extra_visual_bytes(event: TelemetryEvent) -> tuple[str, bytes | None]
 def escape(text: str) -> str:
     """Minimal HTML escaping for widget content."""
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+@dataclass(frozen=True)
+class WatchTarget:
+    """One qubit, clbit, or register a user pinned to watch during playback.
+
+    Set interactively (watch/unwatch) while stepping through a timeline in
+    any frontend; not persisted on the :class:`~qdebug._events.Timeline`
+    itself. ``ref`` is a qubit/clbit index as text for those two kinds, or a
+    register name for ``"register"``.
+    """
+
+    circuit_id: str
+    kind: Literal["qubit", "clbit", "register"]
+    ref: str
+
+    def label(self, timeline: Timeline | None) -> str:
+        """Return a human-readable label, e.g. ``"bell — qubit 0"``."""
+        name = timeline.name or timeline.circuit_id if timeline is not None else self.circuit_id
+        return f"{name} — {self.kind} {self.ref}"
+
+
+_WatchBitKind = Literal["qubit", "clbit"]
+
+
+def _watch_bits(target: WatchTarget, timeline: Timeline) -> tuple[_WatchBitKind, tuple[int, ...]]:
+    """Resolve a watch target to the concrete bit kind and indices it covers."""
+    if target.kind == "qubit":
+        return "qubit", (int(target.ref),)
+    if target.kind == "clbit":
+        return "clbit", (int(target.ref),)
+    if target.ref in timeline.qregs:
+        return "qubit", tuple(timeline.qregs[target.ref])
+    return "clbit", tuple(timeline.cregs.get(target.ref, ()))
+
+
+def render_watches(
+    targets: list[WatchTarget], timelines_by_id: dict[str, Timeline], upto_seq: int
+) -> str:
+    """Render the tracked-value panel for every active watch, up through ``upto_seq``."""
+    blocks = []
+    for target in targets:
+        timeline = timelines_by_id.get(target.circuit_id)
+        if timeline is not None:
+            blocks.append(render_watch(target, timeline, upto_seq))
+    return "\n\n".join(blocks)
+
+
+def render_watch(target: WatchTarget, timeline: Timeline, upto_seq: int) -> str:
+    """Render one watch: gates that touched it so far, plus its latest known value."""
+    bit_kind, indices = _watch_bits(target, timeline)
+    lines = [f"* {target.label(timeline)}"]
+    if not indices:
+        lines.append("  (not found on this circuit)")
+        return "\n".join(lines)
+    index_set = set(indices)
+    touches = [
+        event
+        for event in timeline.gate_events
+        if event.seq <= upto_seq
+        and index_set & set(event.qubits if bit_kind == "qubit" else event.clbits)
+    ]
+    lines.append(f"  gates touched: {len(touches)}")
+    for event in touches[-5:]:
+        lines.append(f"    seq {event.seq}: {event.describe()}")
+    if bit_kind == "qubit":
+        snapshot = _latest_snapshot(timeline, upto_seq)
+        if snapshot is not None:
+            lines.append(f"  {_render_qubit_watch(snapshot, indices)}")
+    else:
+        finished = _latest_execution_finished(timeline, upto_seq)
+        if finished is not None and finished.counts:
+            lines.append(f"  {_render_clbit_watch(finished, indices)}")
+    return "\n".join(lines)
+
+
+def _latest_snapshot(timeline: Timeline, upto_seq: int) -> StateSnapshotEvent | None:
+    """Return the most recent state snapshot at or before ``upto_seq``, if any."""
+    candidates = [e for e in timeline.snapshots if e.seq <= upto_seq]
+    return candidates[-1] if candidates else None
+
+
+def _latest_execution_finished(timeline: Timeline, upto_seq: int) -> ExecutionFinishedEvent | None:
+    """Return the most recent execution-finished event at or before ``upto_seq``, if any."""
+    result = None
+    for event in timeline.events:
+        if isinstance(event, ExecutionFinishedEvent) and event.seq <= upto_seq:
+            result = event
+    return result
+
+
+def _render_qubit_watch(snapshot: StateSnapshotEvent, qubits: tuple[int, ...]) -> str:
+    """Render P(1) and the reduced Bloch vector for each watched qubit."""
+    amplitudes = snapshot.amplitudes()
+    if not amplitudes:
+        return "(no state captured yet)"
+    num_qubits = snapshot.num_qubits or int(np.log2(len(amplitudes)))
+    lines = [f"state {snapshot.describe()}:"]
+    for qubit in qubits:
+        probability_one = _qubit_probability_one(amplitudes, qubit)
+        x, y, z = (_clean(v) for v in _reduced_bloch_vector(amplitudes, qubit, num_qubits))
+        lines.append(
+            f"    qubit {qubit}: P(1)={probability_one:.4f}   "
+            f"bloch=({x:+.3f}, {y:+.3f}, {z:+.3f})"
+        )
+    return "\n".join(lines)
+
+
+def _clean(value: float, epsilon: float = 1e-9) -> float:
+    """Snap near-zero floats to exactly 0.0 so formatting never prints ``-0.000``."""
+    return 0.0 if abs(value) < epsilon else value
+
+
+def _qubit_probability_one(amplitudes: list[complex], qubit: int) -> float:
+    """Return the marginal probability of measuring ``qubit`` as 1."""
+    return sum(abs(amp) ** 2 for basis, amp in enumerate(amplitudes) if (basis >> qubit) & 1)
+
+
+def _reduced_bloch_vector(
+    amplitudes: list[complex], qubit: int, num_qubits: int
+) -> tuple[float, float, float]:
+    """Return the single-qubit Bloch vector from the partial trace over the rest."""
+    psi = np.asarray(amplitudes, dtype=complex).reshape([2] * num_qubits)
+    axis = num_qubits - 1 - qubit
+    psi = np.moveaxis(psi, axis, 0).reshape(2, -1)
+    rho = psi @ psi.conj().T
+    x = 2 * rho[0, 1].real
+    y = -2 * rho[0, 1].imag
+    z = (rho[0, 0] - rho[1, 1]).real
+    return float(x), float(y), float(z)
+
+
+def _render_clbit_watch(event: ExecutionFinishedEvent, clbits: tuple[int, ...]) -> str:
+    """Render the measured P(1) for each watched clbit from execution counts."""
+    counts = event.counts or {}
+    total = sum(counts.values())
+    if not total:
+        return "(no counts yet)"
+    lines = [f"counts {event.describe()}:"]
+    for clbit in clbits:
+        ones = sum(n for bitstring, n in counts.items() if _clbit_value(bitstring, clbit) == "1")
+        lines.append(f"    clbit {clbit}: P(1)={ones / total:.4f}  ({ones}/{total} shots)")
+    return "\n".join(lines)
+
+
+def _clbit_value(bitstring: str, clbit: int) -> str:
+    """Extract one classical bit's value from a Qiskit counts key.
+
+    Counts keys may contain register-separating spaces (e.g. ``"01 10"`` for
+    two classical registers); strip them so indices line up with the flat
+    clbit numbering used elsewhere, then index from the right since bit 0 is
+    the rightmost character.
+    """
+    flat = bitstring.replace(" ", "")
+    if clbit >= len(flat):
+        return "?"
+    return flat[len(flat) - 1 - clbit]

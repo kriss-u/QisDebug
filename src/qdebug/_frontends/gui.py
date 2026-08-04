@@ -27,8 +27,11 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QApplication,
+    QComboBox,
     QHBoxLayout,
     QLabel,
+    QListWidget,
+    QListWidgetItem,
     QPushButton,
     QSlider,
     QSpinBox,
@@ -76,8 +79,9 @@ class QtFrontend(TimelineFrontend):
 
         merged, tracks, active_labels = _render.merge_timelines(timelines)
         names = ", ".join(str(t.name) for t in timelines)
+        timelines_by_id = {t.circuit_id: t for t in timelines}
         app = QApplication.instance() or QApplication([])
-        window = _TimelineWindow(names, merged, tracks, active_labels)
+        window = _TimelineWindow(names, merged, tracks, active_labels, timelines_by_id)
         window.show()
         app.exec()
 
@@ -208,9 +212,12 @@ class _TimelineWindow(Scheduler[QTimer]):  # pylint: disable=too-many-instance-a
         merged: list[tuple[Timeline, TelemetryEvent]],
         tracks: list[dict[str, str]],
         active_labels: list[str | None],
+        timelines_by_id: dict[str, Timeline],
     ) -> None:
         self.tracks = tracks
         self.active_labels = active_labels
+        self.timelines_by_id = timelines_by_id
+        self.watches: list[_render.WatchTarget] = []
         self._syncing_slider = False
         self._timers: list[QTimer] = []
         self._key_filter: _PlaybackKeyFilter | None = None
@@ -235,7 +242,8 @@ class _TimelineWindow(Scheduler[QTimer]):  # pylint: disable=too-many-instance-a
                 on_play_state_changed=self._on_play_state_changed,
             ),
         )
-        self._build_widgets()
+        layout = self._build_widgets()
+        self._build_watch_widgets(layout)
         self._render()
 
         app = QApplication.instance()
@@ -290,7 +298,7 @@ class _TimelineWindow(Scheduler[QTimer]):  # pylint: disable=too-many-instance-a
 
     # -- Layout ------------------------------------------------------------
 
-    def _build_widgets(self) -> None:
+    def _build_widgets(self) -> QVBoxLayout:
         assert self.controller is not None
         controller = self.controller
 
@@ -331,6 +339,30 @@ class _TimelineWindow(Scheduler[QTimer]):  # pylint: disable=too-many-instance-a
         self.slider.valueChanged.connect(self._on_slider)  # pylint: disable=no-member
         layout.addWidget(self.slider)
 
+        return layout
+
+    def _build_watch_widgets(self, layout: QVBoxLayout) -> None:
+        """Lay out the watch kind/ref pickers, add/remove buttons, and watch list."""
+        watch_row = QHBoxLayout()
+        watch_row.addWidget(QLabel("Watch:"))
+        self.watch_kind = QComboBox()
+        self.watch_kind.addItems(["qubit", "clbit", "register"])
+        self.watch_kind.currentTextChanged.connect(  # pylint: disable=no-member
+            self._refresh_watch_ref_choices
+        )
+        watch_row.addWidget(self.watch_kind)
+        self.watch_ref = QComboBox()
+        watch_row.addWidget(self.watch_ref)
+        watch_row.addWidget(_button("+ Add watch", self._add_watch))
+        watch_row.addWidget(_button("Remove selected", self._remove_selected_watch))
+        watch_row.addStretch(1)
+        layout.addLayout(watch_row)
+
+        self.watch_list = QListWidget()
+        self.watch_list.setMaximumHeight(70)
+        layout.addWidget(self.watch_list)
+        self._refresh_watch_ref_choices()
+
     # -- Widget <-> PlaybackController glue --------------------------------
 
     def _render(self) -> None:
@@ -369,14 +401,67 @@ class _TimelineWindow(Scheduler[QTimer]):  # pylint: disable=too-many-instance-a
             cursor.insertText(f"-- {label} --\n")
             cursor.insertImage(image)
 
+        watch_text = _render.render_watches(self.watches, self.timelines_by_id, event.seq)
+        if watch_text:
+            cursor = QTextCursor(self.text.document())
+            cursor.movePosition(QTextCursor.MoveOperation.End)
+            cursor.insertBlock()
+            cursor.insertText("-- Watches --\n" + watch_text)
+
         self._highlight_and_scroll(active_span)
         self._update_control_state()
+        self._refresh_watch_ref_choices()
 
         self._syncing_slider = True
         try:
             self.slider.setValue(index + 1)
         finally:
             self._syncing_slider = False
+
+    def _refresh_watch_ref_choices(self, _kind: str | None = None) -> None:
+        """Repopulate the watch-ref dropdown for the currently selected circuit."""
+        assert self.controller is not None
+        source, _event = self.controller.current
+        kind = self.watch_kind.currentText()
+        previous = self.watch_ref.currentText()
+        self.watch_ref.blockSignals(True)
+        self.watch_ref.clear()
+        if kind == "qubit":
+            self.watch_ref.addItems([str(i) for i in range(source.num_qubits)])
+        elif kind == "clbit":
+            self.watch_ref.addItems([str(i) for i in range(source.num_clbits)])
+        else:
+            self.watch_ref.addItems([*source.qregs, *source.cregs])
+        index = self.watch_ref.findText(previous)
+        if index >= 0:
+            self.watch_ref.setCurrentIndex(index)
+        self.watch_ref.blockSignals(False)
+
+    def _add_watch(self) -> None:
+        """Add the currently selected qubit/clbit/register to the watch list."""
+        assert self.controller is not None
+        ref = self.watch_ref.currentText()
+        if not ref:
+            return
+        source, _event = self.controller.current
+        kind = self.watch_kind.currentText()
+        assert kind in ("qubit", "clbit", "register")
+        target = _render.WatchTarget(circuit_id=source.circuit_id, kind=kind, ref=ref)
+        if target not in self.watches:
+            self.watches.append(target)
+            item = QListWidgetItem(target.label(source))
+            item.setData(Qt.ItemDataRole.UserRole, target)
+            self.watch_list.addItem(item)
+            self._render()
+
+    def _remove_selected_watch(self) -> None:
+        """Remove whichever watch-list rows are currently selected."""
+        for item in self.watch_list.selectedItems():
+            target = item.data(Qt.ItemDataRole.UserRole)
+            if target in self.watches:
+                self.watches.remove(target)
+            self.watch_list.takeItem(self.watch_list.row(item))
+        self._render()
 
     def _update_control_state(self) -> None:
         """Disable controls that can't do anything at the current position."""

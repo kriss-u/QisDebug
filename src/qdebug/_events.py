@@ -204,6 +204,8 @@ class Timeline(BaseModel):
     name: str | None = None
     num_qubits: int = 0
     num_clbits: int = 0
+    qregs: dict[str, list[int]] = Field(default_factory=dict)
+    cregs: dict[str, list[int]] = Field(default_factory=dict)
     created_at: float = Field(default_factory=time.time)
     events: list[TelemetryEvent] = Field(default_factory=list)
 

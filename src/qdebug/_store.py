@@ -128,6 +128,8 @@ class TelemetryStore:
                 name=getattr(circuit, "name", None),
                 num_qubits=getattr(circuit, "num_qubits", 0) or 0,
                 num_clbits=getattr(circuit, "num_clbits", 0) or 0,
+                qregs=_registers(circuit, "qregs"),
+                cregs=_registers(circuit, "cregs"),
             )
             self._timelines[circuit_id] = timeline
             while len(self._timelines) > get_config().max_circuits:
@@ -182,6 +184,22 @@ class TelemetryStore:
         """Drop all recorded telemetry."""
         with self._lock:
             self._timelines.clear()
+
+
+def _registers(circuit: Any, attribute: str) -> dict[str, list[int]]:
+    """Map register name to flat bit indices, for the watch feature.
+
+    Best-effort: older/foreign circuit-like objects may lack ``qregs``,
+    ``cregs``, or ``find_bit``, in which case this degrades to no registers
+    rather than raising.
+    """
+    registers = {}
+    for register in getattr(circuit, attribute, None) or ():
+        try:
+            registers[register.name] = [circuit.find_bit(bit).index for bit in register]
+        except Exception:
+            continue
+    return registers
 
 
 STORE = TelemetryStore()

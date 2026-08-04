@@ -1,10 +1,10 @@
-"""QDebug on a realistic protocol: teleportation over a noisy hardware mock.
+"""QisDebug on a realistic protocol: teleportation over a noisy hardware mock.
 
 Run with::
 
     python examples/teleport_noisy_hardware.py
 
-This mirrors how someone would actually use QDebug on a research circuit:
+This mirrors how someone would actually use QisDebug on a research circuit:
 
 - Two independent subcircuits (an arbitrary payload state and an EPR pair)
   are built separately, then composed into a third, larger teleportation
@@ -16,10 +16,10 @@ This mirrors how someone would actually use QDebug on a research circuit:
 - The same circuit is also run on a noiseless simulator so the effect of the
   noise model is visible directly in the measurement statistics.
 
-Along the way this demonstrates all three QDebug hooks and one of its
+Along the way this demonstrates all three QisDebug hooks and one of its
 graceful-degradation paths: teleportation requires a mid-circuit measurement
 and a classically conditioned correction, which makes statevector capture
-non-deterministic, so QDebug skips it for that circuit and records why
+non-deterministic, so QisDebug skips it for that circuit and records why
 instead of guessing or crashing.
 """
 
@@ -31,8 +31,8 @@ from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
 from qiskit_aer import AerSimulator
 from qiskit_ibm_runtime.fake_provider import FakeManilaV2
 
-import qdebug
-from qdebug import visualizer
+import qisdebug
+from qisdebug import visualizer
 
 
 def payload_state(theta: float = 0.9, phi: float = 1.3) -> QuantumCircuit:
@@ -93,7 +93,7 @@ def receiver_marginal(counts: dict[str, int]) -> dict[str, float]:
 
 def main() -> None:
     """Build, transpile and run a teleportation circuit assembled from two subcircuits."""
-    qdebug.activate()
+    qisdebug.activate()
 
     payload = payload_state()
     epr = epr_pair()
@@ -108,7 +108,7 @@ def main() -> None:
     shots = 4000
 
     # Run the payload circuit on its own too: it is a pure unitary with no
-    # measurement, so QDebug can capture its full statevector evolution,
+    # measurement, so QisDebug can capture its full statevector evolution,
     # which is what the "payload state evolution" section below reads.
     ideal_backend.run(payload, shots=1).result()
 
@@ -121,10 +121,10 @@ def main() -> None:
     print(f"{device.name} noisy receiver marginal:   {receiver_marginal(noisy_counts)}")
 
     print("\nper-circuit timelines:")
-    timelines: dict[str, qdebug.Timeline] = {}
+    timelines: dict[str, qisdebug.Timeline] = {}
     for qc in (payload, epr, teleport):
-        timeline = qdebug.timeline(qc)
-        assert timeline is not None, f"circuit {qc.name} was not tracked by qdebug"
+        timeline = qisdebug.timeline(qc)
+        assert timeline is not None, f"circuit {qc.name} was not tracked by qisdebug"
         timelines[qc.name] = timeline
         print(f"\n{timeline.summary()}")
         for event in timeline.events:
@@ -148,7 +148,7 @@ def main() -> None:
 
     visualizer.show([payload_timeline, timelines["epr_pair"], teleport_timeline])
 
-    qdebug.deactivate()
+    qisdebug.deactivate()
 
 
 if __name__ == "__main__":

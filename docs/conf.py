@@ -1,4 +1,4 @@
-"""Sphinx configuration for QDebug documentation."""
+"""Sphinx configuration for QisDebug documentation."""
 
 from __future__ import annotations
 
@@ -7,13 +7,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-import qdebug  # noqa: E402
+import qisdebug  # noqa: E402
 
-project = "QDebug"
-copyright = "2026, QDebug contributors"
-author = "QDebug contributors"
-release = qdebug.__version__
-version = qdebug.__version__
+project = "QisDebug"
+copyright = "2026, QisDebug contributors"
+author = "QisDebug contributors"
+release = qisdebug.__version__
+version = qisdebug.__version__
 
 extensions = [
     "sphinx.ext.autodoc",
@@ -48,4 +48,4 @@ intersphinx_mapping = {
 
 html_theme = "furo"
 html_static_path = ["_static"]
-html_title = f"QDebug {version}"
+html_title = f"QisDebug {version}"

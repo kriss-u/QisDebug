@@ -1,4 +1,4 @@
-"""Agent-facing query functions in qdebug._mcp.tools.
+"""Agent-facing query functions in qisdebug._mcp.tools.
 
 These call straight into the same STORE/Timeline/_analysis logic the CLI and
 GUI frontends use, so the checks here are about the tool layer's contract
@@ -12,9 +12,9 @@ import textwrap
 import pytest
 from pydantic import ValidationError
 
-import qdebug
+import qisdebug
 from conftest import get_timeline
-from qdebug._mcp import tools
+from qisdebug._mcp import tools
 
 
 @pytest.fixture(autouse=True)
@@ -56,9 +56,9 @@ def _run_bell_and_get_id(tmp_path) -> str:
 
 
 def test_run_script_activates_captures_and_deactivates(tmp_path):
-    assert not qdebug.is_active()
+    assert not qisdebug.is_active()
     result = tools.run_script(_write_bell_script(tmp_path))
-    assert not qdebug.is_active()
+    assert not qisdebug.is_active()
     assert result["error"] is None
     bell = next(t for t in result["timelines"] if t["name"] == "bell")
     assert bell["anomalies"] == []
@@ -70,7 +70,7 @@ def test_run_script_reports_exceptions_without_leaking_them(tmp_path):
     result = tools.run_script(str(script))
     assert result["error"] == "ValueError: boom"
     assert result["timelines"] == []
-    assert not qdebug.is_active()
+    assert not qisdebug.is_active()
 
 
 def test_list_and_get_timeline_round_trip(tmp_path):
@@ -162,14 +162,14 @@ def test_run_script_scoped_by_scripts_own_activate_calls(tmp_path):
     script.write_text(
         textwrap.dedent(
             """
-            import qdebug
+            import qisdebug
             from qiskit.circuit import QuantumCircuit
 
             qc = QuantumCircuit(2, name="scoped")
             qc.h(0)
-            qdebug.activate()
+            qisdebug.activate()
             qc.cx(0, 1)
-            qdebug.deactivate()
+            qisdebug.deactivate()
             qc.h(1)
             """
         )
@@ -187,7 +187,7 @@ def test_run_script_passes_argv(tmp_path):
         textwrap.dedent(
             """
             import sys
-            import qdebug
+            import qisdebug
             from qiskit.circuit import QuantumCircuit
 
             qc = QuantumCircuit(1, name=sys.argv[1])

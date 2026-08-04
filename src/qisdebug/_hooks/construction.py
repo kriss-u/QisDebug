@@ -79,7 +79,7 @@ def _recording_wrapper(original: Callable) -> Callable:
                 _record_appended(self, before)
             except Exception:
                 logger.debug(
-                    "qdebug: failed to record appended instructions", exc_info=True
+                    "qisdebug: failed to record appended instructions", exc_info=True
                 )
         return result
 
@@ -119,7 +119,7 @@ def _compose_wrapper(original: Callable) -> Callable:
                 _record_appended(self, before)
             except Exception:
                 logger.debug(
-                    "qdebug: failed to record composed instructions", exc_info=True
+                    "qisdebug: failed to record composed instructions", exc_info=True
                 )
         return result
 

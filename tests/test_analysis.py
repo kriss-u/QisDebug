@@ -6,19 +6,19 @@ import pytest
 from qiskit.circuit import QuantumCircuit
 from qiskit_aer import AerSimulator
 
-import qdebug
+import qisdebug
 from conftest import get_timeline
-from qdebug._analysis import (
+from qisdebug._analysis import (
     compare_counts,
     compare_statevector,
     expand_sparse_statevector,
     find_anomalies,
 )
-from qdebug._events import EventType, StateSnapshotEvent
+from qisdebug._events import EventType, StateSnapshotEvent
 
 
 def _traced_bell():
-    qdebug.activate()
+    qisdebug.activate()
     qc = QuantumCircuit(2, 2, name="bell")
     qc.h(0)
     qc.cx(0, 1)

@@ -1,19 +1,19 @@
-"""Agent-facing debugging session over the live QDebug telemetry store.
+"""Agent-facing debugging session over the live QisDebug telemetry store.
 
 Plain functions with JSON-serializable arguments and return values, and no
-MCP protocol code, so :mod:`qdebug._mcp.server` can wrap each one as an MCP
+MCP protocol code, so :mod:`qisdebug._mcp.server` can wrap each one as an MCP
 tool and the test suite can call them directly without a protocol client.
 
-The division of labor is deliberate: QDebug extracts ground truth from a
+The division of labor is deliberate: QisDebug extracts ground truth from a
 run (gate history, mid-execution statevectors, transpile snapshots, counts)
 and does the arithmetic of checking a supplied expectation against it; the
 agent decides where to scope instrumentation, which qubits and registers to
 watch, what the program *should* have produced, and what the discrepancy
 means. All the actual work -- timeline lookup, rendering, comparison,
-anomaly scanning -- is delegated to :mod:`qdebug._store`,
-:mod:`qdebug._events`, :mod:`qdebug._frontends._render` and
-:mod:`qdebug._analysis`; nothing here re-implements that logic, the same
-way :mod:`qdebug._frontends.cli` delegates to those modules instead of
+anomaly scanning -- is delegated to :mod:`qisdebug._store`,
+:mod:`qisdebug._events`, :mod:`qisdebug._frontends._render` and
+:mod:`qisdebug._analysis`; nothing here re-implements that logic, the same
+way :mod:`qisdebug._frontends.cli` delegates to those modules instead of
 recomputing what they already compute.
 """
 
@@ -24,7 +24,7 @@ import runpy
 import sys
 from typing import Any, Literal, Mapping, Sequence
 
-import qdebug
+import qisdebug
 
 from .. import _analysis
 from .._events import EventType, StateSnapshotEvent, Timeline
@@ -47,13 +47,13 @@ def _require_timeline(circuit_id: str) -> Timeline:
 def run_script(
     path: str, argv: list[str] | None = None, auto_activate: bool = True
 ) -> dict[str, Any]:
-    """Run a Python script under QDebug instrumentation and report what was captured.
+    """Run a Python script under QisDebug instrumentation and report what was captured.
 
     Executes ``path`` as ``__main__`` with ``sys.argv`` set to ``[path,
     *argv]``. With ``auto_activate`` (the default) instrumentation covers
     the whole script. To scope debugging to a suspect region instead, edit
-    the target script to place ``import qdebug; qdebug.activate()`` at the
-    start of the region and ``qdebug.deactivate()`` at its end, then call
+    the target script to place ``import qisdebug; qisdebug.activate()`` at the
+    start of the region and ``qisdebug.deactivate()`` at its end, then call
     this with ``auto_activate=False`` -- only circuits touched inside that
     window are recorded. Instrumentation is always deactivated afterwards
     regardless of outcome.
@@ -62,9 +62,9 @@ def run_script(
     run produced, so one call shows whether anything looks off before any
     deeper queries.
     """
-    before = {t.circuit_id for t in qdebug.timelines()}
+    before = {t.circuit_id for t in qisdebug.timelines()}
     if auto_activate:
-        qdebug.activate()
+        qisdebug.activate()
     error: str | None = None
     saved_argv = sys.argv
     sys.argv = [path, *(argv or [])]
@@ -74,8 +74,8 @@ def run_script(
         error = f"{type(exc).__name__}: {exc}"
     finally:
         sys.argv = saved_argv
-        qdebug.deactivate()
-    touched = [t for t in qdebug.timelines() if t.circuit_id not in before]
+        qisdebug.deactivate()
+    touched = [t for t in qisdebug.timelines() if t.circuit_id not in before]
     return {
         "error": error,
         "timelines": [
@@ -110,7 +110,7 @@ def list_timelines() -> list[dict[str, Any]]:
             "cregs": t.cregs,
             "event_count": len(t.events),
         }
-        for t in qdebug.timelines()
+        for t in qisdebug.timelines()
     ]
 
 
@@ -370,23 +370,23 @@ def save_timeline(circuit_id: str, path: str) -> dict[str, Any]:
 
 def get_configuration() -> dict[str, Any]:
     """Return the current instrumentation configuration."""
-    return qdebug.get_config().model_dump(mode="json")
+    return qisdebug.get_config().model_dump(mode="json")
 
 
 def set_configuration(overrides: dict[str, Any]) -> dict[str, Any]:
     """Adjust instrumentation limits and switches before a run.
 
-    Accepts any :class:`~qdebug.QDebugConfig` field, e.g. raising
+    Accepts any :class:`~qisdebug.QisDebugConfig` field, e.g. raising
     ``max_statevector_qubits`` for a wide circuit, or setting
     ``transpile_snapshots`` to ``"all"`` to snapshot every pass while
     hunting a transpiler-introduced bug. Invalid keys or values raise a
     validation error and leave the configuration unchanged.
     """
-    return qdebug.configure(**overrides).model_dump(mode="json")
+    return qisdebug.configure(**overrides).model_dump(mode="json")
 
 
 def clear() -> str:
     """Drop all recorded telemetry and watches, without touching active patches."""
-    qdebug.clear()
+    qisdebug.clear()
     _watches.clear()
     return "cleared"

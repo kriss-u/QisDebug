@@ -1,11 +1,11 @@
-"""Public entry point for exploring QDebug timelines.
+"""Public entry point for exploring QisDebug timelines.
 
 Deliberately decoupled from the instrumentation layers: it only reads the
-public fields of :class:`~qdebug._events.Timeline`, so either side can be
+public fields of :class:`~qisdebug._events.Timeline`, so either side can be
 replaced independently. Presentation itself is delegated to whichever
-:class:`~qdebug._frontends.TimelineFrontend` fits the running environment
+:class:`~qisdebug._frontends.TimelineFrontend` fits the running environment
 (native GUI window, or text-based CLI) — see
-:func:`qdebug._frontends.get_frontend`.
+:func:`qisdebug._frontends.get_frontend`.
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ def show(timelines: Timeline | Iterable[Timeline], frontend: str | None = None) 
 
     Auto-detects a native GUI window or a text-based CLI based on the
     running environment. Force a specific one with ``frontend="gui"|"cli"``,
-    or set the ``QDEBUG_FRONTEND`` environment variable to always use the
+    or set the ``QISDEBUG_FRONTEND`` environment variable to always use the
     same one. Forcing a frontend that isn't actually available (e.g.
     ``"gui"`` with no display) raises ``RuntimeError``.
     """

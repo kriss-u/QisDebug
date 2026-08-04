@@ -1,20 +1,20 @@
-# Contributing to QDebug
+# Contributing to QisDebug
 
-Thanks for considering a contribution. QDebug is a debugging and observability
+Thanks for considering a contribution. QisDebug is a debugging and observability
 tool for Qiskit, and its value comes from being reliable across Qiskit
 versions and unobtrusive in real projects — contributions that keep it that
 way are especially welcome.
 
 ## Ground rules
 
-- Every patch QDebug installs onto Qiskit internals must check that the
+- Every patch QisDebug installs onto Qiskit internals must check that the
   target still exists before patching it, and degrade with a logged warning
   instead of raising if it doesn't. This applies to any new hook.
 - The public API surface should stay small. If you're adding a new
   user-facing function, ask whether it can instead be a method on `Timeline`
   or a `configure()` option.
 - Don't require users to change their existing circuit-building or execution
-  code. QDebug attaches passively; it never changes call signatures or return
+  code. QisDebug attaches passively; it never changes call signatures or return
   values that user code depends on.
 - Keep the visualizer decoupled from the instrumentation layer. It should
   only read the public `Timeline` fields.
@@ -24,8 +24,8 @@ See [CLAUDE.md](CLAUDE.md) for the full design rationale and build order.
 ## Getting set up
 
 ```bash
-git clone https://github.com/nullvector/qdebug.git
-cd qdebug
+git clone https://github.com/nullvector/qisdebug.git
+cd qisdebug
 python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
@@ -45,7 +45,7 @@ See [INSTALL.md](INSTALL.md) for details on optional extras.
 
    ```bash
    pytest
-   pylint src/qdebug
+   pylint src/qisdebug
    ```
 
 5. If you touched the public API or a hook's behavior, update the relevant
@@ -67,12 +67,12 @@ Open a GitHub issue with:
 
 - The Qiskit, qiskit-aer, and Python versions you're using
 - A minimal circuit that reproduces the issue
-- What you expected vs. what QDebug recorded (or the traceback, if it
+- What you expected vs. what QisDebug recorded (or the traceback, if it
   crashed)
 
 ## Code style
 
-- Follow the conventions already in `src/qdebug/` (Pydantic models for
+- Follow the conventions already in `src/qisdebug/` (Pydantic models for
   events and config, docstrings on public functions/classes/modules).
 - Comments are reserved for non-obvious edge cases or tricky logic; avoid
   comments that restate what a line does.

@@ -3,13 +3,13 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "qdebug"
+name = "qisdebug"
 version = "0.1.0"
 description = "Zero-touch instrumentation and timeline debugging for Qiskit circuits"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-authors = [{ name = "QDebug contributors" }]
+authors = [{ name = "QisDebug contributors" }]
 keywords = ["qiskit", "quantum", "debugging", "instrumentation", "telemetry"]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -40,10 +40,10 @@ dev = [
 docs = ["sphinx>=7", "furo>=2024.1", "myst-parser>=2", "sphinx-autodoc-typehints>=1.25"]
 
 [project.urls]
-Homepage = "https://github.com/nullvector/qdebug"
+Homepage = "https://github.com/nullvector/qisdebug"
 
 [project.scripts]
-qdebug-mcp = "qdebug._mcp.server:main"
+qisdebug-mcp = "qisdebug._mcp.server:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

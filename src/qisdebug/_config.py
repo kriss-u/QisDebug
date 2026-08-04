@@ -1,4 +1,4 @@
-"""Runtime configuration for QDebug, validated through Pydantic."""
+"""Runtime configuration for QisDebug, validated through Pydantic."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 
-class QDebugConfig(BaseModel):
+class QisDebugConfig(BaseModel):
     """Tunable limits and feature switches for the instrumentation layers."""
 
     model_config = ConfigDict(frozen=True)
@@ -42,20 +42,20 @@ class QDebugConfig(BaseModel):
     )
 
 
-_config = QDebugConfig()
+_config = QisDebugConfig()
 
 
-def configure(**overrides: object) -> QDebugConfig:
+def configure(**overrides: object) -> QisDebugConfig:
     """Update the global configuration and return the resulting config.
 
     Unknown keys or out-of-range values raise a pydantic ValidationError,
     leaving the previous configuration in place.
     """
     global _config
-    _config = QDebugConfig(**{**_config.model_dump(), **overrides})
+    _config = QisDebugConfig(**{**_config.model_dump(), **overrides})
     return _config
 
 
-def get_config() -> QDebugConfig:
+def get_config() -> QisDebugConfig:
     """Return the current global configuration."""
     return _config

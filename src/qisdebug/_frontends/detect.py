@@ -3,7 +3,7 @@
 Picks, in order: a native GUI window when a display is available, and a
 text-based CLI as the universal fallback (including inside a notebook, where
 CLI output renders fine via print). Either can be forced explicitly, via the
-``frontend`` argument or the ``QDEBUG_FRONTEND`` environment variable;
+``frontend`` argument or the ``QISDEBUG_FRONTEND`` environment variable;
 forcing one that is not actually available raises ``RuntimeError`` instead
 of silently falling back or hanging.
 """
@@ -16,7 +16,7 @@ from typing import Literal
 from ._display import gui_available
 from .base import TimelineFrontend
 
-ENV_VAR = "QDEBUG_FRONTEND"
+ENV_VAR = "QISDEBUG_FRONTEND"
 FRONTEND_NAMES = ("gui", "cli")
 
 
@@ -47,7 +47,7 @@ def _load_frontend(name: str) -> TimelineFrontend:
 def get_frontend(frontend: str | None = None) -> TimelineFrontend:
     """Resolve a :class:`TimelineFrontend` by name, env var, or auto-detection.
 
-    Precedence: the ``frontend`` argument, then the ``QDEBUG_FRONTEND``
+    Precedence: the ``frontend`` argument, then the ``QISDEBUG_FRONTEND``
     environment variable, then :func:`detect_environment`. A name that
     doesn't match a known frontend raises ``ValueError``; a forced frontend
     that isn't actually available raises ``RuntimeError`` explaining why.
@@ -57,12 +57,12 @@ def get_frontend(frontend: str | None = None) -> TimelineFrontend:
         key = forced.strip().lower()
         if key not in FRONTEND_NAMES:
             raise ValueError(
-                f"Unknown qdebug frontend {forced!r}; choose from {sorted(FRONTEND_NAMES)}"
+                f"Unknown qisdebug frontend {forced!r}; choose from {sorted(FRONTEND_NAMES)}"
             )
         instance = _load_frontend(key)
         if not instance.is_available():
             raise RuntimeError(
-                f"qdebug frontend {key!r} was forced but is not available: "
+                f"qisdebug frontend {key!r} was forced but is not available: "
                 f"{instance.unavailable_reason()}"
             )
         return instance

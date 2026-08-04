@@ -7,16 +7,16 @@ from qiskit.circuit.quantumcircuit import QuantumCircuit
 from qiskit.circuit import ClassicalRegister, QuantumRegister
 from qiskit_aer import AerSimulator
 
-import qdebug
+import qisdebug
 from conftest import get_timeline
-from qdebug._frontends import _render
-from qdebug._frontends.cli import CLIFrontend
-from qdebug._frontends.gui import QtFrontend
+from qisdebug._frontends import _render
+from qisdebug._frontends.cli import CLIFrontend
+from qisdebug._frontends.gui import QtFrontend
 
 
 def _traced_bell_with_registers():
     """Run a bell circuit built from named registers, fully instrumented."""
-    qdebug.activate()
+    qisdebug.activate()
     qreg = QuantumRegister(2, name="q")
     creg = ClassicalRegister(2, name="c")
     qc = QuantumCircuit(qreg, creg, name="viz")
@@ -122,7 +122,7 @@ def test_gui_frontend_add_and_remove_watch(monkeypatch):
     """Adding a watch through the combo boxes updates the text panel; removing clears it."""
     from PySide6.QtWidgets import QApplication
 
-    from qdebug._frontends import gui as gui_module
+    from qisdebug._frontends import gui as gui_module
 
     timeline = _traced_bell_with_registers()
     monkeypatch.setattr(QApplication, "exec", lambda self: None)

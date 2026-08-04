@@ -1,7 +1,7 @@
 """Frontend-agnostic data prep shared by every :class:`TimelineFrontend`.
 
 Nothing here depends on ipywidgets, tkinter, or the terminal: it only turns
-:class:`~qdebug._events.Timeline` data into plain text/PNG bytes that each
+:class:`~qisdebug._events.Timeline` data into plain text/PNG bytes that each
 frontend then presents in its own way.
 """
 
@@ -87,7 +87,7 @@ def merge_timelines(
     """Interleave events from several timelines in global sequence order.
 
     ``seq`` is a process-wide monotonic counter (see
-    :class:`~qdebug._events.TelemetryEvent`), so sorting by it produces the
+    :class:`~qisdebug._events.TelemetryEvent`), so sorting by it produces the
     order things actually happened across circuits, not just within one.
     Circuit tracks are computed independently per timeline (each carries
     forward its own state) and merged under a per-circuit-prefixed key so
@@ -265,7 +265,7 @@ def _figure_to_data_uri(fig: Any) -> str:
 def render_histogram(event: ExecutionFinishedEvent) -> str | None:
     """Render an execution's counts as a histogram data URI, or None if unavailable.
 
-    Requires matplotlib (``pip install "qdebug[viz]"``); degrades to None
+    Requires matplotlib (``pip install "qisdebug[viz]"``); degrades to None
     rather than raising if it, or the counts themselves, are missing.
     """
     if not event.counts:
@@ -293,7 +293,7 @@ def render_histogram_bytes(event: ExecutionFinishedEvent) -> bytes | None:
 def render_bloch(event: StateSnapshotEvent) -> str | None:
     """Render a state snapshot as one Bloch sphere per qubit, or None if unavailable.
 
-    Requires matplotlib (``pip install "qdebug[viz]"``); degrades to None
+    Requires matplotlib (``pip install "qisdebug[viz]"``); degrades to None
     rather than raising if it, or the statevector itself, are missing.
     """
     if event.statevector is None:
@@ -350,7 +350,7 @@ class WatchTarget:
     """One qubit, clbit, or register a user pinned to watch during playback.
 
     Set interactively (watch/unwatch) while stepping through a timeline in
-    any frontend; not persisted on the :class:`~qdebug._events.Timeline`
+    any frontend; not persisted on the :class:`~qisdebug._events.Timeline`
     itself. ``ref`` is a qubit/clbit index as text for those two kinds, or a
     register name for ``"register"``.
     """

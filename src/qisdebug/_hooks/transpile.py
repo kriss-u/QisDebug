@@ -192,7 +192,7 @@ def _chained_callback(
         try:
             _record_pass(timeline, details, state, phase)
         except Exception:
-            logger.debug("qdebug: failed to record transpiler pass", exc_info=True)
+            logger.debug("qisdebug: failed to record transpiler pass", exc_info=True)
         if user_callback is not None:
             user_callback(**details)
 
@@ -295,7 +295,7 @@ def _pass_call_wrapper(original: Callable) -> Callable:
         try:
             _record_standalone_pass(self, circuit, result, time.perf_counter() - started)
         except Exception:
-            logger.debug("qdebug: failed to record standalone pass", exc_info=True)
+            logger.debug("qisdebug: failed to record standalone pass", exc_info=True)
         return result
 
     return call

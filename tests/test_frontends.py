@@ -6,16 +6,16 @@ import pytest
 from qiskit.circuit.quantumcircuit import QuantumCircuit
 from qiskit_aer import AerSimulator
 
-import qdebug
+import qisdebug
 from conftest import get_timeline
-from qdebug._frontends import detect_environment, get_frontend
-from qdebug._frontends.cli import CLIFrontend
-from qdebug._frontends.gui import QtFrontend
+from qisdebug._frontends import detect_environment, get_frontend
+from qisdebug._frontends.cli import CLIFrontend
+from qisdebug._frontends.gui import QtFrontend
 
 
 def _traced_bell():
     """Run a bell circuit under instrumentation and return its timeline."""
-    qdebug.activate()
+    qisdebug.activate()
     qc = QuantumCircuit(2, 2, name="viz")
     qc.h(0)
     qc.cx(0, 1)
@@ -26,39 +26,39 @@ def _traced_bell():
 
 def test_detect_environment_prefers_gui(monkeypatch):
     """A usable display wins over CLI."""
-    monkeypatch.setattr("qdebug._frontends.detect.gui_available", lambda: True)
+    monkeypatch.setattr("qisdebug._frontends.detect.gui_available", lambda: True)
     assert detect_environment() == "gui"
 
 
 def test_detect_environment_falls_back_to_cli(monkeypatch):
     """With no display, CLI is the universal fallback."""
-    monkeypatch.setattr("qdebug._frontends.detect.gui_available", lambda: False)
+    monkeypatch.setattr("qisdebug._frontends.detect.gui_available", lambda: False)
     assert detect_environment() == "cli"
 
 
 def test_get_frontend_unknown_name_raises():
     """Forcing a nonsense frontend name is a clear ValueError, not a KeyError."""
-    with pytest.raises(ValueError, match="Unknown qdebug frontend"):
+    with pytest.raises(ValueError, match="Unknown qisdebug frontend"):
         get_frontend("holodeck")
 
 
 def test_get_frontend_forced_unavailable_raises(monkeypatch):
     """Forcing GUI with no display raises RuntimeError explaining why."""
-    monkeypatch.setattr("qdebug._frontends.gui.gui_available", lambda: False)
+    monkeypatch.setattr("qisdebug._frontends.gui.gui_available", lambda: False)
     with pytest.raises(RuntimeError, match="no display is available"):
         get_frontend("gui")
 
 
 def test_get_frontend_respects_env_var(monkeypatch):
-    """QDEBUG_FRONTEND is honored when no explicit argument is given."""
-    monkeypatch.setenv("QDEBUG_FRONTEND", "cli")
+    """QISDEBUG_FRONTEND is honored when no explicit argument is given."""
+    monkeypatch.setenv("QISDEBUG_FRONTEND", "cli")
     assert isinstance(get_frontend(), CLIFrontend)
 
 
 def test_get_frontend_argument_overrides_env_var(monkeypatch):
     """An explicit frontend argument takes precedence over the env var."""
-    monkeypatch.setenv("QDEBUG_FRONTEND", "gui")
-    monkeypatch.setattr("qdebug._frontends.gui.gui_available", lambda: True)
+    monkeypatch.setenv("QISDEBUG_FRONTEND", "gui")
+    monkeypatch.setattr("qisdebug._frontends.gui.gui_available", lambda: True)
     assert isinstance(get_frontend("cli"), CLIFrontend)
 
 

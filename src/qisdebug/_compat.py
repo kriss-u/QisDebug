@@ -13,7 +13,7 @@ from typing import Any, Callable
 
 from pydantic import BaseModel, ConfigDict, Field
 
-logger = logging.getLogger("qdebug")
+logger = logging.getLogger("qisdebug")
 
 
 def qiskit_version() -> str | None:
@@ -70,7 +70,7 @@ class PatchRegistry(BaseModel):
     def warn(self, message: str) -> None:
         """Record a degradation warning and emit it through the logger."""
         self.warnings.append(message)
-        logger.warning("qdebug: %s", message)
+        logger.warning("qisdebug: %s", message)
 
     def patch(self, owner: Any, attribute: str, factory: Callable[[Callable], Callable]) -> bool:
         """Replace ``owner.attribute`` with ``factory(original)``.
@@ -109,7 +109,7 @@ class PatchRegistry(BaseModel):
                     delattr(applied.owner, applied.attribute)
             except Exception:
                 logger.warning(
-                    "qdebug: failed to restore %s.%s",
+                    "qisdebug: failed to restore %s.%s",
                     getattr(applied.owner, "__name__", applied.owner),
                     applied.attribute,
                 )

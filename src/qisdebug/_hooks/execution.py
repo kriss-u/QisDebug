@@ -21,7 +21,7 @@ from typing import Any, Callable
 from pydantic import BaseModel, ConfigDict, Field
 
 from .._compat import PatchRegistry, logger, resolve
-from .._config import QDebugConfig, get_config
+from .._config import QisDebugConfig, get_config
 from .._events import (
     ExecutionFinishedEvent,
     ExecutionSubmittedEvent,
@@ -31,7 +31,7 @@ from .._events import (
 )
 from .._store import ID_ATTRIBUTE, STORE
 
-SNAPSHOT_LABEL_PREFIX = "qdebug_sv_"
+SNAPSHOT_LABEL_PREFIX = "qisdebug_sv_"
 
 _UNSUPPORTED_OPS = frozenset(
     {"reset", "initialize", "kraus", "superop", "set_statevector", "set_density_matrix"}
@@ -97,7 +97,7 @@ def install(registry: PatchRegistry) -> bool:
             if owner is not None:
                 registry.patch(owner, attribute, _suspended_call_wrapper)
     else:
-        logger.info("qdebug: qiskit-aer not installed; backend statevector capture unavailable")
+        logger.info("qisdebug: qiskit-aer not installed; backend statevector capture unavailable")
     basic_simulator = resolve("qiskit.providers.basic_provider.basic_simulator", "BasicSimulator")
     if basic_simulator is not None:
         applied = registry.patch(basic_simulator, "run", _plain_backend_run_wrapper) or applied
@@ -143,7 +143,7 @@ def _backend_run_wrapper(original: Callable, instrument: bool = True) -> Callabl
         try:
             plan = _plan_backend_run(self, circuits, run_options, instrument)
         except Exception:
-            logger.debug("qdebug: failed to plan instrumented run", exc_info=True)
+            logger.debug("qisdebug: failed to plan instrumented run", exc_info=True)
             plan = None
         if plan is None:
             return original(self, circuits, *args, **run_options)
@@ -159,7 +159,7 @@ def _backend_run_wrapper(original: Callable, instrument: bool = True) -> Callabl
             _record_submission(plan, job)
             _intercept_result(job, plan, circuit_ids)
         except Exception:
-            logger.debug("qdebug: failed to attach result interception", exc_info=True)
+            logger.debug("qisdebug: failed to attach result interception", exc_info=True)
             STORE.resume_circuit_ids(circuit_ids)
         return job
 
@@ -172,7 +172,7 @@ def _plain_backend_run_wrapper(original: Callable) -> Callable:
 
 
 def _plan_circuit_ids(plan: RunPlan) -> set[str]:
-    """Return the qdebug ids of every circuit actually submitted to the backend.
+    """Return the qisdebug ids of every circuit actually submitted to the backend.
 
     ``AerBackend.run`` hands these circuits to a persistent internal thread
     pool for compilation (e.g. inlining control-flow bodies), so they need
@@ -234,7 +234,7 @@ def _plan_backend_run(
 
 
 def _instrument(
-    circuit: Any, timeline: Timeline, config: QDebugConfig
+    circuit: Any, timeline: Timeline, config: QisDebugConfig
 ) -> tuple[Any, list[SnapshotRef]] | None:
     """Copy ``circuit`` with a SaveStatevector inserted after every gate."""
     save_cls = resolve("qiskit_aer.library", "SaveStatevector")
@@ -267,7 +267,7 @@ def _instrument(
 
 
 def _snapshot_positions(
-    circuit: Any, timeline: Timeline, config: QDebugConfig
+    circuit: Any, timeline: Timeline, config: QisDebugConfig
 ) -> set[int] | None:
     """Return data indices to snapshot after, or None when capture must be skipped.
 
@@ -363,7 +363,7 @@ def _intercept_result(job: Any, plan: RunPlan, circuit_ids: set[str]) -> None:
             try:
                 _ingest_result(outcome, plan)
             except Exception:
-                logger.debug("qdebug: failed to ingest execution result", exc_info=True)
+                logger.debug("qisdebug: failed to ingest execution result", exc_info=True)
         return outcome
 
     job.result = result
@@ -475,7 +475,7 @@ def _primitive_run_factory(primitive_name: str) -> Callable[[Callable], Callable
                     job, timelines, primitive_name, started, shots, circuit_ids
                 )
             except Exception:
-                logger.debug("qdebug: failed to record primitive submission", exc_info=True)
+                logger.debug("qisdebug: failed to record primitive submission", exc_info=True)
                 STORE.resume_circuit_ids(circuit_ids)
             return job
 
@@ -551,7 +551,7 @@ def _intercept_primitive_result(
                         shots=shots,
                     )
                 except Exception:
-                    logger.debug("qdebug: failed to record primitive completion", exc_info=True)
+                    logger.debug("qisdebug: failed to record primitive completion", exc_info=True)
         return outcome
 
     job.result = result

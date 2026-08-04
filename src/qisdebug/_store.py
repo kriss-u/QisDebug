@@ -12,7 +12,7 @@ from typing import Any, Iterable, Iterator, Type, TypeVar
 from ._config import get_config
 from ._events import TelemetryEvent, Timeline
 
-ID_ATTRIBUTE = "_qdebug_id"
+ID_ATTRIBUTE = "_qisdebug_id"
 
 EventT = TypeVar("EventT", bound=TelemetryEvent)
 
@@ -21,7 +21,7 @@ class TelemetryStore:
     """Thread-safe LRU store of circuit timelines.
 
     Recording hooks consult :meth:`is_suspended` before writing, so circuits
-    QDebug builds internally (instrumented copies, transpile snapshots) never
+    QisDebug builds internally (instrumented copies, transpile snapshots) never
     pollute user telemetry. Suspension is tracked via a context variable
     rather than ``threading.local`` so it also covers ``asyncio`` tasks
     spawned while suspended.
@@ -42,7 +42,7 @@ class TelemetryStore:
         self._lock = threading.RLock()
         self._sequence = 0
         self._depth: contextvars.ContextVar[int] = contextvars.ContextVar(
-            "qdebug_suspend_depth", default=0
+            "qisdebug_suspend_depth", default=0
         )
         self._suspended_ids: dict[str, int] = {}
 

@@ -1,16 +1,16 @@
-# QDebug
+# QisDebug
 
 Zero-touch instrumentation and timeline debugging for [Qiskit](https://www.ibm.com/quantum/qiskit).
 
-QDebug attaches full circuit and execution visibility to your existing
+QisDebug attaches full circuit and execution visibility to your existing
 Qiskit code the way OpenTelemetry or Sentry attach to a web framework: one
 import, one activation call, and no changes to how you build, transpile, or
 run circuits.
 
 ```python
-import qdebug
+import qisdebug
 
-qdebug.activate()
+qisdebug.activate()
 
 from qiskit import QuantumCircuit, transpile
 from qiskit_aer import AerSimulator
@@ -23,7 +23,7 @@ qc.measure([0, 1], [0, 1])
 backend = AerSimulator()
 counts = backend.run(transpile(qc, backend), shots=1000).result().get_counts()
 
-print(qdebug.timeline(qc).summary())
+print(qisdebug.timeline(qc).summary())
 ```
 
 ```{toctree}

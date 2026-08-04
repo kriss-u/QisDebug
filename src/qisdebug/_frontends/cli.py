@@ -20,7 +20,7 @@ from .base import TimelineFrontend
 class _TimelineShell(cmd.Cmd):
     """Line-oriented REPL for stepping through a merged timeline."""
 
-    prompt = "qdebug> "
+    prompt = "qisdebug> "
 
     def __init__(
         self,
@@ -197,7 +197,7 @@ class CLIFrontend(TimelineFrontend):
             return
 
         names = ", ".join(str(t.name) for t in timelines)
-        print(f"QDebug timeline — {names} ({len(merged)} events)")
+        print(f"QisDebug timeline — {names} ({len(merged)} events)")
         print(
             "commands: n(ext)  p(rev)  f(irst)  l(ast)  g(oto) N  "
             "w(atch)/unwatch qubit|clbit|register ...  watches  h(elp)  q(uit)"

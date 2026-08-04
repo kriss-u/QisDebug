@@ -1,13 +1,13 @@
-"""MCP stdio server exposing QDebug telemetry to coding agents.
+"""MCP stdio server exposing QisDebug telemetry to coding agents.
 
-Wraps every function in :mod:`qdebug._mcp.tools` as an MCP tool. All the
+Wraps every function in :mod:`qisdebug._mcp.tools` as an MCP tool. All the
 actual logic -- timeline lookup, rendering, statevector/counts comparison,
-anomaly scanning, watch evaluation -- lives in :mod:`qdebug._mcp.tools` and
+anomaly scanning, watch evaluation -- lives in :mod:`qisdebug._mcp.tools` and
 the modules it delegates to; this file only registers those functions with
-the protocol layer, the same role :mod:`qdebug._frontends.cli` and
-:mod:`qdebug._frontends.gui` play for human-facing presentation.
+the protocol layer, the same role :mod:`qisdebug._frontends.cli` and
+:mod:`qisdebug._frontends.gui` play for human-facing presentation.
 
-Run directly (``python -m qdebug._mcp.server``, or the ``qdebug-mcp``
+Run directly (``python -m qisdebug._mcp.server``, or the ``qisdebug-mcp``
 console script installed with the ``mcp`` extra) to serve over stdio, the
 transport coding agents expect.
 """
@@ -19,15 +19,15 @@ from mcp.server.mcpserver import MCPServer
 from . import tools
 
 server = MCPServer(
-    "qdebug",
+    "qisdebug",
     instructions=(
-        "QDebug records everything that happens to Qiskit circuits at runtime -- every "
+        "QisDebug records everything that happens to Qiskit circuits at runtime -- every "
         "gate, transpiler pass, mid-execution simulator statevector, and measurement "
         "result -- so bugs can be diagnosed from what actually happened instead of "
         "from reading code. Typical debugging workflow: "
         "(1) run_script executes a target script under instrumentation and returns each "
         "circuit's id, registers, and an anomaly scan; to focus on a suspect region, "
-        "first edit the script to place qdebug.activate()/qdebug.deactivate() around it "
+        "first edit the script to place qisdebug.activate()/qisdebug.deactivate() around it "
         "and pass auto_activate=false. "
         "(2) add_watch pins qubits/clbits/registers of interest; read_watches reports "
         "their gate history, P(1), and Bloch vector at any sequence point. "
@@ -75,7 +75,7 @@ for _tool in (
 
 
 def main() -> None:
-    """Entry point for the ``qdebug-mcp`` console script: serve over stdio."""
+    """Entry point for the ``qisdebug-mcp`` console script: serve over stdio."""
     server.run()
 
 

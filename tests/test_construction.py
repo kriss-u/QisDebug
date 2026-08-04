@@ -6,7 +6,7 @@ from qiskit.circuit import CircuitInstruction
 from qiskit.circuit.library import XGate
 from qiskit.circuit.quantumcircuit import QuantumCircuit
 
-import qdebug
+import qisdebug
 from conftest import get_timeline
 
 
@@ -17,7 +17,7 @@ def _recorded(qc):
 
 def test_gate_helper_methods_are_recorded():
     """Standard-gate helpers (the `_append_standard_gate` fast path) record."""
-    qdebug.activate()
+    qisdebug.activate()
     qc = QuantumCircuit(3)
     qc.h(0)
     qc.cx(0, 1)
@@ -27,7 +27,7 @@ def test_gate_helper_methods_are_recorded():
 
 def test_explicit_append_and_circuit_instruction_are_recorded():
     """Both public append forms record exactly one event per instruction."""
-    qdebug.activate()
+    qisdebug.activate()
     qc = QuantumCircuit(2)
     qc.append(XGate(), [0])
     qc.append(CircuitInstruction(XGate(), [qc.qubits[1]], []))
@@ -36,7 +36,7 @@ def test_explicit_append_and_circuit_instruction_are_recorded():
 
 def test_measure_broadcast_records_each_instruction():
     """A single broadcasting call records one event per resolved instruction."""
-    qdebug.activate()
+    qisdebug.activate()
     qc = QuantumCircuit(2, 2)
     qc.measure([0, 1], [0, 1])
     events = get_timeline(qc).gate_events
@@ -48,7 +48,7 @@ def test_measure_broadcast_records_each_instruction():
 
 def test_barrier_and_reset_are_recorded():
     """Non-gate instructions that flow through `_append` are captured too."""
-    qdebug.activate()
+    qisdebug.activate()
     qc = QuantumCircuit(2)
     qc.barrier()
     qc.reset(0)
@@ -57,7 +57,7 @@ def test_barrier_and_reset_are_recorded():
 
 def test_parameters_are_recorded():
     """Gate parameters are stored as floats on the event."""
-    qdebug.activate()
+    qisdebug.activate()
     qc = QuantumCircuit(1)
     qc.rz(0.25, 0)
     event = get_timeline(qc).gate_events[0]
@@ -75,7 +75,7 @@ def _sub_circuit():
 
 def test_compose_inplace_records_merged_instructions():
     """compose(inplace=True) bypasses append but is still recorded, remapped."""
-    qdebug.activate()
+    qisdebug.activate()
     qc = QuantumCircuit(3)
     qc.x(0)
     qc.compose(_sub_circuit(), qubits=[1, 2], inplace=True)
@@ -84,7 +84,7 @@ def test_compose_inplace_records_merged_instructions():
 
 def test_compose_copy_records_nothing_on_the_source():
     """compose(inplace=False) leaves the source circuit's timeline untouched."""
-    qdebug.activate()
+    qisdebug.activate()
     qc = QuantumCircuit(2)
     qc.x(0)
     qc.compose(_sub_circuit())
@@ -93,7 +93,7 @@ def test_compose_copy_records_nothing_on_the_source():
 
 def test_compose_front_records_no_misattributed_events():
     """front=True prepends, which a data diff cannot attribute, so skip it."""
-    qdebug.activate()
+    qisdebug.activate()
     qc = QuantumCircuit(2)
     qc.x(0)
     qc.compose(_sub_circuit(), front=True, inplace=True)
@@ -103,7 +103,7 @@ def test_compose_front_records_no_misattributed_events():
 
 def test_control_flow_body_params_are_compact():
     """Control-flow block bodies render as op summaries, not circuit drawings."""
-    qdebug.activate()
+    qisdebug.activate()
     qc = QuantumCircuit(2, 1)
     qc.measure(0, 0)
     with qc.if_test((qc.clbits[0], 1)):
@@ -117,12 +117,12 @@ def test_control_flow_body_params_are_compact():
 
 def test_recording_does_not_change_circuit_semantics():
     """A circuit built while active equals one built while inactive."""
-    qdebug.activate()
+    qisdebug.activate()
     active = QuantumCircuit(2, 2)
     active.h(0)
     active.cx(0, 1)
     active.measure([0, 1], [0, 1])
-    qdebug.deactivate()
+    qisdebug.deactivate()
     plain = QuantumCircuit(2, 2)
     plain.h(0)
     plain.cx(0, 1)
@@ -163,9 +163,9 @@ def _gate_sequences(draw):
 @given(sequence=_gate_sequences())
 def test_every_random_gate_sequence_is_fully_recorded(sequence):
     """The recorded event list always mirrors circuit.data exactly."""
-    qdebug.deactivate()
-    qdebug.clear()
-    qdebug.activate()
+    qisdebug.deactivate()
+    qisdebug.clear()
+    qisdebug.activate()
     try:
         qc = QuantumCircuit(3)
         for name, qubits, params in sequence:
@@ -176,5 +176,5 @@ def test_every_random_gate_sequence_is_fully_recorded(sequence):
             assert event.gate == instruction.operation.name
             assert event.qubits == tuple(qc.find_bit(b).index for b in instruction.qubits)
     finally:
-        qdebug.deactivate()
-        qdebug.clear()
+        qisdebug.deactivate()
+        qisdebug.clear()

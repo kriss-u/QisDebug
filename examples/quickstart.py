@@ -1,10 +1,10 @@
-"""QDebug quickstart: trace a circuit from construction through execution.
+"""QisDebug quickstart: trace a circuit from construction through execution.
 
 Run with::
 
     python examples/quickstart.py
 
-Note that after ``qdebug.activate()`` the circuit-building, transpile and run
+Note that after ``qisdebug.activate()`` the circuit-building, transpile and run
 calls below are completely ordinary Qiskit code.
 """
 
@@ -13,12 +13,12 @@ import json
 from qiskit import QuantumCircuit, transpile
 from qiskit_aer import AerSimulator
 
-import qdebug
+import qisdebug
 
 
 def main() -> None:
-    """Trace a GHZ circuit and print everything QDebug captured."""
-    qdebug.activate()
+    """Trace a GHZ circuit and print everything QisDebug captured."""
+    qisdebug.activate()
 
     qc = QuantumCircuit(3, 3, name="ghz")
     qc.h(0)
@@ -31,8 +31,8 @@ def main() -> None:
     counts = backend.run(transpiled, shots=1000).result().get_counts()
     print(f"counts: {counts}\n")
 
-    timeline = qdebug.timeline(qc)
-    assert timeline is not None, "circuit was not tracked by qdebug"
+    timeline = qisdebug.timeline(qc)
+    assert timeline is not None, "circuit was not tracked by qisdebug"
     print(timeline.summary())
 
     print("\nfull event sequence:")
@@ -57,7 +57,7 @@ def main() -> None:
 
     timeline.show()
 
-    qdebug.deactivate()
+    qisdebug.deactivate()
 
 
 if __name__ == "__main__":

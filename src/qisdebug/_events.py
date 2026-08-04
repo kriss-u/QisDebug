@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class EventType(str, Enum):
-    """Kinds of telemetry events QDebug records."""
+    """Kinds of telemetry events QisDebug records."""
 
     GATE_ADDED = "gate_added"
     TRANSPILE_STARTED = "transpile_started"
@@ -180,7 +180,7 @@ class ExecutionFinishedEvent(TelemetryEvent):
 
 
 class NoteEvent(TelemetryEvent):
-    """A diagnostic message from QDebug itself, e.g. why capture was skipped."""
+    """A diagnostic message from QisDebug itself, e.g. why capture was skipped."""
 
     type: EventType = EventType.NOTE
     message: str
@@ -191,7 +191,7 @@ class NoteEvent(TelemetryEvent):
 
 
 class Timeline(BaseModel):
-    """Everything QDebug observed about one circuit, ordered by sequence.
+    """Everything QisDebug observed about one circuit, ordered by sequence.
 
     A timeline follows a circuit through construction, transpilation and
     execution. The transpile hook propagates the circuit id onto transpiled
@@ -311,7 +311,7 @@ class Timeline(BaseModel):
         if any(e.operation is None for e in gates):
             return None
         with STORE.suspended():
-            circuit = QuantumCircuit(self.num_qubits, self.num_clbits, name=self.name or "qdebug")
+            circuit = QuantumCircuit(self.num_qubits, self.num_clbits, name=self.name or "qisdebug")
             for event in gates:
                 try:
                     circuit.append(
@@ -392,7 +392,7 @@ class Timeline(BaseModel):
         """Display this timeline using the best available frontend.
 
         Auto-detects a native GUI window or text-based CLI. Force one with
-        ``frontend="gui"|"cli"`` or the ``QDEBUG_FRONTEND`` environment
+        ``frontend="gui"|"cli"`` or the ``QISDEBUG_FRONTEND`` environment
         variable.
         """
         from .visualizer import show

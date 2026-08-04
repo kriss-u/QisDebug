@@ -1,4 +1,4 @@
-"""Public activation lifecycle for QDebug's instrumentation layers."""
+"""Public activation lifecycle for QisDebug's instrumentation layers."""
 
 from __future__ import annotations
 
@@ -49,10 +49,10 @@ def activate() -> ActivationReport:
             warnings=list(registry.warnings),
         )
         if not any(layers.values()):
-            logger.warning("qdebug: activation attached no instrumentation layers")
+            logger.warning("qisdebug: activation attached no instrumentation layers")
         else:
             attached = ", ".join(name for name, ok in layers.items() if ok)
-            logger.info("qdebug: active (layers: %s)", attached)
+            logger.info("qisdebug: active (layers: %s)", attached)
         return _report
 
 
@@ -68,5 +68,5 @@ def deactivate() -> None:
 
 
 def is_active() -> bool:
-    """Return True while QDebug's patches are applied."""
+    """Return True while QisDebug's patches are applied."""
     return _registry is not None

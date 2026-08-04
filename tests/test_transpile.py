@@ -5,9 +5,9 @@ from qiskit.circuit.quantumcircuit import QuantumCircuit
 from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
 from qiskit_aer import AerSimulator
 
-import qdebug
+import qisdebug
 from conftest import get_timeline
-from qdebug import EventType
+from qisdebug import EventType
 
 
 def _bell(name="bell"):
@@ -21,7 +21,7 @@ def _bell(name="bell"):
 
 def test_transpile_records_start_passes_and_finish():
     """A transpile() call produces started, per-pass, and finished events."""
-    qdebug.activate()
+    qisdebug.activate()
     qc = _bell()
     transpiled = transpile(qc, basis_gates=["cx", "u"], optimization_level=1)
 
@@ -39,10 +39,10 @@ def test_transpile_records_start_passes_and_finish():
 
 def test_transpiled_output_joins_the_same_timeline():
     """The id propagates to the output, linking transpile to execution."""
-    qdebug.activate()
+    qisdebug.activate()
     qc = _bell("linked")
     transpiled = transpile(qc, backend=AerSimulator(), optimization_level=1)
-    assert getattr(transpiled, "_qdebug_id") == get_timeline(qc).circuit_id
+    assert getattr(transpiled, "_qisdebug_id") == get_timeline(qc).circuit_id
 
     AerSimulator().run(transpiled, shots=10).result()
     timeline = get_timeline(qc)
@@ -51,8 +51,8 @@ def test_transpiled_output_joins_the_same_timeline():
 
 
 def test_user_callback_still_runs():
-    """QDebug chains, not replaces, a user-supplied transpile callback."""
-    qdebug.activate()
+    """QisDebug chains, not replaces, a user-supplied transpile callback."""
+    qisdebug.activate()
     seen = []
 
     def callback(pass_, dag, time, property_set, count):
@@ -64,7 +64,7 @@ def test_user_callback_still_runs():
 
 def test_changed_snapshot_policy_keeps_some_circuits():
     """With the default policy, passes that changed the dag carry a snapshot."""
-    qdebug.activate()
+    qisdebug.activate()
     qc = _bell()
     transpile(qc, basis_gates=["cx", "u"], optimization_level=1)
     passes = get_timeline(qc).filter(EventType.TRANSPILE_PASS)
@@ -77,8 +77,8 @@ def test_changed_snapshot_policy_keeps_some_circuits():
 
 def test_snapshot_policy_none_records_passes_without_circuits():
     """transpile_snapshots='none' still records pass events, minus snapshots."""
-    qdebug.configure(transpile_snapshots="none")
-    qdebug.activate()
+    qisdebug.configure(transpile_snapshots="none")
+    qisdebug.activate()
     qc = _bell()
     transpile(qc, basis_gates=["cx", "u"])
     timeline = get_timeline(qc)
@@ -94,7 +94,7 @@ def test_layout_widening_is_detected_as_a_change():
     Depth, size and op counts are identical before and after widening, so
     this exercises the structural part of the change fingerprint.
     """
-    qdebug.activate()
+    qisdebug.activate()
     qc = _bell()
     transpile(qc, coupling_map=[[0, 1], [1, 2], [2, 3], [3, 4]], basis_gates=["cx", "u"])
     passes = get_timeline(qc).filter(EventType.TRANSPILE_PASS)
@@ -105,7 +105,7 @@ def test_layout_widening_is_detected_as_a_change():
 
 def test_layout_permutation_is_detected_as_a_change():
     """A pure qubit relabeling (same depth, size and ops) is still a change."""
-    qdebug.activate()
+    qisdebug.activate()
     qc = _bell()
     transpile(qc, coupling_map=[[0, 1], [1, 0]], initial_layout=[1, 0], basis_gates=["cx", "u"])
     passes = get_timeline(qc).filter(EventType.TRANSPILE_PASS)
@@ -117,13 +117,13 @@ def test_layout_permutation_is_detected_as_a_change():
 
 def test_finished_event_carries_the_final_circuit():
     """The finished event freezes a copy of the transpiled output."""
-    qdebug.activate()
+    qisdebug.activate()
     qc = _bell()
     transpiled = transpile(qc, basis_gates=["cx", "u"], optimization_level=1)
     finished = get_timeline(qc).filter(EventType.TRANSPILE_FINISHED)[0]
     assert finished.circuit is not None
     assert finished.circuit == transpiled
-    assert getattr(finished.circuit, "_qdebug_id", None) is None
+    assert getattr(finished.circuit, "_qisdebug_id", None) is None
     size_before = finished.circuit.size()
     transpiled.x(0)
     assert finished.circuit.size() == size_before
@@ -131,7 +131,7 @@ def test_finished_event_carries_the_final_circuit():
 
 def test_preset_pass_manager_run_is_recorded():
     """Directly running a preset PassManager records the same telemetry."""
-    qdebug.activate()
+    qisdebug.activate()
     qc = _bell("pm-run")
     pm = generate_preset_pass_manager(optimization_level=1, basis_gates=["cx", "u"])
     out = pm.run(qc)
@@ -139,12 +139,12 @@ def test_preset_pass_manager_run_is_recorded():
     assert timeline.filter(EventType.TRANSPILE_STARTED)
     assert timeline.filter(EventType.TRANSPILE_PASS)
     assert timeline.filter(EventType.TRANSPILE_FINISHED)
-    assert getattr(out, "_qdebug_id") == timeline.circuit_id
+    assert getattr(out, "_qisdebug_id") == timeline.circuit_id
 
 
 def test_transpiling_a_list_of_circuits_records_start_and_finish():
     """Multi-circuit transpiles record boundaries for every circuit."""
-    qdebug.activate()
+    qisdebug.activate()
     circuits = [_bell(f"batch-{i}") for i in range(2)]
     transpile(circuits, basis_gates=["cx", "u"])
     for qc in circuits:
@@ -170,7 +170,7 @@ def test_backend_internal_compilation_is_recorded_as_backend_phase():
     Aer compiles on a worker thread where context-var suspension is not
     visible, so this exercises the suspended-circuit-id path.
     """
-    qdebug.activate()
+    qisdebug.activate()
     qc = _dynamic()
     AerSimulator().run(qc, shots=10).result()
     timeline = get_timeline(qc)
@@ -183,8 +183,8 @@ def test_backend_internal_compilation_is_recorded_as_backend_phase():
 
 def test_backend_compilation_capture_can_be_disabled():
     """With capture off, backend-internal runs leave only a note event."""
-    qdebug.configure(capture_backend_compilation=False)
-    qdebug.activate()
+    qisdebug.configure(capture_backend_compilation=False)
+    qisdebug.activate()
     qc = _dynamic("dynamic-off")
     AerSimulator().run(qc, shots=10).result()
     timeline = get_timeline(qc)
@@ -196,7 +196,7 @@ def test_directly_applied_pass_is_recorded():
     """SomePass()(circuit) never enters PassManager.run but is still captured."""
     from qiskit.transpiler.passes import Optimize1qGatesDecomposition
 
-    qdebug.activate()
+    qisdebug.activate()
     qc = QuantumCircuit(1, name="standalone")
     qc.h(0)
     qc.h(0)
@@ -207,7 +207,7 @@ def test_directly_applied_pass_is_recorded():
     assert passes[0].pass_name == "Optimize1qGatesDecomposition"
     assert passes[0].changed
     assert passes[0].circuit is not None
-    assert getattr(out, "_qdebug_id") == timeline.circuit_id
+    assert getattr(out, "_qisdebug_id") == timeline.circuit_id
 
 
 def test_hand_built_pass_manager_is_recorded():
@@ -215,7 +215,7 @@ def test_hand_built_pass_manager_is_recorded():
     from qiskit.transpiler import PassManager
     from qiskit.transpiler.passes import Depth, Optimize1qGatesDecomposition
 
-    qdebug.activate()
+    qisdebug.activate()
     qc = _bell("custom-pm")
     pm = PassManager([Depth(), Optimize1qGatesDecomposition()])
     pm.run(qc)
@@ -228,9 +228,9 @@ def test_hand_built_pass_manager_is_recorded():
 
 def test_construction_of_transpiled_circuit_not_polluted():
     """Internal circuits built during transpilation create no timelines."""
-    qdebug.activate()
+    qisdebug.activate()
     qc = _bell("clean")
-    before = {t.circuit_id for t in qdebug.timelines()}
+    before = {t.circuit_id for t in qisdebug.timelines()}
     transpile(qc, basis_gates=["cx", "u"], optimization_level=2)
-    after = {t.circuit_id for t in qdebug.timelines()}
+    after = {t.circuit_id for t in qisdebug.timelines()}
     assert after == before

@@ -1,15 +1,15 @@
-"""QDebug: zero-touch instrumentation and timeline debugging for Qiskit.
+"""QisDebug: zero-touch instrumentation and timeline debugging for Qiskit.
 
 Attach full circuit and execution visibility to existing Qiskit code without
 changing it::
 
-    import qdebug
+    import qisdebug
 
-    qdebug.activate()
+    qisdebug.activate()
 
     # ... build, transpile and run circuits exactly as usual ...
 
-    print(qdebug.timeline(circuit).summary())
+    print(qisdebug.timeline(circuit).summary())
 
 Importing this module has no side effects; nothing is patched until
 :func:`activate` is called, and :func:`deactivate` restores every original
@@ -21,7 +21,7 @@ from __future__ import annotations
 from typing import Any
 
 from ._activation import ActivationReport, activate, deactivate, is_active
-from ._config import QDebugConfig, configure, get_config
+from ._config import QisDebugConfig, configure, get_config
 from ._events import (
     EventType,
     ExecutionFinishedEvent,
@@ -46,7 +46,7 @@ __all__ = [
     "ExecutionSubmittedEvent",
     "GateEvent",
     "NoteEvent",
-    "QDebugConfig",
+    "QisDebugConfig",
     "StateSnapshotEvent",
     "TelemetryEvent",
     "Timeline",
@@ -67,7 +67,7 @@ __all__ = [
 def timeline(circuit: Any = None) -> Timeline | None:
     """Return the timeline for ``circuit``, or the most recent one when None.
 
-    ``circuit`` may be a QuantumCircuit that was touched while QDebug was
+    ``circuit`` may be a QuantumCircuit that was touched while QisDebug was
     active, or a timeline id string.
     """
     if circuit is None:

@@ -1,9 +1,9 @@
-# QDebug
+# QisDebug
 
 Zero-touch instrumentation and timeline debugging for
 [Qiskit](https://www.ibm.com/quantum/qiskit).
 
-QDebug attaches full circuit and execution visibility to your existing Qiskit
+QisDebug attaches full circuit and execution visibility to your existing Qiskit
 code the way OpenTelemetry or Sentry attach to a web framework: one import, one
 activation call, and no changes to how you build, transpile, or run circuits.
 Everything that happens to a circuit — every gate appended, every transpiler
@@ -12,9 +12,9 @@ a single per-circuit **timeline** you can inspect, export, or explore
 interactively in a notebook.
 
 ```python
-import qdebug
+import qisdebug
 
-qdebug.activate()
+qisdebug.activate()
 
 # --- your existing Qiskit code, completely unchanged -----------------
 from qiskit import QuantumCircuit, transpile
@@ -29,7 +29,7 @@ backend = AerSimulator()
 counts = backend.run(transpile(qc, backend), shots=1000).result().get_counts()
 # ----------------------------------------------------------------------
 
-print(qdebug.timeline(qc).summary())
+print(qisdebug.timeline(qc).summary())
 ```
 
 ```text
@@ -49,7 +49,7 @@ you already made, and stripped from the results you see.
 
 ## Install
 
-QDebug is currently installed from source; see [INSTALL.md](INSTALL.md) for
+QisDebug is currently installed from source; see [INSTALL.md](INSTALL.md) for
 full instructions.
 
 ```bash
@@ -68,7 +68,7 @@ pip install -e ".[docs]"      # + Sphinx documentation toolchain
 | Construction  | `gate_added`                                                  | Wraps `QuantumCircuit.append`/`_append`; records each instruction with qubits, clbits, and params after broadcasting resolves                                                      |
 | Transpilation | `transpile_started`, `transpile_pass`, `transpile_finished`   | Wraps `PassManager.run` and injects a per-pass callback through Qiskit's own supported `callback` mechanism                                                                        |
 | Execution     | `execution_submitted`, `state_snapshot`, `execution_finished` | Wraps `AerBackend.run` and the Sampler/Estimator primitives; on Aer, runs an instrumented copy with `save_statevector` after every gate and strips the snapshots from your results |
-| Diagnostics   | `note`                                                        | QDebug explains itself, e.g. why snapshot capture was skipped for a circuit                                                                                                        |
+| Diagnostics   | `note`                                                        | QisDebug explains itself, e.g. why snapshot capture was skipped for a circuit                                                                                                        |
 
 All three phases land on **one timeline per circuit**: transpiled outputs
 inherit the source circuit's hidden id, so the run of a transpiled circuit is
@@ -80,21 +80,21 @@ The entire surface is intentionally small:
 
 | Function                | Purpose                                                                                                   |
 | ----------------------- | --------------------------------------------------------------------------------------------------------- |
-| `qdebug.activate()`     | Attach all instrumentation layers. Idempotent. Returns an `ActivationReport` saying which layers attached |
-| `qdebug.deactivate()`   | Restore every original Qiskit method                                                                      |
-| `qdebug.is_active()`    | Whether patches are currently applied                                                                     |
-| `qdebug.timeline(qc)`   | The `Timeline` for a circuit (or id string); `qdebug.timeline()` returns the most recent                  |
-| `qdebug.timelines()`    | All tracked timelines, most recent first                                                                  |
-| `qdebug.clear()`        | Drop all recorded telemetry                                                                               |
-| `qdebug.configure(...)` | Adjust limits and switches (validated; see below)                                                         |
+| `qisdebug.activate()`     | Attach all instrumentation layers. Idempotent. Returns an `ActivationReport` saying which layers attached |
+| `qisdebug.deactivate()`   | Restore every original Qiskit method                                                                      |
+| `qisdebug.is_active()`    | Whether patches are currently applied                                                                     |
+| `qisdebug.timeline(qc)`   | The `Timeline` for a circuit (or id string); `qisdebug.timeline()` returns the most recent                  |
+| `qisdebug.timelines()`    | All tracked timelines, most recent first                                                                  |
+| `qisdebug.clear()`        | Drop all recorded telemetry                                                                               |
+| `qisdebug.configure(...)` | Adjust limits and switches (validated; see below)                                                         |
 
-Importing `qdebug` has **no side effects** — nothing is patched until
+Importing `qisdebug` has **no side effects** — nothing is patched until
 `activate()` is called.
 
 ### Timeline
 
 ```python
-tl = qdebug.timeline(qc)
+tl = qisdebug.timeline(qc)
 tl.events                 # every event, in true order (monotonic seq numbers)
 tl.gate_events            # construction events
 tl.transpile_events       # transpilation events
@@ -119,12 +119,12 @@ tl.show()                 # native GUI window, or a text CLI with no display
 ## The timeline viewer
 
 ```python
-qdebug.timeline(qc).show()
+qisdebug.timeline(qc).show()
 ```
 
 Auto-detects a native GUI window (PySide6) when a display is available, or
 falls back to a text-based interactive CLI otherwise — force either with
-`show(frontend="gui"|"cli")` or the `QDEBUG_FRONTEND` environment variable.
+`show(frontend="gui"|"cli")` or the `QISDEBUG_FRONTEND` environment variable.
 Either way, a slider/stepper walks the full event sequence; each position
 shows the circuit as it existed at that moment (drawn with Qiskit's own
 drawer), the statevector with amplitudes and probabilities, or per-pass
@@ -140,17 +140,17 @@ reasoning about the code blind:
 
 ```bash
 pip install -e ".[mcp,aer]"
-claude mcp add qdebug -- qdebug-mcp     # or the equivalent for your agent
+claude mcp add qisdebug -- qisdebug-mcp     # or the equivalent for your agent
 ```
 
-The division of labor is deliberate. QDebug does not try to decide what a
-quantum program *should* do — the agent does. QDebug extracts the ground
+The division of labor is deliberate. QisDebug does not try to decide what a
+quantum program *should* do — the agent does. QisDebug extracts the ground
 truth and does the arithmetic:
 
 - **Run under instrumentation** — `run_script` executes a script with
-  QDebug active and reports every circuit's id, registers, and an anomaly
+  QisDebug active and reports every circuit's id, registers, and an anomaly
   scan in one shot. To focus on a suspect region, the agent inserts
-  `qdebug.activate()`/`qdebug.deactivate()` around it and passes
+  `qisdebug.activate()`/`qisdebug.deactivate()` around it and passes
   `auto_activate=false`, scoping capture to exactly that window.
 - **Extract mid-execution state** — `get_events` (filtered, paged),
   `get_state_snapshot` (raw amplitudes and probabilities at any captured
@@ -234,7 +234,7 @@ Open `docs/_build/html/index.html` in a browser.
 [Qiskit Trebugger](https://github.com/qiskit-community/qiskit-trebugger)
 requires replacing `transpile` with a special debug call and covers only the
 transpiler stage. CircInspect provides step-through debugging for PennyLane.
-QDebug's distinction is passive, near-zero-setup attachment with full lifecycle
+QisDebug's distinction is passive, near-zero-setup attachment with full lifecycle
 coverage — construction through transpilation to execution — on unmodified
 Qiskit code.
 

@@ -1,63 +1,63 @@
 # API Reference
 
-The entire public surface is re-exported from the top-level `qdebug` package.
+The entire public surface is re-exported from the top-level `qisdebug` package.
 
 ## Activation
 
 ```{eval-rst}
-.. autofunction:: qdebug.activate
-.. autofunction:: qdebug.deactivate
-.. autofunction:: qdebug.is_active
-.. autoclass:: qdebug.ActivationReport
+.. autofunction:: qisdebug.activate
+.. autofunction:: qisdebug.deactivate
+.. autofunction:: qisdebug.is_active
+.. autoclass:: qisdebug.ActivationReport
    :members:
 ```
 
 ## Timelines
 
 ```{eval-rst}
-.. autofunction:: qdebug.timeline
-.. autofunction:: qdebug.timelines
-.. autofunction:: qdebug.clear
-.. autoclass:: qdebug.Timeline
+.. autofunction:: qisdebug.timeline
+.. autofunction:: qisdebug.timelines
+.. autofunction:: qisdebug.clear
+.. autoclass:: qisdebug.Timeline
    :members:
 ```
 
 ## Configuration
 
 ```{eval-rst}
-.. autofunction:: qdebug.configure
-.. autofunction:: qdebug.get_config
-.. autoclass:: qdebug.QDebugConfig
+.. autofunction:: qisdebug.configure
+.. autofunction:: qisdebug.get_config
+.. autoclass:: qisdebug.QisDebugConfig
    :members:
 ```
 
 ## Events
 
 ```{eval-rst}
-.. autoclass:: qdebug.EventType
+.. autoclass:: qisdebug.EventType
    :members:
-.. autoclass:: qdebug.TelemetryEvent
+.. autoclass:: qisdebug.TelemetryEvent
    :members:
-.. autoclass:: qdebug.GateEvent
+.. autoclass:: qisdebug.GateEvent
    :members:
-.. autoclass:: qdebug.TranspileStartedEvent
+.. autoclass:: qisdebug.TranspileStartedEvent
    :members:
-.. autoclass:: qdebug.TranspilePassEvent
+.. autoclass:: qisdebug.TranspilePassEvent
    :members:
-.. autoclass:: qdebug.TranspileFinishedEvent
+.. autoclass:: qisdebug.TranspileFinishedEvent
    :members:
-.. autoclass:: qdebug.ExecutionSubmittedEvent
+.. autoclass:: qisdebug.ExecutionSubmittedEvent
    :members:
-.. autoclass:: qdebug.StateSnapshotEvent
+.. autoclass:: qisdebug.StateSnapshotEvent
    :members:
-.. autoclass:: qdebug.ExecutionFinishedEvent
+.. autoclass:: qisdebug.ExecutionFinishedEvent
    :members:
-.. autoclass:: qdebug.NoteEvent
+.. autoclass:: qisdebug.NoteEvent
    :members:
 ```
 
 ## Visualizer
 
 ```{eval-rst}
-.. autofunction:: qdebug.visualizer.show
+.. autofunction:: qisdebug.visualizer.show
 ```

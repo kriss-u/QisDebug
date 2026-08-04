@@ -1,7 +1,7 @@
 """Native GUI frontend: a Qt window, used when a display is available.
 
 Built on PySide6 rather than tkinter: PySide6's wheels bundle the Qt
-binaries they need, so ``pip install "qdebug[gui]"`` is enough on its own,
+binaries they need, so ``pip install "qisdebug[gui]"`` is enough on its own,
 no separate system Qt install required, and its layout manager (as opposed
 to tkinter's ``pack``) keeps fixed-size widgets like the playback controls
 from ever being squeezed out by a large circuit diagram or histogram image.
@@ -69,7 +69,7 @@ class QtFrontend(TimelineFrontend):
     def unavailable_reason(self) -> str:
         return (
             "no display is available for a native GUI window "
-            "(PySide6 not installed -- pip install \"qdebug[gui]\" -- "
+            "(PySide6 not installed -- pip install \"qisdebug[gui]\" -- "
             "or DISPLAY/WAYLAND_DISPLAY unset)"
         )
 
@@ -223,7 +223,7 @@ class _TimelineWindow(Scheduler[QTimer]):  # pylint: disable=too-many-instance-a
         self._key_filter: _PlaybackKeyFilter | None = None
 
         self.window = _TimelineWidget(self._cleanup_key_filter)
-        self.window.setWindowTitle(f"QDebug timeline — {title}")
+        self.window.setWindowTitle(f"QisDebug timeline — {title}")
         self.window.resize(900, 650)
         self.window.setMinimumSize(600, 400)
 

@@ -3,14 +3,14 @@
 from qiskit.circuit.quantumcircuit import QuantumCircuit
 from qiskit_aer import AerSimulator
 
-import qdebug
+import qisdebug
 from conftest import get_timeline
-from qdebug import visualizer
+from qisdebug import visualizer
 
 
 def _traced_bell():
     """Run a bell circuit under instrumentation and return its timeline."""
-    qdebug.activate()
+    qisdebug.activate()
     qc = QuantumCircuit(2, 2, name="viz")
     qc.h(0)
     qc.cx(0, 1)

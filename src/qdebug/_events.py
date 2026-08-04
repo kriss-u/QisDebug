@@ -276,6 +276,23 @@ class Timeline(BaseModel):
         found = [e for e in self.events if isinstance(e, StateSnapshotEvent)]
         return sorted(found, key=lambda e: (e.seq, e.step))
 
+    def snapshot_at_seq(self, seq: int) -> StateSnapshotEvent | None:
+        """Return the state snapshot captured right after the gate event at ``seq``.
+
+        Snapshots are numbered by ``step`` (position in the instrumented
+        replay), while gates are numbered by ``seq`` (position in the whole
+        timeline, interleaved with transpile/execution events) -- resolving
+        one into the other otherwise means a caller has to count gate
+        events by hand. Returns None if ``seq`` isn't a gate_added event's
+        seq, or no snapshot was captured for it.
+        """
+        gates = self.gate_events
+        index = next((i for i, e in enumerate(gates) if e.seq == seq), None)
+        if index is None:
+            return None
+        step = index + 1
+        return next((s for s in self.snapshots if s.step == step), None)
+
     def circuit_at(self, step: int | None = None) -> Any | None:
         """Rebuild the circuit as it looked after the first ``step`` gates.
 

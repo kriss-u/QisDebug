@@ -8,7 +8,12 @@ from qiskit_aer import AerSimulator
 
 import qdebug
 from conftest import get_timeline
-from qdebug._analysis import compare_counts, compare_statevector, find_anomalies
+from qdebug._analysis import (
+    compare_counts,
+    compare_statevector,
+    expand_sparse_statevector,
+    find_anomalies,
+)
 from qdebug._events import EventType, StateSnapshotEvent
 
 
@@ -47,6 +52,18 @@ def test_compare_statevector_rejects_wrong_length():
     final = timeline.snapshots[-1]
     with pytest.raises(ValueError):
         compare_statevector(final, [1.0, 0.0])
+
+
+def test_expand_sparse_statevector_fills_named_labels_and_zeros_the_rest():
+    dense = expand_sparse_statevector(
+        {"00": [1 / math.sqrt(2), 0], "11": [1 / math.sqrt(2), 0]}, num_qubits=2
+    )
+    assert dense == [1 / math.sqrt(2), 0j, 0j, 1 / math.sqrt(2)]
+
+
+def test_expand_sparse_statevector_rejects_wrong_width_label():
+    with pytest.raises(ValueError, match="2-character binary string"):
+        expand_sparse_statevector({"1": [1.0, 0.0]}, num_qubits=2)
 
 
 def test_compare_counts_matches_balanced_bell_outcomes():

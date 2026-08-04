@@ -18,7 +18,7 @@ lives here, presentation lives in the caller.
 
 from __future__ import annotations
 
-from typing import Sequence
+from typing import Mapping, Sequence
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
@@ -100,6 +100,27 @@ class Anomaly(BaseModel):
     severity: Severity
     seq: int
     message: str
+
+
+def expand_sparse_statevector(
+    expected: Mapping[str, Sequence[float]], num_qubits: int
+) -> list[complex]:
+    """Expand a sparse bitstring-labeled amplitude map into a dense statevector.
+
+    ``expected`` maps a basis state's binary label (qubit 0 least
+    significant, the same label :class:`BasisMismatch` reports) to its
+    ``[re, im]`` amplitude; every label left out is assumed to be zero. This
+    mirrors the shape :func:`compare_counts` already takes for outcomes, so
+    a caller only names the basis states it has an expectation about
+    instead of supplying all ``2 ** num_qubits`` amplitudes by hand.
+    """
+    dense: list[complex] = [0j] * (2**num_qubits)
+    for label, amplitude in expected.items():
+        if len(label) != num_qubits or any(c not in "01" for c in label):
+            raise ValueError(f"label {label!r} must be a {num_qubits}-character binary string")
+        re, im = amplitude
+        dense[int(label, 2)] = complex(re, im)
+    return dense
 
 
 def compare_statevector(

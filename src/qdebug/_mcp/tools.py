@@ -22,12 +22,12 @@ from __future__ import annotations
 import json
 import runpy
 import sys
-from typing import Any, Literal
+from typing import Any, Literal, Mapping, Sequence
 
 import qdebug
 
 from .. import _analysis
-from .._events import EventType, Timeline
+from .._events import EventType, StateSnapshotEvent, Timeline
 from .._frontends._render import WatchTarget, format_statevector, render_watch
 from .._store import STORE
 
@@ -158,29 +158,54 @@ def get_circuit_text(circuit_id: str, step: int | None = None) -> str:
     return str(circuit.draw(output="text", fold=-1))
 
 
-def get_state_snapshot(circuit_id: str, step: int | None = None) -> dict[str, Any]:
-    """Return the captured simulator state at one point mid-execution.
+def _resolve_snapshot(
+    timeline: Timeline, step: int | None, seq: int | None
+) -> StateSnapshotEvent:
+    """Look up one state snapshot by ``step`` or by the ``seq`` of the gate it follows.
 
-    ``step`` selects which snapshot (step 0 is the initial state, step N
-    the state after the Nth instrumented instruction); omit it for the
-    final captured state. Returns the raw amplitudes as ``[[re, im], ...]``
-    pairs, per-basis-state probabilities, and a human-readable rendering.
+    Exactly one of ``step``/``seq`` may be given; neither means "the final
+    captured state". ``seq`` saves the caller from converting a
+    ``get_events`` seq into the corresponding snapshot step by hand.
     """
-    timeline = _require_timeline(circuit_id)
+    if step is not None and seq is not None:
+        raise ValueError("pass step or seq, not both")
     snapshots = timeline.snapshots
     if not snapshots:
-        raise ValueError(f"no state snapshots recorded for circuit {circuit_id!r}")
-    if step is None:
-        snapshot = snapshots[-1]
-    else:
-        matches = [s for s in snapshots if s.step == step]
-        if not matches:
-            available = sorted(s.step for s in snapshots)
+        raise ValueError(f"no state snapshots recorded for circuit {timeline.circuit_id!r}")
+    if seq is not None:
+        snapshot = timeline.snapshot_at_seq(seq)
+        if snapshot is None:
             raise ValueError(
-                f"no state snapshot at step {step} for circuit {circuit_id!r}; "
-                f"available steps: {available}"
+                f"no state snapshot for the gate at seq {seq} on circuit "
+                f"{timeline.circuit_id!r}; seq must be a gate_added event's seq"
             )
-        snapshot = matches[0]
+        return snapshot
+    if step is None:
+        return snapshots[-1]
+    matches = [s for s in snapshots if s.step == step]
+    if not matches:
+        available = sorted(s.step for s in snapshots)
+        raise ValueError(
+            f"no state snapshot at step {step} for circuit {timeline.circuit_id!r}; "
+            f"available steps: {available}"
+        )
+    return matches[0]
+
+
+def get_state_snapshot(
+    circuit_id: str, step: int | None = None, seq: int | None = None
+) -> dict[str, Any]:
+    """Return the captured simulator state at one point mid-execution.
+
+    Select the snapshot with ``step`` (0 is the initial state, N the state
+    after the Nth instrumented instruction) or ``seq`` (the seq of a
+    gate_added event from :func:`get_events`, for the state right after
+    that gate); omit both for the final captured state. Returns the raw
+    amplitudes as ``[[re, im], ...]`` pairs, per-basis-state probabilities,
+    and a human-readable rendering.
+    """
+    timeline = _require_timeline(circuit_id)
+    snapshot = _resolve_snapshot(timeline, step, seq)
     amplitudes = snapshot.amplitudes()
     return {
         "step": snapshot.step,
@@ -274,22 +299,30 @@ def read_watches(upto_seq: int | None = None) -> list[dict[str, str]]:
 
 
 def compare_statevector(
-    circuit_id: str, step: int, expected_real: list[float], expected_imag: list[float]
+    circuit_id: str,
+    expected: Mapping[str, Sequence[float]],
+    step: int | None = None,
+    seq: int | None = None,
 ) -> dict[str, Any]:
     """Compare a captured statevector snapshot against a supplied expected state.
 
-    ``expected_real``/``expected_imag`` give the real and imaginary parts of
-    the expected amplitude for each basis state, ordered the way Qiskit
-    orders statevectors (qubit 0 least significant). Returns the fidelity
-    and every basis state whose amplitude differs, so the caller judges
-    whether the discrepancy is the bug or noise.
+    Select the snapshot with ``step`` (0 is the initial state, N the state
+    after the Nth instrumented instruction) or ``seq`` (the seq of a
+    gate_added event from :func:`get_events`, for the state right after
+    that gate); omit both for the final captured state.
+
+    ``expected`` maps a basis state's binary label (qubit 0 least
+    significant, e.g. ``"01"``, matching the ``label`` field in the
+    returned mismatches) to its ``[re, im]`` amplitude; any label left out
+    is assumed to be zero, so only the basis states under suspicion need
+    to be named. Returns the fidelity and every basis state whose
+    amplitude differs, so the caller judges whether the discrepancy is the
+    bug or noise.
     """
     timeline = _require_timeline(circuit_id)
-    for snapshot in timeline.snapshots:
-        if snapshot.step == step:
-            expected = [complex(r, i) for r, i in zip(expected_real, expected_imag)]
-            return _analysis.compare_statevector(snapshot, expected).model_dump()
-    raise ValueError(f"no state snapshot at step {step} for circuit {circuit_id!r}")
+    snapshot = _resolve_snapshot(timeline, step, seq)
+    dense = _analysis.expand_sparse_statevector(expected, snapshot.num_qubits or 0)
+    return _analysis.compare_statevector(snapshot, dense).model_dump()
 
 
 def compare_counts(

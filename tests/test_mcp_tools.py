@@ -105,12 +105,32 @@ def test_compare_statevector_via_tool_layer(tmp_path):
 
     root_half = 0.7071067811865476
     good = tools.compare_statevector(
-        circuit_id, final_step, [root_half, 0, 0, root_half], [0, 0, 0, 0]
+        circuit_id, {"00": [root_half, 0], "11": [root_half, 0]}, step=final_step
     )
     assert good["matched"]
 
-    bad = tools.compare_statevector(circuit_id, final_step, [1.0, 0, 0, 0], [0, 0, 0, 0])
+    bad = tools.compare_statevector(circuit_id, {"00": [1.0, 0]}, step=final_step)
     assert not bad["matched"]
+
+
+def test_compare_statevector_by_seq(tmp_path):
+    circuit_id = _run_bell_and_get_id(tmp_path)
+    h_seq = tools.get_events(circuit_id, types=["gate_added"], limit=1)[0]["seq"]
+
+    result = tools.compare_statevector(circuit_id, {"00": [1.0, 0]}, seq=h_seq)
+    assert not result["matched"]  # state right after h(0) is a superposition, not |00>
+
+    root_half = 0.7071067811865476
+    after_h = tools.compare_statevector(
+        circuit_id, {"00": [root_half, 0], "01": [root_half, 0]}, seq=h_seq
+    )
+    assert after_h["matched"]
+
+
+def test_compare_statevector_rejects_step_and_seq_together(tmp_path):
+    circuit_id = _run_bell_and_get_id(tmp_path)
+    with pytest.raises(ValueError, match="not both"):
+        tools.compare_statevector(circuit_id, {"00": [1.0, 0]}, step=0, seq=1)
 
 
 def test_compare_counts_via_tool_layer(tmp_path):
@@ -209,6 +229,21 @@ def test_get_state_snapshot_unknown_step_lists_available(tmp_path):
     circuit_id = _run_bell_and_get_id(tmp_path)
     with pytest.raises(ValueError, match="available steps"):
         tools.get_state_snapshot(circuit_id, step=99)
+
+
+def test_get_state_snapshot_by_seq_matches_equivalent_step(tmp_path):
+    circuit_id = _run_bell_and_get_id(tmp_path)
+    h_seq = tools.get_events(circuit_id, types=["gate_added"], limit=1)[0]["seq"]
+
+    by_seq = tools.get_state_snapshot(circuit_id, seq=h_seq)
+    by_step = tools.get_state_snapshot(circuit_id, step=1)
+    assert by_seq == by_step
+
+
+def test_get_state_snapshot_rejects_non_gate_seq(tmp_path):
+    circuit_id = _run_bell_and_get_id(tmp_path)
+    with pytest.raises(ValueError, match="gate_added event"):
+        tools.get_state_snapshot(circuit_id, seq=999_999)
 
 
 def test_watch_lifecycle_reports_qubit_state(tmp_path):

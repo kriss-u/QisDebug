@@ -48,10 +48,10 @@ def detect_environment() -> Literal["jupyter", "gui", "cli"]:
 
 def _frontends() -> dict[str, type[TimelineFrontend]]:
     from .cli import CLIFrontend
-    from .gui import TkFrontend
+    from .gui import QtFrontend
     from .jupyter import JupyterFrontend
 
-    return {"jupyter": JupyterFrontend, "gui": TkFrontend, "cli": CLIFrontend}
+    return {"jupyter": JupyterFrontend, "gui": QtFrontend, "cli": CLIFrontend}
 
 
 def get_frontend(frontend: str | None = None) -> TimelineFrontend:

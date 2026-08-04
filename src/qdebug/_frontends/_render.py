@@ -134,6 +134,33 @@ def render_tracks_text(tracks: dict[str, str]) -> str:
     return "\n\n".join(sections)
 
 
+def render_tracks_text_with_active(
+    tracks: dict[str, str], active_label: str | None
+) -> tuple[str, tuple[int, int] | None]:
+    """Like :func:`render_tracks_text`, but also locates the active section.
+
+    Returns the rendered text plus the 1-indexed ``(start_line, end_line)``
+    span of the section matching ``active_label`` (the track most recently
+    touched by the current event, per :func:`merge_timelines`), so a caller
+    with a line-oriented widget can scroll to and highlight it. ``None`` if
+    there are no tracks or no section matches.
+    """
+    if not tracks:
+        return "(no circuit recorded yet)", None
+    sections = []
+    active_span = None
+    line = 1
+    for key, text in tracks.items():
+        label = track_label(key)
+        section = f"-- {label} --\n{text}"
+        section_line_count = section.count("\n") + 1
+        if active_label is not None and label == active_label:
+            active_span = (line, line + section_line_count - 1)
+        sections.append(section)
+        line += section_line_count + 1
+    return "\n\n".join(sections), active_span
+
+
 def render_event(_timeline: Timeline, event: TelemetryEvent) -> str:
     """Return the detail panel text for one event.
 

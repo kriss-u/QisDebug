@@ -10,7 +10,7 @@ import qdebug
 from conftest import get_timeline
 from qdebug._frontends import detect_environment, get_frontend
 from qdebug._frontends.cli import CLIFrontend
-from qdebug._frontends.gui import TkFrontend
+from qdebug._frontends.gui import QtFrontend
 
 
 def _traced_bell():
@@ -102,15 +102,11 @@ def test_cli_frontend_handles_eof(monkeypatch, capsys):
     CLIFrontend().show([timeline])  # should not raise
 
 
-@pytest.mark.skipif(not TkFrontend().is_available(), reason="no display available for tkinter")
+@pytest.mark.skipif(not QtFrontend().is_available(), reason="no display available for Qt")
 def test_gui_frontend_builds_window_without_mainloop(monkeypatch):
-    """Smoke-test window construction without entering the blocking mainloop."""
-    import tkinter
+    """Smoke-test window construction without entering the blocking event loop."""
+    from PySide6.QtWidgets import QApplication
 
     timeline = _traced_bell()
-    original_mainloop = tkinter.Tk.mainloop
-    monkeypatch.setattr(tkinter.Tk, "mainloop", lambda self: self.destroy())
-    try:
-        TkFrontend().show([timeline])
-    finally:
-        monkeypatch.setattr(tkinter.Tk, "mainloop", original_mainloop)
+    monkeypatch.setattr(QApplication, "exec", lambda self: None)
+    QtFrontend().show([timeline])

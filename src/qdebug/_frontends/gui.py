@@ -247,6 +247,16 @@ class _TimelineWindow(Scheduler[QTimer]):  # pylint: disable=too-many-instance-a
         self.text.setTextCursor(scroll_cursor)
         self.text.ensureCursorVisible()
 
+        # ensureCursorVisible() only scrolls the minimum distance needed, so
+        # if the span's start is already technically on screen (e.g. right
+        # at the bottom edge) nothing moves and the rest of the circuit plus
+        # the event details below it stay hidden. Pin the start of the span
+        # to the very top of the viewport instead, so the active row and
+        # everything beneath it get as much room as the viewport allows.
+        scrollbar = self.text.verticalScrollBar()
+        offset = self.text.cursorRect(scroll_cursor).top()
+        scrollbar.setValue(scrollbar.value() + offset)
+
     def _on_play_state_changed(self, playing: bool) -> None:
         self.play_button.setText("Pause" if playing else "Play")
 

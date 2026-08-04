@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from enum import Enum
-from typing import Any, Literal, cast, overload
+from typing import Any, Iterable, Literal, cast, overload
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
@@ -329,8 +329,32 @@ class Timeline(BaseModel):
         ``json.dumps`` without custom encoders.
         """
         payload = self.model_dump(mode="json", exclude={"events"})
-        payload["events"] = [self._export_event(e) for e in self.events]
+        payload["events"] = self.export_events()
         return payload
+
+    def export_events(
+        self,
+        types: Iterable[EventType | str] | None = None,
+        since_seq: int | None = None,
+        limit: int | None = None,
+    ) -> list[dict]:
+        """Return a filtered slice of events as JSON-serializable dicts.
+
+        ``types`` restricts to the given event types, ``since_seq`` to events
+        with a sequence number strictly greater than it (for incremental
+        reads), and ``limit`` caps how many are returned, in timeline order.
+        Serialization matches :meth:`export`.
+        """
+        wanted = {EventType(t) for t in types} if types is not None else None
+        selected = [
+            e
+            for e in self.events
+            if (wanted is None or e.type in wanted)
+            and (since_seq is None or e.seq > since_seq)
+        ]
+        if limit is not None:
+            selected = selected[:limit]
+        return [self._export_event(e) for e in selected]
 
     def _export_event(self, event: TelemetryEvent) -> dict:
         """Serialize one event, expanding non-JSON fields."""

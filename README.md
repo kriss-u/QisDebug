@@ -56,6 +56,7 @@ full instructions.
 pip install -e .              # core (requires qiskit>=1.0)
 pip install -e ".[aer]"       # + statevector capture on Aer
 pip install -e ".[viz]"       # + histogram/Bloch-sphere image rendering
+pip install -e ".[mcp]"       # + MCP server for AI-agent debugging
 pip install -e ".[dev]"       # + test toolchain
 pip install -e ".[docs]"      # + Sphinx documentation toolchain
 ```
@@ -129,6 +130,46 @@ shows the circuit as it existed at that moment (drawn with Qiskit's own
 drawer), the statevector with amplitudes and probabilities, or per-pass
 transpiler statistics. Both frontends read only the public `Timeline`
 fields, so the instrumentation and the visualizer can evolve independently.
+
+## Debugging with an AI agent (MCP)
+
+The same telemetry both viewers read is also exposed to coding agents
+through a [Model Context Protocol](https://modelcontextprotocol.io) server,
+so an agent can debug the *runtime behavior* of your circuits instead of
+reasoning about the code blind:
+
+```bash
+pip install -e ".[mcp,aer]"
+claude mcp add qdebug -- qdebug-mcp     # or the equivalent for your agent
+```
+
+The division of labor is deliberate. QDebug does not try to decide what a
+quantum program *should* do — the agent does. QDebug extracts the ground
+truth and does the arithmetic:
+
+- **Run under instrumentation** — `run_script` executes a script with
+  QDebug active and reports every circuit's id, registers, and an anomaly
+  scan in one shot. To focus on a suspect region, the agent inserts
+  `qdebug.activate()`/`qdebug.deactivate()` around it and passes
+  `auto_activate=false`, scoping capture to exactly that window.
+- **Extract mid-execution state** — `get_events` (filtered, paged),
+  `get_state_snapshot` (raw amplitudes and probabilities at any captured
+  step), and `get_circuit_text` (the circuit as it looked after any gate).
+- **Watch what matters** — `add_watch` pins qubits, clbits, or registers;
+  `read_watches` reports their gate history, marginal P(1), and Bloch
+  vector as of any point in the sequence — the same watch feature the GUI
+  and CLI expose interactively.
+- **Check an expectation** — the agent supplies the state or distribution
+  it believes the program should produce; `compare_statevector` and
+  `compare_counts` report fidelity, total variation distance, and exactly
+  which basis states or outcomes diverge. `find_anomalies` is
+  expectation-free and catches only impossible states (non-normalized or
+  non-finite statevectors, failed runs, transpile blow-ups).
+- **Keep the evidence** — `save_timeline` writes the full JSON export to a
+  file; `set_configuration` tunes capture depth before a run.
+
+The server is a thin protocol wrapper: every tool delegates to the same
+store, rendering, and comparison code the GUI and CLI use.
 
 ## Version compatibility
 

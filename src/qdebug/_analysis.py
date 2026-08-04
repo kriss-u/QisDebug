@@ -1,4 +1,13 @@
-"""Frontend-agnostic bug-finding logic: statevector/counts comparison and anomaly detection.
+"""Comparison arithmetic and cheap sanity checks over captured telemetry.
+
+QDebug deliberately does not try to decide what a quantum program *should*
+do -- that judgment belongs to whoever is debugging (a human, or an agent
+via :mod:`qdebug._mcp`). What this module provides is the reliable
+arithmetic for testing a caller-supplied expectation against what was
+actually captured (:func:`compare_statevector`, :func:`compare_counts`),
+plus :func:`find_anomalies`, a small fixed set of expectation-free checks
+for states no correct program produces (non-normalized or non-finite
+statevectors, failed executions, transpile blow-ups).
 
 Pure functions over :class:`~qdebug._events.Timeline` data, with no
 presentation concerns, so any consumer (the MCP tool layer, the CLI, the

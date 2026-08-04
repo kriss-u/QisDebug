@@ -2,9 +2,9 @@
 
 Wraps every function in :mod:`qdebug._mcp.tools` as an MCP tool. All the
 actual logic -- timeline lookup, rendering, statevector/counts comparison,
-anomaly detection -- lives in :mod:`qdebug._mcp.tools` and the modules it
-delegates to; this file only registers those functions with the protocol
-layer, the same role :mod:`qdebug._frontends.cli` and
+anomaly scanning, watch evaluation -- lives in :mod:`qdebug._mcp.tools` and
+the modules it delegates to; this file only registers those functions with
+the protocol layer, the same role :mod:`qdebug._frontends.cli` and
 :mod:`qdebug._frontends.gui` play for human-facing presentation.
 
 Run directly (``python -m qdebug._mcp.server``, or the ``qdebug-mcp``
@@ -21,12 +21,26 @@ from . import tools
 server = MCPServer(
     "qdebug",
     instructions=(
-        "Tools for inspecting QDebug telemetry captured from Qiskit circuits: "
-        "construction, transpilation and execution history, state snapshots, and "
-        "comparisons against an expected statevector or count distribution. Call "
-        "run_script to execute a target script under instrumentation and get an "
-        "immediate anomaly scan, then use the other tools to dig into what "
-        "happened instead of re-deriving it by reading the script's printed output."
+        "QDebug records everything that happens to Qiskit circuits at runtime -- every "
+        "gate, transpiler pass, mid-execution simulator statevector, and measurement "
+        "result -- so bugs can be diagnosed from what actually happened instead of "
+        "from reading code. Typical debugging workflow: "
+        "(1) run_script executes a target script under instrumentation and returns each "
+        "circuit's id, registers, and an anomaly scan; to focus on a suspect region, "
+        "first edit the script to place qdebug.activate()/qdebug.deactivate() around it "
+        "and pass auto_activate=false. "
+        "(2) add_watch pins qubits/clbits/registers of interest; read_watches reports "
+        "their gate history, P(1), and Bloch vector at any sequence point. "
+        "(3) get_events, get_state_snapshot, and get_circuit_text extract the runtime "
+        "state between any two gates. "
+        "(4) You supply what the program should produce: compare_statevector and "
+        "compare_counts check your expected state or distribution against the capture "
+        "and report exactly where they diverge. find_anomalies is expectation-free and "
+        "only catches impossible states (non-normalized/non-finite statevectors, failed "
+        "runs); a clean scan does not mean the program is correct. "
+        "(5) save_timeline persists the evidence to a JSON file. "
+        "set_configuration tunes capture (e.g. max_statevector_qubits, "
+        "transpile_snapshots='all') before a run."
     ),
 )
 
@@ -35,11 +49,19 @@ for _tool in (
     tools.list_timelines,
     tools.get_timeline_summary,
     tools.get_timeline,
+    tools.get_events,
     tools.get_circuit_text,
     tools.get_state_snapshot,
+    tools.add_watch,
+    tools.remove_watch,
+    tools.list_watches,
+    tools.read_watches,
     tools.compare_statevector,
     tools.compare_counts,
     tools.find_anomalies,
+    tools.save_timeline,
+    tools.get_configuration,
+    tools.set_configuration,
     tools.clear,
 ):
     server.tool()(_tool)

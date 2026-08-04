@@ -13,8 +13,18 @@ from __future__ import annotations
 
 from typing import Callable, ClassVar
 
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QColor, QFont, QFontDatabase, QImage, QTextCharFormat, QTextCursor
+from PySide6.QtCore import QEvent, QObject, QRectF, Qt, QTimer
+from PySide6.QtGui import (
+    QColor,
+    QFont,
+    QFontDatabase,
+    QImage,
+    QKeyEvent,
+    QPainter,
+    QPalette,
+    QPen,
+    QTextCursor,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
@@ -34,7 +44,15 @@ from ._playback import PlaybackController, PlaybackHooks, Scheduler
 from .base import TimelineFrontend
 
 DEFAULT_AUTOPLAY_INTERVAL_MS = 800
-ACTIVE_TRACK_COLOR = "#fff3a0"
+ACTIVE_TRACK_BORDER_COLOR_LIGHT = "#1d4ed8"
+ACTIVE_TRACK_BORDER_COLOR_DARK = "#60a5fa"
+ACTIVE_TRACK_BORDER_WIDTH = 1.5
+ACTIVE_TRACK_PADDING_X = 4
+ACTIVE_TRACK_PADDING_Y = 3
+MAX_IMAGE_WIDTH = 480
+MAX_IMAGE_HEIGHT = 360
+_PLAY_LABEL = "⏵ Play  (Space)"
+_PAUSE_LABEL = "⏸ Pause  (Space)"
 
 
 class QtFrontend(TimelineFrontend):
@@ -62,6 +80,107 @@ class QtFrontend(TimelineFrontend):
         window = _TimelineWindow(names, merged, tracks, active_labels)
         window.show()
         app.exec()
+
+
+class _TrackTextEdit(QTextEdit):
+    """A ``QTextEdit`` that can additionally outline a span of lines with a
+    border, rather than the flat background fill ``ExtraSelection`` is
+    limited to -- a border reads clearly on both light and dark palettes and
+    never tints the circuit characters it surrounds.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._active_span: tuple[int, int] | None = None
+
+    def set_active_span(self, span: tuple[int, int] | None) -> None:
+        """Outline the 1-indexed (start_line, end_line) span, or clear it if ``None``."""
+        self._active_span = span
+        self.viewport().update()
+
+    def paintEvent(self, event) -> None:  # noqa: N802 (Qt override name)
+        """Paint normally, then outline the active span if one is set."""
+        super().paintEvent(event)
+        if self._active_span is None:
+            return
+
+        doc = self.document()
+        start_line, end_line = self._active_span
+        start_block = doc.findBlockByNumber(start_line - 1)
+        end_block = doc.findBlockByNumber(end_line - 1)
+
+        start_cursor = QTextCursor(doc)
+        start_cursor.setPosition(start_block.position())
+        end_cursor = QTextCursor(doc)
+        end_cursor.setPosition(end_block.position() + max(end_block.length() - 1, 0))
+
+        top = self.cursorRect(start_cursor).top() - ACTIVE_TRACK_PADDING_Y
+        bottom = self.cursorRect(end_cursor).bottom() + ACTIVE_TRACK_PADDING_Y
+        rect = QRectF(
+            ACTIVE_TRACK_PADDING_X,
+            top,
+            self.viewport().width() - 2 * ACTIVE_TRACK_PADDING_X,
+            bottom - top,
+        )
+
+        painter = QPainter(self.viewport())
+        pen = QPen(QColor(_active_track_border_color(self)))
+        pen.setWidthF(ACTIVE_TRACK_BORDER_WIDTH)
+        pen.setCosmetic(True)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRoundedRect(rect, 3, 3)
+
+
+def _active_track_border_color(widget: QWidget) -> str:
+    """Pick a border color with enough contrast for the widget's current
+    palette, since a single fixed color cannot read well against both a
+    near-white and a near-black background.
+    """
+    background = widget.palette().color(QPalette.ColorRole.Base)
+    is_dark = background.lightness() < 128
+    return ACTIVE_TRACK_BORDER_COLOR_DARK if is_dark else ACTIVE_TRACK_BORDER_COLOR_LIGHT
+
+
+class _TimelineWidget(QWidget):
+    """The top-level window widget.
+
+    Only exists to run ``on_close`` from :meth:`closeEvent`, so the window
+    can unregister its playback key filter from the shared ``QApplication``
+    instead of leaking it onto whatever window a later ``show()`` call in
+    the same process opens.
+    """
+
+    def __init__(self, on_close: Callable[[], None]) -> None:
+        super().__init__()
+        self._on_close = on_close
+
+    def closeEvent(self, event) -> None:  # noqa: N802 (Qt override name)
+        """Run the registered cleanup, then close normally."""
+        self._on_close()
+        super().closeEvent(event)
+
+
+class _PlaybackKeyFilter(QObject):
+    """Application-wide key filter for the cassette-style playback shortcuts.
+
+    Installed on the ``QApplication`` rather than as a per-widget shortcut,
+    so left/right/space navigate the timeline no matter which control (the
+    slider, the interval spin box, the text panel) currently has focus --
+    those widgets would otherwise consume the same keys themselves before a
+    plain per-widget shortcut ever got a chance to fire.
+    """
+
+    def __init__(self, handler: Callable[[int], bool]) -> None:
+        super().__init__()
+        self._handler = handler
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802
+        """Consume Left/Right/Space before the focused widget sees them."""
+        if isinstance(event, QKeyEvent) and event.type() == QEvent.Type.KeyPress:
+            if self._handler(event.key()):
+                return True
+        return super().eventFilter(watched, event)
 
 
 class _TimelineWindow(Scheduler[QTimer]):  # pylint: disable=too-many-instance-attributes
@@ -94,8 +213,9 @@ class _TimelineWindow(Scheduler[QTimer]):  # pylint: disable=too-many-instance-a
         self.active_labels = active_labels
         self._syncing_slider = False
         self._timers: list[QTimer] = []
+        self._key_filter: _PlaybackKeyFilter | None = None
 
-        self.window = QWidget()
+        self.window = _TimelineWidget(self._cleanup_key_filter)
         self.window.setWindowTitle(f"QDebug timeline — {title}")
         self.window.resize(900, 650)
         self.window.setMinimumSize(600, 400)
@@ -117,6 +237,33 @@ class _TimelineWindow(Scheduler[QTimer]):  # pylint: disable=too-many-instance-a
         )
         self._build_widgets()
         self._render()
+
+        app = QApplication.instance()
+        if app is not None:
+            self._key_filter = _PlaybackKeyFilter(self._handle_shortcut)
+            app.installEventFilter(self._key_filter)
+
+    def _cleanup_key_filter(self) -> None:
+        """Unregister the playback key filter so it doesn't outlive this window."""
+        app = QApplication.instance()
+        if app is not None and self._key_filter is not None:
+            app.removeEventFilter(self._key_filter)
+        self._key_filter = None
+
+    def _handle_shortcut(self, key: int) -> bool:
+        """Handle a global playback shortcut key, returning whether it was consumed."""
+        if self.controller is None:
+            return False
+        if key == Qt.Key.Key_Left:
+            self._goto(self.controller.index - 1)
+            return True
+        if key == Qt.Key.Key_Right:
+            self._goto(self.controller.index + 1)
+            return True
+        if key == Qt.Key.Key_Space:
+            self._toggle_play()
+            return True
+        return False
 
     def show(self) -> None:
         """Show the underlying Qt window."""
@@ -153,19 +300,23 @@ class _TimelineWindow(Scheduler[QTimer]):  # pylint: disable=too-many-instance-a
         self.header.setWordWrap(True)
         layout.addWidget(self.header)
 
-        self.text = QTextEdit()
+        self.text = _TrackTextEdit()
         self.text.setReadOnly(True)
         self.text.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
         self.text.setFont(_monospace_font())
         layout.addWidget(self.text, stretch=1)
 
         controls = QHBoxLayout()
-        controls.addWidget(_button("⏮ First", lambda: self._goto(0)))
-        controls.addWidget(_button("◀ Prev", lambda: self._goto(controller.index - 1)))
-        self.play_button = _button("Play", self._toggle_play)
+        self.first_button = _button("⏮ First", lambda: self._goto(0))
+        controls.addWidget(self.first_button)
+        self.prev_button = _button("◀ Prev  (←)", lambda: self._goto(controller.index - 1))
+        controls.addWidget(self.prev_button)
+        self.play_button = _button(_PLAY_LABEL, self._toggle_play)
         controls.addWidget(self.play_button)
-        controls.addWidget(_button("Next ▶", lambda: self._goto(controller.index + 1)))
-        controls.addWidget(_button("Last ⏭", lambda: self._goto(controller.last_index)))
+        self.next_button = _button("Next ▶  (→)", lambda: self._goto(controller.index + 1))
+        controls.addWidget(self.next_button)
+        self.last_button = _button("Last ⏭", lambda: self._goto(controller.last_index))
+        controls.addWidget(self.last_button)
         controls.addWidget(QLabel("ms/step"))
         self.interval_input = QSpinBox()
         self.interval_input.setRange(50, 10_000)
@@ -205,6 +356,13 @@ class _TimelineWindow(Scheduler[QTimer]):  # pylint: disable=too-many-instance-a
         label, png_bytes = _render.render_extra_visual_bytes(event)
         if png_bytes:
             image = QImage.fromData(png_bytes)
+            if image.width() > MAX_IMAGE_WIDTH or image.height() > MAX_IMAGE_HEIGHT:
+                image = image.scaled(
+                    MAX_IMAGE_WIDTH,
+                    MAX_IMAGE_HEIGHT,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
             cursor = QTextCursor(self.text.document())
             cursor.movePosition(QTextCursor.MoveOperation.End)
             cursor.insertBlock()
@@ -212,6 +370,7 @@ class _TimelineWindow(Scheduler[QTimer]):  # pylint: disable=too-many-instance-a
             cursor.insertImage(image)
 
         self._highlight_and_scroll(active_span)
+        self._update_control_state()
 
         self._syncing_slider = True
         try:
@@ -219,28 +378,31 @@ class _TimelineWindow(Scheduler[QTimer]):  # pylint: disable=too-many-instance-a
         finally:
             self._syncing_slider = False
 
+    def _update_control_state(self) -> None:
+        """Disable controls that can't do anything at the current position."""
+        assert self.controller is not None
+        controller = self.controller
+
+        at_first = controller.index <= 0
+        at_last = controller.index >= controller.last_index
+
+        self.first_button.setEnabled(not at_first)
+        self.prev_button.setEnabled(not at_first)
+        self.next_button.setEnabled(not at_last)
+        self.last_button.setEnabled(not at_last)
+        self.play_button.setEnabled(controller.playing or not at_last)
+
     def _highlight_and_scroll(self, active_span: tuple[int, int] | None) -> None:
         """Highlight the track section most relevant to the current event and
         scroll it into view, so the user doesn't have to hunt for what changed.
         """
+        self.text.set_active_span(active_span)
         if active_span is None:
-            self.text.setExtraSelections([])
             return
 
         doc = self.text.document()
-        start_line, end_line = active_span
+        start_line, _ = active_span
         start_block = doc.findBlockByNumber(start_line - 1)
-        end_block = doc.findBlockByNumber(end_line - 1)
-
-        highlight_cursor = QTextCursor(doc)
-        highlight_cursor.setPosition(start_block.position())
-        highlight_cursor.setPosition(
-            end_block.position() + end_block.length() - 1, QTextCursor.MoveMode.KeepAnchor
-        )
-        fmt = QTextCharFormat()
-        fmt.setBackground(QColor(ACTIVE_TRACK_COLOR))
-        selection = _extra_selection(highlight_cursor, fmt)
-        self.text.setExtraSelections([selection])
 
         scroll_cursor = QTextCursor(doc)
         scroll_cursor.setPosition(start_block.position())
@@ -258,7 +420,8 @@ class _TimelineWindow(Scheduler[QTimer]):  # pylint: disable=too-many-instance-a
         scrollbar.setValue(scrollbar.value() + offset)
 
     def _on_play_state_changed(self, playing: bool) -> None:
-        self.play_button.setText("Pause" if playing else "Play")
+        self.play_button.setText(_PAUSE_LABEL if playing else _PLAY_LABEL)
+        self._update_control_state()
 
     def _goto(self, index: int) -> None:
         assert self.controller is not None
@@ -287,10 +450,3 @@ def _monospace_font() -> QFont:
     font = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
     font.setPointSize(11)
     return font
-
-
-def _extra_selection(cursor: QTextCursor, fmt: QTextCharFormat) -> QTextEdit.ExtraSelection:
-    selection = QTextEdit.ExtraSelection()
-    selection.cursor = cursor
-    selection.format = fmt
-    return selection

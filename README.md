@@ -68,7 +68,7 @@ pip install -e ".[docs]"      # + Sphinx documentation toolchain
 | Construction  | `gate_added`                                                  | Wraps `QuantumCircuit.append`/`_append`; records each instruction with qubits, clbits, and params after broadcasting resolves                                                      |
 | Transpilation | `transpile_started`, `transpile_pass`, `transpile_finished`   | Wraps `PassManager.run` and injects a per-pass callback through Qiskit's own supported `callback` mechanism                                                                        |
 | Execution     | `execution_submitted`, `state_snapshot`, `execution_finished` | Wraps `AerBackend.run` and the Sampler/Estimator primitives; on Aer, runs an instrumented copy with `save_statevector` after every gate and strips the snapshots from your results |
-| Diagnostics   | `note`                                                        | QisDebug explains itself, e.g. why snapshot capture was skipped for a circuit                                                                                                        |
+| Diagnostics   | `note`                                                        | QisDebug explains itself, e.g. why snapshot capture was skipped for a circuit                                                                                                      |
 
 All three phases land on **one timeline per circuit**: transpiled outputs
 inherit the source circuit's hidden id, so the run of a transpiled circuit is
@@ -78,12 +78,12 @@ recorded against the circuit you actually wrote.
 
 The entire surface is intentionally small:
 
-| Function                | Purpose                                                                                                   |
-| ----------------------- | --------------------------------------------------------------------------------------------------------- |
+| Function                  | Purpose                                                                                                   |
+| ------------------------- | --------------------------------------------------------------------------------------------------------- |
 | `qisdebug.activate()`     | Attach all instrumentation layers. Idempotent. Returns an `ActivationReport` saying which layers attached |
 | `qisdebug.deactivate()`   | Restore every original Qiskit method                                                                      |
 | `qisdebug.is_active()`    | Whether patches are currently applied                                                                     |
-| `qisdebug.timeline(qc)`   | The `Timeline` for a circuit (or id string); `qisdebug.timeline()` returns the most recent                  |
+| `qisdebug.timeline(qc)`   | The `Timeline` for a circuit (or id string); `qisdebug.timeline()` returns the most recent                |
 | `qisdebug.timelines()`    | All tracked timelines, most recent first                                                                  |
 | `qisdebug.clear()`        | Drop all recorded telemetry                                                                               |
 | `qisdebug.configure(...)` | Adjust limits and switches (validated; see below)                                                         |
@@ -122,21 +122,21 @@ tl.show()                 # native GUI window, or a text CLI with no display
 qisdebug.timeline(qc).show()
 ```
 
-Auto-detects a native GUI window (PySide6) when a display is available, or
-falls back to a text-based interactive CLI otherwise — force either with
+Auto-detects a native GUI window (PySide6) when a display is available, or falls
+back to a text-based interactive CLI otherwise — force either with
 `show(frontend="gui"|"cli")` or the `QISDEBUG_FRONTEND` environment variable.
-Either way, a slider/stepper walks the full event sequence; each position
-shows the circuit as it existed at that moment (drawn with Qiskit's own
-drawer), the statevector with amplitudes and probabilities, or per-pass
-transpiler statistics. Both frontends read only the public `Timeline`
-fields, so the instrumentation and the visualizer can evolve independently.
+Either way, a slider/stepper walks the full event sequence; each position shows
+the circuit as it existed at that moment (drawn with Qiskit's own drawer), the
+statevector with amplitudes and probabilities, or per-pass transpiler
+statistics. Both frontends read only the public `Timeline` fields, so the
+instrumentation and the visualizer can evolve independently.
 
 ## Debugging with an AI agent (MCP)
 
-The same telemetry both viewers read is also exposed to coding agents
-through a [Model Context Protocol](https://modelcontextprotocol.io) server,
-so an agent can debug the *runtime behavior* of your circuits instead of
-reasoning about the code blind:
+The same telemetry both viewers read is also exposed to coding agents through a
+[Model Context Protocol](https://modelcontextprotocol.io) server, so an agent
+can debug the _runtime behavior_ of your circuits instead of reasoning about the
+code blind:
 
 ```bash
 pip install -e ".[mcp,aer]"
@@ -144,32 +144,32 @@ claude mcp add qisdebug -- qisdebug-mcp     # or the equivalent for your agent
 ```
 
 The division of labor is deliberate. QisDebug does not try to decide what a
-quantum program *should* do — the agent does. QisDebug extracts the ground
-truth and does the arithmetic:
+quantum program _should_ do — the agent does. QisDebug extracts the ground truth
+and does the arithmetic:
 
-- **Run under instrumentation** — `run_script` executes a script with
-  QisDebug active and reports every circuit's id, registers, and an anomaly
-  scan in one shot. To focus on a suspect region, the agent inserts
+- **Run under instrumentation** — `run_script` executes a script with QisDebug
+  active and reports every circuit's id, registers, and an anomaly scan in one
+  shot. To focus on a suspect region, the agent inserts
   `qisdebug.activate()`/`qisdebug.deactivate()` around it and passes
   `auto_activate=false`, scoping capture to exactly that window.
 - **Extract mid-execution state** — `get_events` (filtered, paged),
-  `get_state_snapshot` (raw amplitudes and probabilities at any captured
-  step), and `get_circuit_text` (the circuit as it looked after any gate).
+  `get_state_snapshot` (raw amplitudes and probabilities at any captured step),
+  and `get_circuit_text` (the circuit as it looked after any gate).
 - **Watch what matters** — `add_watch` pins qubits, clbits, or registers;
-  `read_watches` reports their gate history, marginal P(1), and Bloch
-  vector as of any point in the sequence — the same watch feature the GUI
-  and CLI expose interactively.
-- **Check an expectation** — the agent supplies the state or distribution
-  it believes the program should produce; `compare_statevector` and
-  `compare_counts` report fidelity, total variation distance, and exactly
-  which basis states or outcomes diverge. `find_anomalies` is
-  expectation-free and catches only impossible states (non-normalized or
-  non-finite statevectors, failed runs, transpile blow-ups).
-- **Keep the evidence** — `save_timeline` writes the full JSON export to a
-  file; `set_configuration` tunes capture depth before a run.
+  `read_watches` reports their gate history, marginal P(1), and Bloch vector as
+  of any point in the sequence — the same watch feature the GUI and CLI expose
+  interactively.
+- **Check an expectation** — the agent supplies the state or distribution it
+  believes the program should produce; `compare_statevector` and
+  `compare_counts` report fidelity, total variation distance, and exactly which
+  basis states or outcomes diverge. `find_anomalies` is expectation-free and
+  catches only impossible states (non-normalized or non-finite statevectors,
+  failed runs, transpile blow-ups).
+- **Keep the evidence** — `save_timeline` writes the full JSON export to a file;
+  `set_configuration` tunes capture depth before a run.
 
-The server is a thin protocol wrapper: every tool delegates to the same
-store, rendering, and comparison code the GUI and CLI use.
+The server is a thin protocol wrapper: every tool delegates to the same store,
+rendering, and comparison code the GUI and CLI use.
 
 ## Version compatibility
 
@@ -214,8 +214,8 @@ transpilation), the telemetry store, and the activation lifecycle, including
 hypothesis property tests that any random gate sequence is recorded exactly and
 the store never exceeds its cap.
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the contribution workflow and
-ground rules.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the contribution workflow and ground
+rules.
 
 ## Documentation
 
@@ -231,12 +231,12 @@ Open `docs/_build/html/index.html` in a browser.
 
 ## Prior art
 
-[Qiskit Trebugger](https://github.com/qiskit-community/qiskit-trebugger)
+[Qiskit Trebugger](https://github.com/TheGupta2012/qiskit-timeline-debugger)
 requires replacing `transpile` with a special debug call and covers only the
 transpiler stage. CircInspect provides step-through debugging for PennyLane.
-QisDebug's distinction is passive, near-zero-setup attachment with full lifecycle
-coverage — construction through transpilation to execution — on unmodified
-Qiskit code.
+QisDebug's distinction is passive, near-zero-setup attachment with full
+lifecycle coverage — construction through transpilation to execution — on
+unmodified Qiskit code.
 
 ## License
 

@@ -305,6 +305,7 @@ class _TimelineWindow(Scheduler[QTimer]):  # pylint: disable=too-many-instance-a
         layout = QVBoxLayout(self.window)
 
         self.header = QLabel()
+        self.header.setTextFormat(Qt.TextFormat.PlainText)
         self.header.setWordWrap(True)
         layout.addWidget(self.header)
 
@@ -373,10 +374,8 @@ class _TimelineWindow(Scheduler[QTimer]):  # pylint: disable=too-many-instance-a
         source, event = controller.current
         index = controller.index
         self.header.setText(
-            _render.escape(
-                f"{index + 1}/{len(controller.merged)} — {source.name} — {event.type.value} "
-                f"at {event.timestamp:.3f} — {event.describe()}"
-            )
+            f"{index + 1}/{len(controller.merged)} — {source.name} — {event.type.value} "
+            f"at {event.timestamp:.3f} — {event.describe()}"
         )
 
         tracks_text, active_span = _render.render_tracks_text_with_active(

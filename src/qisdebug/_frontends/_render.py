@@ -340,11 +340,6 @@ def render_extra_visual_bytes(event: TelemetryEvent) -> tuple[str, bytes | None]
     return "", None
 
 
-def escape(text: str) -> str:
-    """Minimal HTML escaping for widget content."""
-    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
-
 @dataclass(frozen=True)
 class WatchTarget:
     """One qubit, clbit, or register a user pinned to watch during playback.

@@ -106,8 +106,6 @@ class _TimelineWindow:  # pylint: disable=too-many-instance-attributes
         self.slider = ttk.Scale(
             self.root, from_=1, to=len(merged), orient="horizontal", command=self._on_slider
         )
-        self._layout_widgets()
-
         self.controller = PlaybackController(
             merged=merged,
             scheduler=self,
@@ -115,6 +113,7 @@ class _TimelineWindow:  # pylint: disable=too-many-instance-attributes
             on_render=self._render,
             on_play_state_changed=self._on_play_state_changed,
         )
+        self._layout_widgets()
         self._render()
 
     def run(self) -> None:

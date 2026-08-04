@@ -13,10 +13,11 @@ from __future__ import annotations
 import os
 from typing import Literal
 
+from ._display import gui_available
 from .base import TimelineFrontend
-from .gui import gui_available
 
 ENV_VAR = "QDEBUG_FRONTEND"
+FRONTEND_NAMES = ("jupyter", "gui", "cli")
 
 
 def in_jupyter() -> bool:
@@ -46,12 +47,25 @@ def detect_environment() -> Literal["jupyter", "gui", "cli"]:
     return "cli"
 
 
-def _frontends() -> dict[str, type[TimelineFrontend]]:
-    from .cli import CLIFrontend
-    from .gui import QtFrontend
-    from .jupyter import JupyterFrontend
+def _load_frontend(name: str) -> TimelineFrontend:
+    """Import and instantiate the frontend for ``name``.
 
-    return {"jupyter": JupyterFrontend, "gui": QtFrontend, "cli": CLIFrontend}
+    Each branch imports its module lazily so, for example, forcing ``"cli"``
+    never touches ``gui.py`` -- which imports PySide6 unconditionally at
+    module scope -- on a machine that doesn't have the ``gui`` extra
+    installed.
+    """
+    if name == "jupyter":
+        from .jupyter import JupyterFrontend
+
+        return JupyterFrontend()
+    if name == "gui":
+        from .gui import QtFrontend
+
+        return QtFrontend()
+    from .cli import CLIFrontend
+
+    return CLIFrontend()
 
 
 def get_frontend(frontend: str | None = None) -> TimelineFrontend:
@@ -63,18 +77,17 @@ def get_frontend(frontend: str | None = None) -> TimelineFrontend:
     that isn't actually available raises ``RuntimeError`` explaining why.
     """
     forced = frontend or os.environ.get(ENV_VAR)
-    registry = _frontends()
     if forced:
         key = forced.strip().lower()
-        if key not in registry:
+        if key not in FRONTEND_NAMES:
             raise ValueError(
-                f"Unknown qdebug frontend {forced!r}; choose from {sorted(registry)}"
+                f"Unknown qdebug frontend {forced!r}; choose from {sorted(FRONTEND_NAMES)}"
             )
-        instance = registry[key]()
+        instance = _load_frontend(key)
         if not instance.is_available():
             raise RuntimeError(
                 f"qdebug frontend {key!r} was forced but is not available: "
                 f"{instance.unavailable_reason()}"
             )
         return instance
-    return registry[detect_environment()]()
+    return _load_frontend(detect_environment())

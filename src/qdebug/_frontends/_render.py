@@ -99,22 +99,37 @@ def merge_timelines(
         ((t, event) for t in timelines for event in t.events),
         key=lambda pair: pair[1].seq,
     )
-    cursor = {t.circuit_id: 0 for t in timelines}
+    cursors = {t.circuit_id: 0 for t in timelines}
     combined: dict[str, str] = {}
     series: list[dict[str, str]] = []
     active_labels: list[str | None] = []
     for source, _event in merged:
-        series_for_source, active_for_source = per_timeline_tracks[source.circuit_id]
-        idx = cursor[source.circuit_id]
-        local = series_for_source[idx]
-        active_key = active_for_source[idx]
-        cursor[source.circuit_id] += 1
         prefix = source.name or source.circuit_id
-        for key, text in local.items():
-            combined[f"{prefix}:{key}"] = text
+        local, active_key = _advance_track_cursor(
+            per_timeline_tracks[source.circuit_id], cursors, source.circuit_id
+        )
+        combined.update({f"{prefix}:{key}": text for key, text in local.items()})
         series.append(dict(combined))
         active_labels.append(track_label(f"{prefix}:{active_key}") if active_key else None)
     return merged, series, active_labels
+
+
+def _advance_track_cursor(
+    tracks_for_source: tuple[list[dict[str, str]], list[str | None]],
+    cursors: dict[str, int],
+    circuit_id: str,
+) -> tuple[dict[str, str], str | None]:
+    """Consume one step of a timeline's track series, advancing its cursor.
+
+    Each timeline's ``circuit_tracks()`` series only has one entry per event
+    *within that timeline*, so :func:`merge_timelines` must track how far
+    into each timeline's own series it has read separately from its
+    position in the interleaved, cross-timeline ``merged`` sequence.
+    """
+    series_for_source, active_for_source = tracks_for_source
+    idx = cursors[circuit_id]
+    cursors[circuit_id] += 1
+    return series_for_source[idx], active_for_source[idx]
 
 
 def track_label(combined_key: str) -> str:

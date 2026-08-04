@@ -48,6 +48,10 @@ testpaths = ["tests"]
 
 [tool.pylint.MASTER]
 load-plugins = ["pylint_pydantic"]
+# PySide6's QtWidgets/QtCore/QtGui are shiboken6-generated C extensions with
+# no introspectable Python source, so pylint can't see their members and
+# reports every Qt class as a false-positive no-name-in-module otherwise.
+extension-pkg-allow-list = ["PySide6.QtWidgets", "PySide6.QtCore", "PySide6.QtGui"]
 
 [tool.pylint."MESSAGES CONTROL"]
 disable = [

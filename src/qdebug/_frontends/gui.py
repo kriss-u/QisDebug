@@ -11,37 +11,30 @@ available like the stdlib-only CLI and Jupyter frontends.
 
 from __future__ import annotations
 
-import importlib.util
-import os
-import sys
 from typing import Callable, ClassVar
+
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QColor, QFont, QFontDatabase, QImage, QTextCharFormat, QTextCursor
+from PySide6.QtWidgets import (
+    QApplication,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QSlider,
+    QSpinBox,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
+)
 
 from .._events import TelemetryEvent, Timeline
 from . import _render
-from ._playback import PlaybackController
+from ._display import gui_available
+from ._playback import PlaybackController, PlaybackHooks, Scheduler
 from .base import TimelineFrontend
 
 DEFAULT_AUTOPLAY_INTERVAL_MS = 800
 ACTIVE_TRACK_COLOR = "#fff3a0"
-
-
-def gui_available() -> bool:
-    """Return whether a native GUI window could actually be opened here."""
-    if importlib.util.find_spec("PySide6") is None:
-        return False
-    if sys.platform.startswith("linux") and not (
-        os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
-    ):
-        return False
-    try:
-        from PySide6.QtWidgets import QApplication
-
-        app = QApplication.instance() or QApplication([])
-        if app.primaryScreen() is None:
-            return False
-    except Exception:
-        return False
-    return True
 
 
 class QtFrontend(TimelineFrontend):
@@ -62,7 +55,6 @@ class QtFrontend(TimelineFrontend):
     def show(self, timelines: list[Timeline]) -> None:
         if not self.is_available():
             raise RuntimeError(self.unavailable_reason())
-        from PySide6.QtWidgets import QApplication
 
         merged, tracks, active_labels = _render.merge_timelines(timelines)
         names = ", ".join(str(t.name) for t in timelines)
@@ -72,12 +64,12 @@ class QtFrontend(TimelineFrontend):
         app.exec()
 
 
-class _TimelineWindow:  # pylint: disable=too-many-instance-attributes
+class _TimelineWindow(Scheduler[QTimer]):  # pylint: disable=too-many-instance-attributes
     """A single Qt window presenting one merged, navigable timeline.
 
     This class only does two things: lay out Qt widgets and translate Qt
     events into calls on a :class:`~._playback.PlaybackController`. It also
-    implements the controller's ``Scheduler`` protocol via ``QTimer``. All
+    implements the controller's ``Scheduler`` interface via ``QTimer``. All
     play/pause/step/seek *logic* lives in the controller so a future toolkit
     could reuse it by writing a new thin window class around the same
     controller instead of re-deriving that state machine.
@@ -98,12 +90,10 @@ class _TimelineWindow:  # pylint: disable=too-many-instance-attributes
         tracks: list[dict[str, str]],
         active_labels: list[str | None],
     ) -> None:
-        from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
-
         self.tracks = tracks
         self.active_labels = active_labels
         self._syncing_slider = False
-        self._timers: list[object] = []
+        self._timers: list[QTimer] = []
 
         self.window = QWidget()
         self.window.setWindowTitle(f"QDebug timeline — {title}")
@@ -119,44 +109,41 @@ class _TimelineWindow:  # pylint: disable=too-many-instance-attributes
         self.controller = PlaybackController(
             merged=merged,
             scheduler=self,
-            get_interval_ms=self._interval_ms,
-            on_render=self._render,
-            on_play_state_changed=self._on_play_state_changed,
+            hooks=PlaybackHooks(
+                get_interval_ms=self._interval_ms,
+                on_render=self._render,
+                on_play_state_changed=self._on_play_state_changed,
+            ),
         )
         self._build_widgets()
         self._render()
 
     def show(self) -> None:
+        """Show the underlying Qt window."""
         self.window.show()
 
     # -- Scheduler protocol, used by PlaybackController for autoplay -----
 
-    def schedule(self, delay_ms: int, callback: Callable[[], None]) -> object:
-        from PySide6.QtCore import QTimer
-
+    def schedule(self, delay_ms: int, callback: Callable[[], None]) -> QTimer:
+        """Fire ``callback`` once after ``delay_ms``, returning the timer."""
         timer = QTimer()
         timer.setSingleShot(True)
-        timer.timeout.connect(callback)
+        # pylint can't resolve Signal/SignalInstance attributes on Qt's C
+        # extension classes (they're bound dynamically, not visible to
+        # static analysis), so every `.connect()` call below false-positives
+        # as no-member; this is a known pylint/PySide6 limitation, not a bug.
+        timer.timeout.connect(callback)  # pylint: disable=no-member
         timer.start(delay_ms)
         self._timers.append(timer)
         return timer
 
-    def cancel(self, handle: object) -> None:
-        handle.stop()  # type: ignore[attr-defined]
+    def cancel(self, handle: QTimer) -> None:
+        """Stop a timer previously returned by :meth:`schedule`."""
+        handle.stop()
 
     # -- Layout ------------------------------------------------------------
 
     def _build_widgets(self) -> None:
-        from PySide6.QtCore import Qt
-        from PySide6.QtWidgets import (
-            QHBoxLayout,
-            QLabel,
-            QSlider,
-            QSpinBox,
-            QTextEdit,
-            QVBoxLayout,
-        )
-
         assert self.controller is not None
         controller = self.controller
 
@@ -190,15 +177,13 @@ class _TimelineWindow:  # pylint: disable=too-many-instance-attributes
 
         self.slider = QSlider(Qt.Orientation.Horizontal)
         self.slider.setRange(1, len(controller.merged))
-        self.slider.valueChanged.connect(self._on_slider)
+        self.slider.valueChanged.connect(self._on_slider)  # pylint: disable=no-member
         layout.addWidget(self.slider)
 
     # -- Widget <-> PlaybackController glue --------------------------------
 
     def _render(self) -> None:
         """Refresh every widget to reflect the controller's current event."""
-        from PySide6.QtGui import QImage, QTextCursor
-
         assert self.controller is not None
         controller = self.controller
 
@@ -238,8 +223,6 @@ class _TimelineWindow:  # pylint: disable=too-many-instance-attributes
         """Highlight the track section most relevant to the current event and
         scroll it into view, so the user doesn't have to hunt for what changed.
         """
-        from PySide6.QtGui import QColor, QTextCharFormat, QTextCursor
-
         if active_span is None:
             self.text.setExtraSelections([])
             return
@@ -284,26 +267,20 @@ class _TimelineWindow:  # pylint: disable=too-many-instance-attributes
         self._goto(value - 1)
 
 
-def _button(text: str, on_click: Callable[[], None]) -> object:
-    from PySide6.QtWidgets import QPushButton
-
+def _button(text: str, on_click: Callable[[], None]) -> QPushButton:
     button = QPushButton(text)
-    button.clicked.connect(on_click)
+    button.clicked.connect(on_click)  # pylint: disable=no-member
     return button
 
 
-def _monospace_font() -> object:
-    from PySide6.QtGui import QFontDatabase
-
+def _monospace_font() -> QFont:
     font = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
     font.setPointSize(11)
     return font
 
 
-def _extra_selection(cursor: object, fmt: object) -> object:
-    from PySide6.QtWidgets import QTextEdit
-
+def _extra_selection(cursor: QTextCursor, fmt: QTextCharFormat) -> QTextEdit.ExtraSelection:
     selection = QTextEdit.ExtraSelection()
-    selection.cursor = cursor  # type: ignore[attr-defined]
-    selection.format = fmt  # type: ignore[attr-defined]
+    selection.cursor = cursor
+    selection.format = fmt
     return selection

@@ -55,7 +55,7 @@ def main() -> None:
         f"{len(exported['events'])} events"
     )
 
-    timeline.show()
+    debug.show(qc)
 
     debug.end()
 

@@ -32,7 +32,6 @@ from qiskit_aer import AerSimulator
 from qiskit_ibm_runtime.fake_provider import FakeManilaV2
 
 import qisdebug
-from qisdebug import visualizer
 
 
 def payload_state(theta: float = 0.9, phi: float = 1.3) -> QuantumCircuit:
@@ -146,7 +145,7 @@ def main() -> None:
         "(mid-circuit measurement + classical control disable capture; see the note event above)"
     )
 
-    visualizer.show([payload_timeline, timelines["epr_pair"], teleport_timeline])
+    debug.show([payload_timeline, timelines["epr_pair"], teleport_timeline])
 
     debug.end()
 

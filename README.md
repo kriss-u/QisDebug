@@ -103,7 +103,6 @@ tl.snapshots              # state snapshots, each with .amplitudes() / .probabil
 tl.circuit_at(n)          # rebuild the circuit as it looked after its first n gates
 tl.summary()              # compact text overview
 tl.export()               # JSON-serializable dict (amplitudes as [re, im] pairs)
-tl.show()                 # native GUI window, or a text CLI with no display
 ```
 
 ### Configuration
@@ -118,18 +117,22 @@ tl.show()                 # native GUI window, or a text CLI with no display
 
 ## The timeline viewer
 
+Everything is shown through the `QisDebug` instance itself:
+
 ```python
-qisdebug.timeline(qc).show()
+debug.show()               # every timeline this instance has recorded
+debug.show(qc)              # just this circuit's timeline
+debug.show([qc1, qc2])      # several circuits, merged into one view
 ```
 
 Auto-detects a native GUI window (PySide6) when a display is available, or falls
 back to a text-based interactive CLI otherwise — force either with
-`show(frontend="gui"|"cli")` or the `QISDEBUG_FRONTEND` environment variable.
-Either way, a slider/stepper walks the full event sequence; each position shows
-the circuit as it existed at that moment (drawn with Qiskit's own drawer), the
-statevector with amplitudes and probabilities, or per-pass transpiler
-statistics. Both frontends read only the public `Timeline` fields, so the
-instrumentation and the visualizer can evolve independently.
+`debug.show(frontend="gui"|"cli")` or the `QISDEBUG_FRONTEND` environment
+variable. Either way, a slider/stepper walks the full event sequence; each
+position shows the circuit as it existed at that moment (drawn with Qiskit's
+own drawer), the statevector with amplitudes and probabilities, or per-pass
+transpiler statistics. Both frontends read only the public `Timeline` fields,
+so the instrumentation and the visualizer can evolve independently.
 
 ## Debugging with an AI agent (MCP)
 

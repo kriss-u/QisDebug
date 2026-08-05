@@ -7,15 +7,14 @@ Run with::
 QisDebug tracks every circuit touched while it is active, keyed off a hidden id
 attached to the circuit instance. This example builds and runs several
 unrelated circuits, shows how to list and inspect all of their timelines, and
-opens a single browser-based viewer with all of their events merged into one
-chronological timeline.
+opens a single viewer with all of their events merged into one chronological
+timeline.
 """
 
 from qiskit import QuantumCircuit, transpile
 from qiskit_aer import AerSimulator
 
 import qisdebug
-from qisdebug import visualizer
 
 
 def bell() -> QuantumCircuit:
@@ -70,8 +69,7 @@ def main() -> None:
     for qc in circuits:
         print(f"\n{debug.get(qc).summary()}")
 
-    timelines = [debug.get(qc) for qc in circuits]
-    visualizer.show(timelines)
+    debug.show(circuits)
 
     debug.end()
 

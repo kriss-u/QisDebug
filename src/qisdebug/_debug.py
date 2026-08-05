@@ -20,6 +20,7 @@ from ._compat import logger, qiskit_version
 from ._config import QisDebugConfig
 from ._errors import TimelineNotFoundError
 from ._events import Timeline
+from ._frontends import get_frontend
 from ._hooks import construction, execution, transpile
 from ._store import TelemetryStore
 
@@ -149,6 +150,30 @@ class QisDebug:
         if found is None:
             raise TimelineNotFoundError(f"no tracked circuit matches {target!r}")
         return found
+
+    def show(self, target: Any = None, *, frontend: str | None = None) -> Any:
+        """Display timelines through the best available frontend.
+
+        ``target`` may be omitted to show every timeline this instance has
+        recorded, a single circuit/name/:class:`Timeline` to show just that
+        one, or a list of any of those to show several together -- events
+        from multiple timelines are merged into one chronological sequence,
+        with the circuit panel showing each circuit's most recently known
+        state side by side.
+
+        Auto-detects a native GUI window or a text-based CLI based on the
+        running environment. Force a specific one with ``frontend="gui"|"cli"``,
+        or set the ``QISDEBUG_FRONTEND`` environment variable to always use the
+        same one. Forcing a frontend that isn't actually available (e.g.
+        ``"gui"`` with no display) raises ``RuntimeError``.
+        """
+        if target is None:
+            resolved = self.timelines()
+        elif isinstance(target, (list, tuple, set)):
+            resolved = [self.get(item) for item in target]
+        else:
+            resolved = [self.get(target)]
+        return get_frontend(frontend).show(resolved)
 
     def clear(self) -> None:
         """Drop all recorded telemetry without touching active patches."""

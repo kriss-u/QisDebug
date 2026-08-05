@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import warnings
 import weakref
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
@@ -23,6 +23,20 @@ from ._events import Timeline
 from ._frontends import get_frontend
 from ._hooks import construction, execution, transpile
 from ._store import TelemetryStore
+
+if TYPE_CHECKING:
+    # Only ever referenced from string annotations (`from __future__ import
+    # annotations` defers all evaluation), so this never needs QuantumCircuit
+    # to be importable at runtime -- matching the rest of the codebase's
+    # policy of not hard-depending on qiskit internals at import time.
+    from qiskit.circuit import QuantumCircuit
+
+    TimelineLike = QuantumCircuit | str | Timeline
+    TimelineContainer = list[TimelineLike] | tuple[TimelineLike, ...] | set[TimelineLike]
+    # A container type rather than a generic Iterable so isinstance narrows
+    # cleanly in _resolve_timelines: list/tuple/set are the only container
+    # shapes it actually recognizes.
+    TimelineTargets = TimelineLike | TimelineContainer | None
 
 
 class ActivationReport(BaseModel):
@@ -133,7 +147,7 @@ class QisDebug:
         """Return the names of tracked circuits, most recently touched first."""
         return [timeline.name for timeline in self.store.all_timelines() if timeline.name]
 
-    def get(self, target: Any) -> Timeline:
+    def get(self, target: TimelineLike) -> Timeline:
         """Return the timeline for ``target``.
 
         ``target`` may be a live circuit object, a circuit name (the most
@@ -151,7 +165,25 @@ class QisDebug:
             raise TimelineNotFoundError(f"no tracked circuit matches {target!r}")
         return found
 
-    def show(self, target: Any = None, *, frontend: str | None = None) -> Any:
+    def _resolve_timelines(self, target: TimelineTargets) -> list[Timeline]:
+        """Resolve a ``show()``/``export()``-style target into a list of timelines.
+
+        ``target`` may be omitted (``None``) to mean every timeline this
+        instance has recorded, a single circuit/name/:class:`Timeline`, or a
+        list/tuple/set of any of those.
+        """
+        if target is None:
+            return self.timelines()
+        if isinstance(target, (list, tuple, set)):
+            return [self.get(item) for item in target]
+        return [self.get(target)]
+
+    def show(
+        self,
+        target: TimelineTargets = None,
+        *,
+        frontend: str | None = None,
+    ) -> Any:
         """Display timelines through the best available frontend.
 
         ``target`` may be omitted to show every timeline this instance has
@@ -167,13 +199,18 @@ class QisDebug:
         same one. Forcing a frontend that isn't actually available (e.g.
         ``"gui"`` with no display) raises ``RuntimeError``.
         """
-        if target is None:
-            resolved = self.timelines()
-        elif isinstance(target, (list, tuple, set)):
-            resolved = [self.get(item) for item in target]
-        else:
-            resolved = [self.get(target)]
-        return get_frontend(frontend).show(resolved)
+        return get_frontend(frontend).show(self._resolve_timelines(target))
+
+    def export(self, target: TimelineTargets = None) -> list[dict]:
+        """Export timelines as a list of JSON-serializable dicts.
+
+        Takes the same ``target`` shapes as :meth:`show`: omitted for every
+        timeline this instance has recorded, a single circuit/name/
+        :class:`Timeline` for just that one, or a list of any of those for
+        several. Always returns a list, even for a single ``target``, so
+        callers don't need to branch on the shape of the result.
+        """
+        return [timeline.export() for timeline in self._resolve_timelines(target)]
 
     def clear(self) -> None:
         """Drop all recorded telemetry without touching active patches."""

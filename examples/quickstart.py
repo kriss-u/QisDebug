@@ -49,13 +49,13 @@ def main() -> None:
         label = snapshot.gate or "initial"
         print(f"  step {snapshot.step} ({label:<7}) {probabilities}")
 
-    exported = timeline.export()
+    exported = debug.export(qc)
     print(
         f"\nexport: {len(json.dumps(exported)) / 1024:.1f} KiB of JSON, "
-        f"{len(exported['events'])} events"
+        f"{len(exported[0]['events'])} events"
     )
 
-    debug.show(qc)
+    debug.show()
 
     debug.end()
 

@@ -102,7 +102,17 @@ tl.execution_events       # submission / snapshots / completion
 tl.snapshots              # state snapshots, each with .amplitudes() / .probabilities()
 tl.circuit_at(n)          # rebuild the circuit as it looked after its first n gates
 tl.summary()              # compact text overview
-tl.export()               # JSON-serializable dict (amplitudes as [re, im] pairs)
+```
+
+Exporting timelines to JSON-serializable dicts (amplitudes as `[re, im]`
+pairs) goes through the `QisDebug` instance too, with the same argument shapes
+as `show()`. It always returns a list, even for a single circuit, so callers
+never need to branch on the shape of the result:
+
+```python
+debug.export()              # every timeline this instance has recorded, as a list of dicts
+debug.export(qc)             # just this circuit's timeline, as a one-item list
+debug.export([qc1, qc2])     # several circuits, as a list of dicts
 ```
 
 ### Configuration

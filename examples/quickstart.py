@@ -4,7 +4,7 @@ Run with::
 
     python examples/quickstart.py
 
-Note that after ``qisdebug.activate()`` the circuit-building, transpile and run
+Note that after ``debug.start()`` the circuit-building, transpile and run
 calls below are completely ordinary Qiskit code.
 """
 
@@ -18,7 +18,8 @@ import qisdebug
 
 def main() -> None:
     """Trace a GHZ circuit and print everything QisDebug captured."""
-    qisdebug.activate()
+    debug = qisdebug.QisDebug()
+    debug.start()
 
     qc = QuantumCircuit(3, 3, name="ghz")
     qc.h(0)
@@ -31,8 +32,7 @@ def main() -> None:
     counts = backend.run(transpiled, shots=1000).result().get_counts()
     print(f"counts: {counts}\n")
 
-    timeline = qisdebug.timeline(qc)
-    assert timeline is not None, "circuit was not tracked by qisdebug"
+    timeline = debug.get(qc)
     print(timeline.summary())
 
     print("\nfull event sequence:")
@@ -57,7 +57,7 @@ def main() -> None:
 
     timeline.show()
 
-    qisdebug.deactivate()
+    debug.end()
 
 
 if __name__ == "__main__":

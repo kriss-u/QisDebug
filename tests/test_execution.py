@@ -6,8 +6,6 @@ from qiskit.circuit.quantumcircuit import QuantumCircuit
 from qiskit.primitives import StatevectorSampler
 from qiskit_aer import AerSimulator
 
-import qisdebug
-from conftest import get_timeline
 from qisdebug import EventType
 
 
@@ -20,9 +18,9 @@ def _bell(name="bell"):
     return qc
 
 
-def test_backend_run_records_and_captures_statevectors():
+def test_backend_run_records_and_captures_statevectors(debug):
     """An Aer run records submission, snapshots per gate, and completion."""
-    qisdebug.activate()
+    debug.start()
     qc = _bell()
     result = AerSimulator().run(qc, shots=200).result()
 
@@ -30,7 +28,7 @@ def test_backend_run_records_and_captures_statevectors():
     assert set(counts) <= {"00", "11"}
     assert sum(counts.values()) == 200
 
-    timeline = get_timeline(qc)
+    timeline = debug.get(qc)
     submitted = timeline.filter(EventType.EXECUTION_SUBMITTED)
     assert len(submitted) == 1
     assert submitted[0].backend == "aer_simulator"
@@ -52,22 +50,22 @@ def test_backend_run_records_and_captures_statevectors():
     assert finished[0].duration is not None and finished[0].duration >= 0
 
 
-def test_snapshot_data_is_stripped_from_user_result():
+def test_snapshot_data_is_stripped_from_user_result(debug):
     """The user-visible result contains no qisdebug snapshot entries."""
-    qisdebug.activate()
+    debug.start()
     result = AerSimulator().run(_bell(), shots=50).result()
     assert set(result.data(0).keys()) == {"counts"}
 
 
-def test_basic_simulator_run_records_execution_events():
+def test_basic_simulator_run_records_execution_events(debug):
     """The non-Aer BasicSimulator gets timing telemetry, minus snapshots."""
     from qiskit.providers.basic_provider import BasicSimulator
 
-    qisdebug.activate()
+    debug.start()
     qc = _bell("basic")
     counts = BasicSimulator().run(qc, shots=50).result().get_counts()
     assert sum(counts.values()) == 50
-    timeline = get_timeline(qc)
+    timeline = debug.get(qc)
     submitted = timeline.filter(EventType.EXECUTION_SUBMITTED)
     assert len(submitted) == 1
     assert not submitted[0].instrumented
@@ -77,21 +75,21 @@ def test_basic_simulator_run_records_execution_events():
     assert not timeline.snapshots
 
 
-def test_backend_sampler_v2_records_execution_events():
+def test_backend_sampler_v2_records_execution_events(debug):
     """BackendSamplerV2 pubs are tracked like the other primitives."""
     from qiskit.primitives import BackendSamplerV2
 
-    qisdebug.activate()
+    debug.start()
     qc = _bell("backend-sampler")
     sampler = BackendSamplerV2(backend=AerSimulator())
     sampler.run([qc], shots=64).result()
-    timeline = get_timeline(qc)
+    timeline = debug.get(qc)
     submitted = timeline.filter(EventType.EXECUTION_SUBMITTED)
     assert any(s.backend == "BackendSamplerV2" for s in submitted)
     assert timeline.filter(EventType.EXECUTION_FINISHED)
 
 
-def test_noise_model_construction_does_not_flood_the_store():
+def test_noise_model_construction_does_not_flood_the_store(debug):
     """from_backend builds many internal circuits; none may become timelines.
 
     Without suspension around those factories, the internal noise circuits
@@ -99,58 +97,58 @@ def test_noise_model_construction_does_not_flood_the_store():
     """
     from qiskit.providers.fake_provider import GenericBackendV2
 
-    qisdebug.activate()
+    debug.start()
     qc = _bell("kept")
-    before = {t.circuit_id for t in qisdebug.timelines()}
+    before = {t.circuit_id for t in debug.timelines()}
     AerSimulator.from_backend(GenericBackendV2(num_qubits=4, seed=11))
-    after = {t.circuit_id for t in qisdebug.timelines()}
+    after = {t.circuit_id for t in debug.timelines()}
     assert after == before
-    assert len(get_timeline(qc).gate_events) == 4
+    assert len(debug.get(qc).gate_events) == 4
 
 
-def test_result_called_twice_records_once():
+def test_result_called_twice_records_once(debug):
     """Repeated job.result() calls do not duplicate telemetry."""
-    qisdebug.activate()
+    debug.start()
     qc = _bell()
     job = AerSimulator().run(qc, shots=50)
     first = job.result()
     second = job.result()
     assert first is second
-    assert len(get_timeline(qc).filter(EventType.EXECUTION_FINISHED)) == 1
+    assert len(debug.get(qc).filter(EventType.EXECUTION_FINISHED)) == 1
 
 
-def test_circuit_without_measurements_still_snapshots():
+def test_circuit_without_measurements_still_snapshots(debug):
     """Snapshot capture works when the circuit produces no counts."""
-    qisdebug.activate()
+    debug.start()
     qc = QuantumCircuit(1, name="nomeasure")
     qc.h(0)
     AerSimulator().run(qc, shots=1).result()
-    timeline = get_timeline(qc)
+    timeline = debug.get(qc)
     assert [s.step for s in timeline.snapshots] == [0, 1]
     finished = timeline.filter(EventType.EXECUTION_FINISHED)
     assert len(finished) == 1
     assert finished[0].counts is None
 
 
-def test_wide_circuit_skips_capture_with_note():
+def test_wide_circuit_skips_capture_with_note(debug):
     """Circuits above max_statevector_qubits run normally, without capture."""
-    qisdebug.configure(max_statevector_qubits=2)
-    qisdebug.activate()
+    debug.configure(max_statevector_qubits=2)
+    debug.start()
     qc = QuantumCircuit(3, 3, name="wide")
     qc.h(0)
     qc.measure(range(3), range(3))
     result = AerSimulator().run(qc, shots=25).result()
     assert sum(result.get_counts().values()) == 25
-    timeline = get_timeline(qc)
+    timeline = debug.get(qc)
     assert timeline.snapshots == []
     notes = timeline.filter(EventType.NOTE)
     assert any("max_statevector_qubits" in n.message for n in notes)
     assert len(timeline.filter(EventType.EXECUTION_FINISHED)) == 1
 
 
-def test_mid_circuit_measurement_skips_capture():
+def test_mid_circuit_measurement_skips_capture(debug):
     """Nondeterministic circuits skip snapshots but still run and record."""
-    qisdebug.activate()
+    debug.start()
     qc = QuantumCircuit(2, 2, name="midmeasure")
     qc.h(0)
     qc.measure(0, 0)
@@ -158,34 +156,34 @@ def test_mid_circuit_measurement_skips_capture():
     qc.measure(1, 1)
     result = AerSimulator().run(qc, shots=30).result()
     assert sum(result.get_counts().values()) == 30
-    timeline = get_timeline(qc)
+    timeline = debug.get(qc)
     assert timeline.snapshots == []
     assert any("mid-circuit" in n.message for n in timeline.filter(EventType.NOTE))
 
 
-def test_run_list_of_circuits():
+def test_run_list_of_circuits(debug):
     """Multi-circuit runs record independent telemetry per circuit."""
-    qisdebug.activate()
+    debug.start()
     first = _bell("multi-a")
     second = _bell("multi-b")
     result = AerSimulator().run([first, second], shots=40).result()
     assert sum(result.get_counts(0).values()) == 40
     assert sum(result.get_counts(1).values()) == 40
     for qc in (first, second):
-        timeline = get_timeline(qc)
+        timeline = debug.get(qc)
         assert len(timeline.snapshots) == 3
         assert len(timeline.filter(EventType.EXECUTION_FINISHED)) == 1
 
 
-def test_statevector_sampler_records_events():
+def test_statevector_sampler_records_events(debug):
     """Primitive runs record submission and completion telemetry."""
-    qisdebug.activate()
+    debug.start()
     qc = QuantumCircuit(1, 1, name="prim")
     qc.h(0)
     qc.measure(0, 0)
     job = StatevectorSampler().run([qc], shots=64)
     job.result()
-    timeline = get_timeline(qc)
+    timeline = debug.get(qc)
     submitted = timeline.filter(EventType.EXECUTION_SUBMITTED)
     finished = timeline.filter(EventType.EXECUTION_FINISHED)
     assert any(e.backend == "StatevectorSampler" for e in submitted)
@@ -193,29 +191,29 @@ def test_statevector_sampler_records_events():
     assert submitted[0].shots == 64
 
 
-def test_aer_sampler_records_events():
+def test_aer_sampler_records_events(debug):
     """The Aer SamplerV2 primitive is instrumented when available."""
     aer_primitives = pytest.importorskip("qiskit_aer.primitives")
-    qisdebug.activate()
+    debug.start()
     qc = QuantumCircuit(1, 1, name="aerprim")
     qc.h(0)
     qc.measure(0, 0)
     job = aer_primitives.SamplerV2().run([qc], shots=32)
     job.result()
-    timeline = get_timeline(qc)
+    timeline = debug.get(qc)
     assert any(
         e.backend == "SamplerV2" for e in timeline.filter(EventType.EXECUTION_SUBMITTED)
     )
     assert timeline.filter(EventType.EXECUTION_FINISHED)
 
 
-def test_capture_can_be_disabled():
+def test_capture_can_be_disabled(debug):
     """With capture_statevectors=False no instrumented copy is built."""
-    qisdebug.configure(capture_statevectors=False)
-    qisdebug.activate()
+    debug.configure(capture_statevectors=False)
+    debug.start()
     qc = _bell("nocapture")
     result = AerSimulator().run(qc, shots=20).result()
     assert sum(result.get_counts().values()) == 20
-    timeline = get_timeline(qc)
+    timeline = debug.get(qc)
     assert timeline.snapshots == []
     assert not timeline.filter(EventType.EXECUTION_SUBMITTED)[0].instrumented

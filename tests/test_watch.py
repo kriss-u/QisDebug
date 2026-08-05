@@ -7,16 +7,14 @@ from qiskit.circuit.quantumcircuit import QuantumCircuit
 from qiskit.circuit import ClassicalRegister, QuantumRegister
 from qiskit_aer import AerSimulator
 
-import qisdebug
-from conftest import get_timeline
 from qisdebug._frontends import _render
 from qisdebug._frontends.cli import CLIFrontend
 from qisdebug._frontends.gui import QtFrontend
 
 
-def _traced_bell_with_registers():
+def _traced_bell_with_registers(debug):
     """Run a bell circuit built from named registers, fully instrumented."""
-    qisdebug.activate()
+    debug.start()
     qreg = QuantumRegister(2, name="q")
     creg = ClassicalRegister(2, name="c")
     qc = QuantumCircuit(qreg, creg, name="viz")
@@ -24,19 +22,19 @@ def _traced_bell_with_registers():
     qc.cx(0, 1)
     qc.measure([0, 1], [0, 1])
     AerSimulator().run(qc, shots=100).result()
-    return get_timeline(qc)
+    return debug.get(qc)
 
 
-def test_timeline_captures_register_metadata():
+def test_timeline_captures_register_metadata(debug):
     """Register names map to their flat qubit/clbit indices."""
-    timeline = _traced_bell_with_registers()
+    timeline = _traced_bell_with_registers(debug)
     assert timeline.qregs == {"q": [0, 1]}
     assert timeline.cregs == {"c": [0, 1]}
 
 
-def test_watch_qubit_reports_gate_touches_before_any_state_exists():
+def test_watch_qubit_reports_gate_touches_before_any_state_exists(debug):
     """Right after the h gate is recorded, no execution has happened yet."""
-    timeline = _traced_bell_with_registers()
+    timeline = _traced_bell_with_registers(debug)
     target = _render.WatchTarget(circuit_id=timeline.circuit_id, kind="qubit", ref="0")
     after_h_seq = timeline.gate_events[0].seq
     text = _render.render_watch(target, timeline, after_h_seq)
@@ -45,18 +43,18 @@ def test_watch_qubit_reports_gate_touches_before_any_state_exists():
     assert "P(1)" not in text  # snapshots are only seq'd once execution finishes
 
 
-def test_watch_qubit_reports_state_once_execution_has_run():
+def test_watch_qubit_reports_state_once_execution_has_run(debug):
     """Once playback reaches the end, the watch shows the post-h probability."""
-    timeline = _traced_bell_with_registers()
+    timeline = _traced_bell_with_registers(debug)
     target = _render.WatchTarget(circuit_id=timeline.circuit_id, kind="qubit", ref="0")
     last_seq = timeline.events[-1].seq
     text = _render.render_watch(target, timeline, last_seq)
     assert "P(1)=0.5000" in text
 
 
-def test_watch_qubit_bloch_vector_for_ground_state():
+def test_watch_qubit_bloch_vector_for_ground_state(debug):
     """A qubit that's still |0> at the snapshot has a Bloch vector at z=+1."""
-    timeline = _traced_bell_with_registers()
+    timeline = _traced_bell_with_registers(debug)
     target = _render.WatchTarget(circuit_id=timeline.circuit_id, kind="qubit", ref="1")
     snapshot = timeline.snapshots[0]
     text = _render.render_watch(target, timeline, snapshot.seq)
@@ -67,9 +65,9 @@ def test_watch_qubit_bloch_vector_for_ground_state():
     )
 
 
-def test_watch_register_aggregates_its_qubits():
+def test_watch_register_aggregates_its_qubits(debug):
     """Watching register q covers both of its qubits' gate touches and state."""
-    timeline = _traced_bell_with_registers()
+    timeline = _traced_bell_with_registers(debug)
     target = _render.WatchTarget(circuit_id=timeline.circuit_id, kind="register", ref="q")
     last_seq = timeline.events[-1].seq
     text = _render.render_watch(target, timeline, last_seq)
@@ -78,9 +76,9 @@ def test_watch_register_aggregates_its_qubits():
     assert "qubit 1:" in text
 
 
-def test_watch_clbit_reports_measured_distribution():
+def test_watch_clbit_reports_measured_distribution(debug):
     """Watching a clbit sees the measurement gate plus the counts-derived P(1)."""
-    timeline = _traced_bell_with_registers()
+    timeline = _traced_bell_with_registers(debug)
     target = _render.WatchTarget(circuit_id=timeline.circuit_id, kind="clbit", ref="0")
     last_seq = timeline.events[-1].seq
     text = _render.render_watch(target, timeline, last_seq)
@@ -88,24 +86,24 @@ def test_watch_clbit_reports_measured_distribution():
     assert "clbit 0: P(1)=" in text
 
 
-def test_watch_unresolved_register_reports_not_found():
+def test_watch_unresolved_register_reports_not_found(debug):
     """A watch on a register name that doesn't exist degrades cleanly."""
-    timeline = _traced_bell_with_registers()
+    timeline = _traced_bell_with_registers(debug)
     target = _render.WatchTarget(circuit_id=timeline.circuit_id, kind="register", ref="nope")
     text = _render.render_watch(target, timeline, timeline.events[-1].seq)
     assert "not found on this circuit" in text
 
 
-def test_render_watches_skips_unknown_circuit_ids():
+def test_render_watches_skips_unknown_circuit_ids(debug):
     """A stale watch whose timeline was evicted is silently dropped, not an error."""
-    timeline = _traced_bell_with_registers()
+    timeline = _traced_bell_with_registers(debug)
     target = _render.WatchTarget(circuit_id="does-not-exist", kind="qubit", ref="0")
     assert _render.render_watches([target], {timeline.circuit_id: timeline}, 0) == ""
 
 
-def test_cli_watch_and_unwatch_commands(monkeypatch, capsys):
+def test_cli_watch_and_unwatch_commands(debug, monkeypatch, capsys):
     """watch/unwatch/watches drive the tracked-value panel from the REPL."""
-    timeline = _traced_bell_with_registers()
+    timeline = _traced_bell_with_registers(debug)
     responses = iter(["watch qubit 0", "l", "unwatch qubit 0", "watches", "q"])
     monkeypatch.setattr(builtins, "input", lambda prompt="": next(responses))
 
@@ -118,13 +116,13 @@ def test_cli_watch_and_unwatch_commands(monkeypatch, capsys):
 
 
 @pytest.mark.skipif(not QtFrontend().is_available(), reason="no display available for Qt")
-def test_gui_frontend_add_and_remove_watch(monkeypatch):
+def test_gui_frontend_add_and_remove_watch(debug, monkeypatch):
     """Adding a watch through the combo boxes updates the text panel; removing clears it."""
     from PySide6.QtWidgets import QApplication
 
     from qisdebug._frontends import gui as gui_module
 
-    timeline = _traced_bell_with_registers()
+    timeline = _traced_bell_with_registers(debug)
     monkeypatch.setattr(QApplication, "exec", lambda self: None)
     app = QApplication.instance() or QApplication([])
     merged, tracks, active_labels = _render.merge_timelines([timeline])

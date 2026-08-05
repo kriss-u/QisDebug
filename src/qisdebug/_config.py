@@ -1,4 +1,10 @@
-"""Runtime configuration for QisDebug, validated through Pydantic."""
+"""Runtime configuration for QisDebug, validated through Pydantic.
+
+Each :class:`~qisdebug.QisDebug` instance owns its own :class:`QisDebugConfig`
+via ``QisDebug(config=...)``/``debug.configure(...)`` -- there is no
+process-wide default, so independent instances can't affect each other's
+capture behavior.
+"""
 
 from __future__ import annotations
 
@@ -40,22 +46,3 @@ class QisDebugConfig(BaseModel):
             "When off they are suppressed with a note event instead."
         ),
     )
-
-
-_config = QisDebugConfig()
-
-
-def configure(**overrides: object) -> QisDebugConfig:
-    """Update the global configuration and return the resulting config.
-
-    Unknown keys or out-of-range values raise a pydantic ValidationError,
-    leaving the previous configuration in place.
-    """
-    global _config
-    _config = QisDebugConfig(**{**_config.model_dump(), **overrides})
-    return _config
-
-
-def get_config() -> QisDebugConfig:
-    """Return the current global configuration."""
-    return _config

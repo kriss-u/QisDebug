@@ -6,22 +6,20 @@ import pytest
 from qiskit.circuit.quantumcircuit import QuantumCircuit
 from qiskit_aer import AerSimulator
 
-import qisdebug
-from conftest import get_timeline
 from qisdebug._frontends import detect_environment, get_frontend
 from qisdebug._frontends.cli import CLIFrontend
 from qisdebug._frontends.gui import QtFrontend
 
 
-def _traced_bell():
+def _traced_bell(debug):
     """Run a bell circuit under instrumentation and return its timeline."""
-    qisdebug.activate()
+    debug.start()
     qc = QuantumCircuit(2, 2, name="viz")
     qc.h(0)
     qc.cx(0, 1)
     qc.measure([0, 1], [0, 1])
     AerSimulator().run(qc, shots=10).result()
-    return get_timeline(qc)
+    return debug.get(qc)
 
 
 def test_detect_environment_prefers_gui(monkeypatch):
@@ -68,9 +66,9 @@ def test_cli_frontend_is_always_available():
     assert frontend.is_available() is True
 
 
-def test_cli_frontend_navigates_events(monkeypatch, capsys):
+def test_cli_frontend_navigates_events(debug, monkeypatch, capsys):
     """Feeding next/quit through stdin steps through events and then exits."""
-    timeline = _traced_bell()
+    timeline = _traced_bell(debug)
     responses = iter(["n", "n", "q"])
     monkeypatch.setattr(builtins, "input", lambda prompt="": next(responses))
 
@@ -82,9 +80,9 @@ def test_cli_frontend_navigates_events(monkeypatch, capsys):
     assert "3/" in out
 
 
-def test_cli_frontend_handles_eof(monkeypatch, capsys):
+def test_cli_frontend_handles_eof(debug, monkeypatch, capsys):
     """A closed stdin (e.g. piped input) exits cleanly instead of raising."""
-    timeline = _traced_bell()
+    timeline = _traced_bell(debug)
 
     def raise_eof(prompt=""):
         raise EOFError
@@ -94,10 +92,10 @@ def test_cli_frontend_handles_eof(monkeypatch, capsys):
 
 
 @pytest.mark.skipif(not QtFrontend().is_available(), reason="no display available for Qt")
-def test_gui_frontend_builds_window_without_mainloop(monkeypatch):
+def test_gui_frontend_builds_window_without_mainloop(debug, monkeypatch):
     """Smoke-test window construction without entering the blocking event loop."""
     from PySide6.QtWidgets import QApplication
 
-    timeline = _traced_bell()
+    timeline = _traced_bell(debug)
     monkeypatch.setattr(QApplication, "exec", lambda self: None)
     QtFrontend().show([timeline])

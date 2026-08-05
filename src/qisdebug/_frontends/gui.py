@@ -299,7 +299,8 @@ class _TimelineWindow(Scheduler[QTimer]):  # pylint: disable=too-many-instance-a
     # -- Layout ------------------------------------------------------------
 
     def _build_widgets(self) -> QVBoxLayout:
-        assert self.controller is not None
+        if self.controller is None:
+            raise RuntimeError("internal error: controller accessed before it was built")
         controller = self.controller
 
         layout = QVBoxLayout(self.window)
@@ -368,7 +369,8 @@ class _TimelineWindow(Scheduler[QTimer]):  # pylint: disable=too-many-instance-a
 
     def _render(self) -> None:
         """Refresh every widget to reflect the controller's current event."""
-        assert self.controller is not None
+        if self.controller is None:
+            raise RuntimeError("internal error: controller accessed before it was built")
         controller = self.controller
 
         source, event = controller.current
@@ -419,7 +421,8 @@ class _TimelineWindow(Scheduler[QTimer]):  # pylint: disable=too-many-instance-a
 
     def _refresh_watch_ref_choices(self, _kind: str | None = None) -> None:
         """Repopulate the watch-ref dropdown for the currently selected circuit."""
-        assert self.controller is not None
+        if self.controller is None:
+            raise RuntimeError("internal error: controller accessed before it was built")
         source, _event = self.controller.current
         kind = self.watch_kind.currentText()
         previous = self.watch_ref.currentText()
@@ -438,13 +441,15 @@ class _TimelineWindow(Scheduler[QTimer]):  # pylint: disable=too-many-instance-a
 
     def _add_watch(self) -> None:
         """Add the currently selected qubit/clbit/register to the watch list."""
-        assert self.controller is not None
+        if self.controller is None:
+            raise RuntimeError("internal error: controller accessed before it was built")
         ref = self.watch_ref.currentText()
         if not ref:
             return
         source, _event = self.controller.current
         kind = self.watch_kind.currentText()
-        assert kind in ("qubit", "clbit", "register")
+        if kind not in ("qubit", "clbit", "register"):
+            raise ValueError(f"unknown watch kind {kind!r}")
         target = _render.WatchTarget(circuit_id=source.circuit_id, kind=kind, ref=ref)
         if target not in self.watches:
             self.watches.append(target)
@@ -464,7 +469,8 @@ class _TimelineWindow(Scheduler[QTimer]):  # pylint: disable=too-many-instance-a
 
     def _update_control_state(self) -> None:
         """Disable controls that can't do anything at the current position."""
-        assert self.controller is not None
+        if self.controller is None:
+            raise RuntimeError("internal error: controller accessed before it was built")
         controller = self.controller
 
         at_first = controller.index <= 0
@@ -508,11 +514,13 @@ class _TimelineWindow(Scheduler[QTimer]):  # pylint: disable=too-many-instance-a
         self._update_control_state()
 
     def _goto(self, index: int) -> None:
-        assert self.controller is not None
+        if self.controller is None:
+            raise RuntimeError("internal error: controller accessed before it was built")
         self.controller.goto(index)
 
     def _toggle_play(self) -> None:
-        assert self.controller is not None
+        if self.controller is None:
+            raise RuntimeError("internal error: controller accessed before it was built")
         self.controller.toggle_play()
 
     def _interval_ms(self) -> int:

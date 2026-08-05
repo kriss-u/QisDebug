@@ -162,7 +162,8 @@ class _TimelineShell(cmd.Cmd):
         if kind in ("qubit", "clbit") and not ref.isdigit():
             print(f"{kind} must be a bit index, got {ref!r}")
             return None
-        assert kind in ("qubit", "clbit", "register")
+        if kind not in ("qubit", "clbit", "register"):
+            raise ValueError(f"unknown watch kind {kind!r}")
         source, _event = self.merged[self.index]
         return _render.WatchTarget(circuit_id=source.circuit_id, kind=kind, ref=ref)
 

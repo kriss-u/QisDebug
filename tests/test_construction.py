@@ -7,60 +7,59 @@ from qiskit.circuit.library import XGate
 from qiskit.circuit.quantumcircuit import QuantumCircuit
 
 import qisdebug
-from conftest import get_timeline
 
 
-def _recorded(qc):
+def _recorded(debug, qc):
     """Return (gate, qubits) tuples recorded for a circuit."""
-    return [(e.gate, e.qubits) for e in get_timeline(qc).gate_events]
+    return [(e.gate, e.qubits) for e in debug.get(qc).gate_events]
 
 
-def test_gate_helper_methods_are_recorded():
+def test_gate_helper_methods_are_recorded(debug):
     """Standard-gate helpers (the `_append_standard_gate` fast path) record."""
-    qisdebug.activate()
+    debug.start()
     qc = QuantumCircuit(3)
     qc.h(0)
     qc.cx(0, 1)
     qc.swap(1, 2)
-    assert _recorded(qc) == [("h", (0,)), ("cx", (0, 1)), ("swap", (1, 2))]
+    assert _recorded(debug, qc) == [("h", (0,)), ("cx", (0, 1)), ("swap", (1, 2))]
 
 
-def test_explicit_append_and_circuit_instruction_are_recorded():
+def test_explicit_append_and_circuit_instruction_are_recorded(debug):
     """Both public append forms record exactly one event per instruction."""
-    qisdebug.activate()
+    debug.start()
     qc = QuantumCircuit(2)
     qc.append(XGate(), [0])
     qc.append(CircuitInstruction(XGate(), [qc.qubits[1]], []))
-    assert _recorded(qc) == [("x", (0,)), ("x", (1,))]
+    assert _recorded(debug, qc) == [("x", (0,)), ("x", (1,))]
 
 
-def test_measure_broadcast_records_each_instruction():
+def test_measure_broadcast_records_each_instruction(debug):
     """A single broadcasting call records one event per resolved instruction."""
-    qisdebug.activate()
+    debug.start()
     qc = QuantumCircuit(2, 2)
     qc.measure([0, 1], [0, 1])
-    events = get_timeline(qc).gate_events
+    events = debug.get(qc).gate_events
     assert [(e.gate, e.qubits, e.clbits) for e in events] == [
         ("measure", (0,), (0,)),
         ("measure", (1,), (1,)),
     ]
 
 
-def test_barrier_and_reset_are_recorded():
+def test_barrier_and_reset_are_recorded(debug):
     """Non-gate instructions that flow through `_append` are captured too."""
-    qisdebug.activate()
+    debug.start()
     qc = QuantumCircuit(2)
     qc.barrier()
     qc.reset(0)
-    assert [e.gate for e in get_timeline(qc).gate_events] == ["barrier", "reset"]
+    assert [e.gate for e in debug.get(qc).gate_events] == ["barrier", "reset"]
 
 
-def test_parameters_are_recorded():
+def test_parameters_are_recorded(debug):
     """Gate parameters are stored as floats on the event."""
-    qisdebug.activate()
+    debug.start()
     qc = QuantumCircuit(1)
     qc.rz(0.25, 0)
-    event = get_timeline(qc).gate_events[0]
+    event = debug.get(qc).gate_events[0]
     assert event.gate == "rz"
     assert event.params == (0.25,)
 
@@ -73,56 +72,56 @@ def _sub_circuit():
     return sub
 
 
-def test_compose_inplace_records_merged_instructions():
+def test_compose_inplace_records_merged_instructions(debug):
     """compose(inplace=True) bypasses append but is still recorded, remapped."""
-    qisdebug.activate()
+    debug.start()
     qc = QuantumCircuit(3)
     qc.x(0)
     qc.compose(_sub_circuit(), qubits=[1, 2], inplace=True)
-    assert _recorded(qc) == [("x", (0,)), ("h", (1,)), ("cx", (1, 2))]
+    assert _recorded(debug, qc) == [("x", (0,)), ("h", (1,)), ("cx", (1, 2))]
 
 
-def test_compose_copy_records_nothing_on_the_source():
+def test_compose_copy_records_nothing_on_the_source(debug):
     """compose(inplace=False) leaves the source circuit's timeline untouched."""
-    qisdebug.activate()
+    debug.start()
     qc = QuantumCircuit(2)
     qc.x(0)
     qc.compose(_sub_circuit())
-    assert _recorded(qc) == [("x", (0,))]
+    assert _recorded(debug, qc) == [("x", (0,))]
 
 
-def test_compose_front_records_no_misattributed_events():
+def test_compose_front_records_no_misattributed_events(debug):
     """front=True prepends, which a data diff cannot attribute, so skip it."""
-    qisdebug.activate()
+    debug.start()
     qc = QuantumCircuit(2)
     qc.x(0)
     qc.compose(_sub_circuit(), front=True, inplace=True)
-    assert _recorded(qc) == [("x", (0,))]
+    assert _recorded(debug, qc) == [("x", (0,))]
     assert len(qc.data) == 3
 
 
-def test_control_flow_body_params_are_compact():
+def test_control_flow_body_params_are_compact(debug):
     """Control-flow block bodies render as op summaries, not circuit drawings."""
-    qisdebug.activate()
+    debug.start()
     qc = QuantumCircuit(2, 1)
     qc.measure(0, 0)
     with qc.if_test((qc.clbits[0], 1)):
         qc.x(1)
         qc.x(1)
-    event = next(e for e in get_timeline(qc).gate_events if e.gate == "if_else")
+    event = next(e for e in debug.get(qc).gate_events if e.gate == "if_else")
     assert event.params[0] == "[x*2]"
     assert all("\n" not in str(p) for p in event.params)
     assert "\n" not in event.describe()
 
 
-def test_recording_does_not_change_circuit_semantics():
+def test_recording_does_not_change_circuit_semantics(debug):
     """A circuit built while active equals one built while inactive."""
-    qisdebug.activate()
+    debug.start()
     active = QuantumCircuit(2, 2)
     active.h(0)
     active.cx(0, 1)
     active.measure([0, 1], [0, 1])
-    qisdebug.deactivate()
+    debug.end()
     plain = QuantumCircuit(2, 2)
     plain.h(0)
     plain.cx(0, 1)
@@ -163,18 +162,16 @@ def _gate_sequences(draw):
 @given(sequence=_gate_sequences())
 def test_every_random_gate_sequence_is_fully_recorded(sequence):
     """The recorded event list always mirrors circuit.data exactly."""
-    qisdebug.deactivate()
-    qisdebug.clear()
-    qisdebug.activate()
+    debug = qisdebug.QisDebug()
+    debug.start()
     try:
         qc = QuantumCircuit(3)
         for name, qubits, params in sequence:
             getattr(qc, name)(*params, *qubits)
-        recorded = get_timeline(qc).gate_events if sequence else []
+        recorded = debug.get(qc).gate_events if sequence else []
         assert len(recorded) == len(qc.data)
         for event, instruction in zip(recorded, qc.data):
             assert event.gate == instruction.operation.name
             assert event.qubits == tuple(qc.find_bit(b).index for b in instruction.qubits)
     finally:
-        qisdebug.deactivate()
-        qisdebug.clear()
+        debug.end()

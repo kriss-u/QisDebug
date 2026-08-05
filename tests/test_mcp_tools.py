@@ -1,6 +1,6 @@
 """Agent-facing query functions in qisdebug._mcp.tools.
 
-These call straight into the same STORE/Timeline/_analysis logic the CLI and
+These call straight into the same store/Timeline/_analysis logic the CLI and
 GUI frontends use, so the checks here are about the tool layer's contract
 (JSON-serializable in/out, correct lookups, useful errors) rather than
 re-testing statevector math already covered by test_analysis.py.
@@ -12,17 +12,25 @@ import textwrap
 import pytest
 from pydantic import ValidationError
 
-import qisdebug
-from conftest import get_timeline
+from qisdebug._config import QisDebugConfig
 from qisdebug._mcp import tools
 
 
 @pytest.fixture(autouse=True)
-def clean_watches():
-    """Watches are MCP-session state, not store state, so reset them separately."""
-    tools.clear()
+def clean_mcp_debug():
+    """The MCP tools module owns a process-wide `_debug`/`_watches`, mirroring
+    one real MCP server process; reset all of it around each test since there
+    is no per-test fixture instance to isolate them for us.
+    """
+    tools._debug.end()
+    tools._debug.clear()
+    tools._debug.config = QisDebugConfig()
+    tools._watches.clear()
     yield
-    tools.clear()
+    tools._debug.end()
+    tools._debug.clear()
+    tools._debug.config = QisDebugConfig()
+    tools._watches.clear()
 
 
 def _write_bell_script(tmp_path):
@@ -56,9 +64,9 @@ def _run_bell_and_get_id(tmp_path) -> str:
 
 
 def test_run_script_activates_captures_and_deactivates(tmp_path):
-    assert not qisdebug.is_active()
+    assert not tools._debug.active
     result = tools.run_script(_write_bell_script(tmp_path))
-    assert not qisdebug.is_active()
+    assert not tools._debug.active
     assert result["error"] is None
     bell = next(t for t in result["timelines"] if t["name"] == "bell")
     assert bell["anomalies"] == []
@@ -70,7 +78,7 @@ def test_run_script_reports_exceptions_without_leaking_them(tmp_path):
     result = tools.run_script(str(script))
     assert result["error"] == "ValueError: boom"
     assert result["timelines"] == []
-    assert not qisdebug.is_active()
+    assert not tools._debug.active
 
 
 def test_list_and_get_timeline_round_trip(tmp_path):
@@ -100,7 +108,7 @@ def test_get_circuit_text_reflects_step(tmp_path):
 
 def test_compare_statevector_via_tool_layer(tmp_path):
     circuit_id = _run_bell_and_get_id(tmp_path)
-    timeline = get_timeline(circuit_id)
+    timeline = tools._debug.get(circuit_id)
     final_step = timeline.snapshots[-1].step
 
     root_half = 0.7071067811865476
@@ -157,28 +165,37 @@ def test_clear_empties_the_store_and_watches(tmp_path):
     assert tools.list_watches() == []
 
 
-def test_run_script_scoped_by_scripts_own_activate_calls(tmp_path):
+def test_run_script_with_auto_activate_false_leaves_this_sessions_debug_untouched(tmp_path):
+    """auto_activate=False no longer scopes via a removed global activate/deactivate.
+
+    A target script cannot reach the MCP tool's own `_debug` instance at all
+    now (there's no global to call into) -- the closest it could get is
+    starting its own private `QisDebug()`, which this call has no way to
+    observe or report back. So the only behavior left to verify is that this
+    tool's own `_debug` session (and its store) is completely unaffected by
+    the run: nothing gets started, and nothing the script does shows up in
+    `_debug.timelines()`.
+    """
     script = tmp_path / "scoped.py"
     script.write_text(
         textwrap.dedent(
             """
-            import qisdebug
             from qiskit.circuit import QuantumCircuit
 
             qc = QuantumCircuit(2, name="scoped")
             qc.h(0)
-            qisdebug.activate()
             qc.cx(0, 1)
-            qisdebug.deactivate()
             qc.h(1)
             """
         )
     )
+    before = tools._debug.active
     result = tools.run_script(str(script), auto_activate=False)
     assert result["error"] is None
-    scoped = next(t for t in result["timelines"] if t["name"] == "scoped")
-    events = tools.get_events(scoped["circuit_id"], types=["gate_added"])
-    assert [e["gate"] for e in events] == ["cx"]
+    assert tools._debug.active == before
+    assert not tools._debug.active
+    assert result["timelines"] == []
+    assert tools._debug.timelines() == []
 
 
 def test_run_script_passes_argv(tmp_path):
@@ -187,7 +204,6 @@ def test_run_script_passes_argv(tmp_path):
         textwrap.dedent(
             """
             import sys
-            import qisdebug
             from qiskit.circuit import QuantumCircuit
 
             qc = QuantumCircuit(1, name=sys.argv[1])

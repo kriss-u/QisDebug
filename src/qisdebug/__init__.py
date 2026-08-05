@@ -5,23 +5,26 @@ changing it::
 
     import qisdebug
 
-    qisdebug.activate()
+    debug = qisdebug.QisDebug()
+    debug.start()
 
     # ... build, transpile and run circuits exactly as usual ...
 
-    print(qisdebug.timeline(circuit).summary())
+    print(debug.get(circuit).summary())
+
+    debug.end()
 
 Importing this module has no side effects; nothing is patched until
-:func:`activate` is called, and :func:`deactivate` restores every original
-method.
+:meth:`QisDebug.start` is called, and :meth:`QisDebug.end` restores every
+original method this instance was using. Multiple independently scoped
+``QisDebug()`` instances can be started at once.
 """
 
 from __future__ import annotations
 
-from typing import Any
-
-from ._activation import ActivationReport, activate, deactivate, is_active
-from ._config import QisDebugConfig, configure, get_config
+from ._config import QisDebugConfig
+from ._debug import ActivationReport, QisDebug
+from ._errors import QisDebugError, TimelineNotFoundError
 from ._events import (
     EventType,
     ExecutionFinishedEvent,
@@ -35,7 +38,6 @@ from ._events import (
     TranspilePassEvent,
     TranspileStartedEvent,
 )
-from ._store import STORE
 
 __version__ = "0.1.0"
 
@@ -46,40 +48,14 @@ __all__ = [
     "ExecutionSubmittedEvent",
     "GateEvent",
     "NoteEvent",
+    "QisDebug",
     "QisDebugConfig",
+    "QisDebugError",
     "StateSnapshotEvent",
     "TelemetryEvent",
     "Timeline",
+    "TimelineNotFoundError",
     "TranspileFinishedEvent",
     "TranspilePassEvent",
     "TranspileStartedEvent",
-    "activate",
-    "clear",
-    "configure",
-    "deactivate",
-    "get_config",
-    "is_active",
-    "timeline",
-    "timelines",
 ]
-
-
-def timeline(circuit: Any = None) -> Timeline | None:
-    """Return the timeline for ``circuit``, or the most recent one when None.
-
-    ``circuit`` may be a QuantumCircuit that was touched while QisDebug was
-    active, or a timeline id string.
-    """
-    if circuit is None:
-        return STORE.latest()
-    return STORE.get(circuit)
-
-
-def timelines() -> list[Timeline]:
-    """Return all tracked timelines, most recently touched first."""
-    return STORE.all_timelines()
-
-
-def clear() -> None:
-    """Drop all recorded telemetry without touching the active patches."""
-    STORE.clear()

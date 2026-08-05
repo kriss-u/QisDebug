@@ -50,7 +50,8 @@ def qft(num_qubits: int = 3) -> QuantumCircuit:
 
 def main() -> None:
     """Trace three independent circuits and report on each of their timelines."""
-    qisdebug.activate()
+    debug = qisdebug.QisDebug()
+    debug.start()
 
     circuits = [bell(), ghz(), qft()]
     backend = AerSimulator()
@@ -59,26 +60,20 @@ def main() -> None:
         counts = backend.run(transpiled, shots=1000).result().get_counts()
         print(f"{qc.name}: {counts}")
 
-    print(f"\n{len(qisdebug.timelines())} timelines tracked:")
-    for timeline in qisdebug.timelines():
+    print(f"\n{len(debug.timelines())} timelines tracked:")
+    for timeline in debug.timelines():
         print(
             f"  - {timeline.name:<6} {len(timeline.events)} events, id={timeline.circuit_id}"
         )
 
     print("\nper-circuit summaries:")
     for qc in circuits:
-        timeline = qisdebug.timeline(qc)
-        assert timeline is not None, f"circuit {qc.name} was not tracked by qisdebug"
-        print(f"\n{timeline.summary()}")
+        print(f"\n{debug.get(qc).summary()}")
 
-    timelines = []
-    for qc in circuits:
-        timeline = qisdebug.timeline(qc)
-        assert timeline is not None, f"circuit {qc.name} was not tracked by qisdebug"
-        timelines.append(timeline)
+    timelines = [debug.get(qc) for qc in circuits]
     visualizer.show(timelines)
 
-    qisdebug.deactivate()
+    debug.end()
 
 
 if __name__ == "__main__":

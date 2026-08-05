@@ -24,23 +24,27 @@ import runpy
 import sys
 from typing import Any, Literal, Mapping, Sequence
 
-import qisdebug
-
 from .. import _analysis
+from .._debug import QisDebug
+from .._errors import TimelineNotFoundError
 from .._events import EventType, StateSnapshotEvent, Timeline
 from .._frontends._render import WatchTarget, format_statevector, render_watch
-from .._store import STORE
 
 WatchKind = Literal["qubit", "clbit", "register"]
 
+# One QisDebug instance scopes the whole MCP server process, matching the
+# documented agent workflow: run_script's auto_activate controls whether
+# *this* instance's start()/end() bracket the script, or whether the script
+# brackets itself.
+_debug = QisDebug()
 _watches: list[WatchTarget] = []
 
 
 def _require_timeline(circuit_id: str) -> Timeline:
     """Look up a timeline by id, or raise a message an agent can act on."""
-    timeline = STORE.get(circuit_id)
+    timeline = _debug.store.get(circuit_id)
     if timeline is None:
-        raise LookupError(f"no timeline for circuit id {circuit_id!r}")
+        raise TimelineNotFoundError(f"no timeline for circuit id {circuit_id!r}")
     return timeline
 
 
@@ -50,21 +54,17 @@ def run_script(
     """Run a Python script under QisDebug instrumentation and report what was captured.
 
     Executes ``path`` as ``__main__`` with ``sys.argv`` set to ``[path,
-    *argv]``. With ``auto_activate`` (the default) instrumentation covers
-    the whole script. To scope debugging to a suspect region instead, edit
-    the target script to place ``import qisdebug; qisdebug.activate()`` at the
-    start of the region and ``qisdebug.deactivate()`` at its end, then call
-    this with ``auto_activate=False`` -- only circuits touched inside that
-    window are recorded. Instrumentation is always deactivated afterwards
-    regardless of outcome.
-
-    Returns the id, name, registers and anomaly scan of every timeline the
-    run produced, so one call shows whether anything looks off before any
-    deeper queries.
+    *argv]``. With ``auto_activate`` (the default) this server's
+    instrumentation session covers the whole script. To scope debugging to a
+    suspect region instead, call this with ``auto_activate=False`` -- this
+    tool leaves its own session untouched, and the target script is
+    responsible for its own scoped ``qisdebug.QisDebug()`` instance (its
+    timelines won't appear in this call's return value; have the script
+    export or print what it captured).
     """
-    before = {t.circuit_id for t in qisdebug.timelines()}
+    before = {t.circuit_id for t in _debug.timelines()}
     if auto_activate:
-        qisdebug.activate()
+        _debug.start()
     error: str | None = None
     saved_argv = sys.argv
     sys.argv = [path, *(argv or [])]
@@ -74,8 +74,9 @@ def run_script(
         error = f"{type(exc).__name__}: {exc}"
     finally:
         sys.argv = saved_argv
-        qisdebug.deactivate()
-    touched = [t for t in qisdebug.timelines() if t.circuit_id not in before]
+        if auto_activate:
+            _debug.end()
+    touched = [t for t in _debug.timelines() if t.circuit_id not in before]
     return {
         "error": error,
         "timelines": [
@@ -110,7 +111,7 @@ def list_timelines() -> list[dict[str, Any]]:
             "cregs": t.cregs,
             "event_count": len(t.events),
         }
-        for t in qisdebug.timelines()
+        for t in _debug.timelines()
     ]
 
 
@@ -269,7 +270,7 @@ def list_watches() -> list[dict[str, str]]:
             "circuit_id": t.circuit_id,
             "kind": t.kind,
             "ref": t.ref,
-            "label": t.label(STORE.get(t.circuit_id)),
+            "label": t.label(_debug.store.get(t.circuit_id)),
         }
         for t in _watches
     ]
@@ -284,7 +285,7 @@ def read_watches(upto_seq: int | None = None) -> list[dict[str, str]]:
     """
     reports = []
     for target in _watches:
-        timeline = STORE.get(target.circuit_id)
+        timeline = _debug.store.get(target.circuit_id)
         if timeline is None:
             text = "(timeline no longer tracked)"
         else:
@@ -370,7 +371,7 @@ def save_timeline(circuit_id: str, path: str) -> dict[str, Any]:
 
 def get_configuration() -> dict[str, Any]:
     """Return the current instrumentation configuration."""
-    return qisdebug.get_config().model_dump(mode="json")
+    return _debug.config.model_dump(mode="json")
 
 
 def set_configuration(overrides: dict[str, Any]) -> dict[str, Any]:
@@ -382,11 +383,11 @@ def set_configuration(overrides: dict[str, Any]) -> dict[str, Any]:
     hunting a transpiler-introduced bug. Invalid keys or values raise a
     validation error and leave the configuration unchanged.
     """
-    return qisdebug.configure(**overrides).model_dump(mode="json")
+    return _debug.configure(**overrides).model_dump(mode="json")
 
 
 def clear() -> str:
     """Drop all recorded telemetry and watches, without touching active patches."""
-    qisdebug.clear()
+    _debug.clear()
     _watches.clear()
     return "cleared"

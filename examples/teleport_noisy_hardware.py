@@ -93,7 +93,8 @@ def receiver_marginal(counts: dict[str, int]) -> dict[str, float]:
 
 def main() -> None:
     """Build, transpile and run a teleportation circuit assembled from two subcircuits."""
-    qisdebug.activate()
+    debug = qisdebug.QisDebug()
+    debug.start()
 
     payload = payload_state()
     epr = epr_pair()
@@ -123,8 +124,7 @@ def main() -> None:
     print("\nper-circuit timelines:")
     timelines: dict[str, qisdebug.Timeline] = {}
     for qc in (payload, epr, teleport):
-        timeline = qisdebug.timeline(qc)
-        assert timeline is not None, f"circuit {qc.name} was not tracked by qisdebug"
+        timeline = debug.get(qc)
         timelines[qc.name] = timeline
         print(f"\n{timeline.summary()}")
         for event in timeline.events:
@@ -148,7 +148,7 @@ def main() -> None:
 
     visualizer.show([payload_timeline, timelines["epr_pair"], teleport_timeline])
 
-    qisdebug.deactivate()
+    debug.end()
 
 
 if __name__ == "__main__":

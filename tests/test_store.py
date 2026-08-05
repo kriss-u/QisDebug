@@ -6,63 +6,69 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 from qiskit.circuit.quantumcircuit import QuantumCircuit
 
-import qisdebug
-from conftest import get_timeline
-from qisdebug._store import STORE
+from qisdebug._store import TelemetryStore
 
 
-def test_eviction_keeps_only_most_recent_circuits():
+def test_eviction_keeps_only_most_recent_circuits(debug):
     """Once the cap is hit, the oldest timelines are evicted first."""
-    qisdebug.configure(max_circuits=5)
-    qisdebug.activate()
+    debug.configure(max_circuits=5)
+    debug.start()
     for i in range(8):
         qc = QuantumCircuit(1, name=f"loop-{i}")
         qc.h(0)
-    names = {t.name for t in qisdebug.timelines()}
+    names = {t.name for t in debug.timelines()}
     assert len(names) == 5
     assert names == {f"loop-{i}" for i in range(3, 8)}
 
 
-def test_clear_drops_all_timelines():
+def test_clear_drops_all_timelines(debug):
     """clear() empties the store without deactivating the hooks."""
-    qisdebug.activate()
+    debug.start()
     qc = QuantumCircuit(1)
     qc.h(0)
-    assert qisdebug.timelines()
-    qisdebug.clear()
-    assert qisdebug.timelines() == []
-    assert qisdebug.timeline(qc) is None
+    assert debug.timelines()
+    debug.clear()
+    assert debug.timelines() == []
+    import pytest
+    import qisdebug
+
+    with pytest.raises(qisdebug.TimelineNotFoundError):
+        debug.get(qc)
 
 
-def test_suspension_blocks_recording():
-    """Appends made under STORE.suspended() leave no telemetry behind."""
-    qisdebug.activate()
+def test_suspension_blocks_recording(debug):
+    """Appends made under store.suspended() leave no telemetry behind."""
+    debug.start()
     qc = QuantumCircuit(1)
-    with STORE.suspended():
+    with debug.store.suspended():
         qc.h(0)
-    assert qisdebug.timeline(qc) is None
+    import pytest
+    import qisdebug
+
+    with pytest.raises(qisdebug.TimelineNotFoundError):
+        debug.get(qc)
     qc.x(0)
-    assert [e.gate for e in get_timeline(qc).gate_events] == ["x"]
+    assert [e.gate for e in debug.get(qc).gate_events] == ["x"]
 
 
-def test_timeline_lookup_by_object_and_id():
+def test_timeline_lookup_by_object_and_id(debug):
     """Timelines resolve by circuit object, id string, and latest-touched."""
-    qisdebug.activate()
+    debug.start()
     qc = QuantumCircuit(1)
     qc.h(0)
-    by_object = get_timeline(qc)
-    assert by_object is get_timeline(by_object.circuit_id)
-    assert qisdebug.timeline() is by_object
+    by_object = debug.get(qc)
+    assert by_object is debug.get(by_object.circuit_id)
+    assert by_object is debug.store.latest()
 
 
-def test_summary_and_export_are_serializable():
+def test_summary_and_export_are_serializable(debug):
     """summary() mentions the circuit and export() survives json.dumps."""
-    qisdebug.activate()
+    debug.start()
     qc = QuantumCircuit(2, 2, name="bell")
     qc.h(0)
     qc.cx(0, 1)
     qc.measure([0, 1], [0, 1])
-    timeline = get_timeline(qc)
+    timeline = debug.get(qc)
     assert "bell" in timeline.summary()
     assert "gate_added" in timeline.summary()
     payload = timeline.export()
@@ -71,16 +77,16 @@ def test_summary_and_export_are_serializable():
     assert len(payload["events"]) == len(timeline.events)
 
 
-def test_circuit_at_rebuilds_partial_circuit():
+def test_circuit_at_rebuilds_partial_circuit(debug):
     """circuit_at(n) reconstructs the circuit after its first n gates."""
-    qisdebug.activate()
+    debug.start()
     qc = QuantumCircuit(2, name="rebuild")
     qc.h(0)
     qc.cx(0, 1)
-    partial = get_timeline(qc).circuit_at(1)
+    partial = debug.get(qc).circuit_at(1)
     assert partial is not None
     assert [ci.operation.name for ci in partial.data] == ["h"]
-    full = get_timeline(qc).circuit_at()
+    full = debug.get(qc).circuit_at()
     assert full is not None
     assert [ci.operation.name for ci in full.data] == ["h", "cx"]
 
@@ -96,17 +102,10 @@ def test_circuit_at_rebuilds_partial_circuit():
 )
 def test_eviction_never_exceeds_cap(total, cap):
     """For any cap and insert count, the store never grows past the cap."""
-    qisdebug.deactivate()
-    qisdebug.clear()
-    qisdebug.configure(max_circuits=cap)
-    qisdebug.activate()
-    try:
-        for i in range(total):
-            qc = QuantumCircuit(1, name=f"c{i}")
-            qc.x(0)
-        assert len(qisdebug.timelines()) == min(total, cap)
-        sequences = [e.seq for t in qisdebug.timelines() for e in t.events]
-        assert len(set(sequences)) == len(sequences)
-    finally:
-        qisdebug.deactivate()
-        qisdebug.clear()
+    store = TelemetryStore()
+    for i in range(total):
+        qc = QuantumCircuit(1, name=f"c{i}")
+        store.timeline_for(qc, max_circuits=cap)
+    assert len(store.all_timelines()) == min(total, cap)
+    sequences = [e.seq for t in store.all_timelines() for e in t.events]
+    assert len(set(sequences)) == len(sequences)

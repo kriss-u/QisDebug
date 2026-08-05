@@ -10,18 +10,30 @@ including the Backend* wrappers) are patched for execution timing events
 only. Aer factory methods that mass-produce internal circuits
 (``from_backend``) run with recording suspended so they cannot flood the
 store.
+
+Since the patch itself is shared process-wide (see :mod:`.._dispatcher`),
+one real backend call may need to satisfy several independently configured
+:class:`~qisdebug.QisDebug` instances at once. Statevector capture eligibility
+is therefore decided once per run using the *widest* limits among the
+instances that want capture at all -- an instrumented copy is built and
+executed at most once -- and every one of those instances receives the same
+captured snapshots. An instance with a narrower ``max_statevector_qubits``
+than another concurrently active instance may thus see snapshots for a
+circuit wider than its own configured limit; that's an accepted trade-off of
+sharing one physical execution across independently configured sessions.
 """
 
 from __future__ import annotations
 
 import functools
 import time
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, NamedTuple
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .._compat import PatchRegistry, logger, resolve
-from .._config import QisDebugConfig, get_config
+from .. import _dispatcher
+from .._compat import logger, resolve
+from .._dispatcher import InstallResult, all_suspended
 from .._events import (
     ExecutionFinishedEvent,
     ExecutionSubmittedEvent,
@@ -29,7 +41,10 @@ from .._events import (
     StateSnapshotEvent,
     Timeline,
 )
-from .._store import ID_ATTRIBUTE, STORE
+from .._store import ID_ATTRIBUTE
+
+if TYPE_CHECKING:
+    from .._debug import QisDebug
 
 SNAPSHOT_LABEL_PREFIX = "qisdebug_sv_"
 
@@ -48,6 +63,8 @@ _PRIMITIVE_TARGETS = (
     ("qiskit_aer.primitives", "EstimatorV2"),
 )
 
+TimelineHandle = tuple["QisDebug", Timeline]
+
 
 class SnapshotRef(BaseModel):
     """Where one SaveStatevector instruction sits in the instrumented copy."""
@@ -64,7 +81,8 @@ class RunEntry(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     index: int
-    timeline: Any = None
+    timelines: list[Any] = Field(default_factory=list)
+    snapshot_timelines: list[Any] = Field(default_factory=list)
     snapshots: list[SnapshotRef] = Field(default_factory=list)
     backend_name: str | None = None
     shots: int | None = None
@@ -86,29 +104,62 @@ _INTERNAL_FACTORY_TARGETS = (
 )
 
 
-def install(registry: PatchRegistry) -> bool:
-    """Patch backend and primitive run methods; True if any applied."""
+def install() -> InstallResult:
+    """Patch backend and primitive run methods; ``applied`` if any did."""
+    warnings: list[str] = []
+    targets: list[tuple[Any, str]] = []
     applied = False
     aer_backend = resolve("qiskit_aer.backends.aerbackend", "AerBackend")
     if aer_backend is not None:
-        applied = registry.patch(aer_backend, "run", _backend_run_wrapper) or applied
+        ok, warning = _dispatcher.ensure_patched(aer_backend, "run", _backend_run_wrapper)
+        if ok:
+            targets.append((aer_backend, "run"))
+        applied = applied or ok
+        if warning:
+            warnings.append(warning)
         for module_path, class_name, attribute in _INTERNAL_FACTORY_TARGETS:
             owner = resolve(module_path, class_name)
             if owner is not None:
-                registry.patch(owner, attribute, _suspended_call_wrapper)
+                ok, warning = _dispatcher.ensure_patched(owner, attribute, _suspended_call_wrapper)
+                if ok:
+                    targets.append((owner, attribute))
+                if warning:
+                    warnings.append(warning)
     else:
         logger.info("qisdebug: qiskit-aer not installed; backend statevector capture unavailable")
     basic_simulator = resolve("qiskit.providers.basic_provider.basic_simulator", "BasicSimulator")
     if basic_simulator is not None:
-        applied = registry.patch(basic_simulator, "run", _plain_backend_run_wrapper) or applied
+        ok, warning = _dispatcher.ensure_patched(
+            basic_simulator, "run", _plain_backend_run_wrapper
+        )
+        if ok:
+            targets.append((basic_simulator, "run"))
+        applied = applied or ok
+        if warning:
+            warnings.append(warning)
     for module_path, class_name in _PRIMITIVE_TARGETS:
         primitive_cls = resolve(module_path, class_name)
         if primitive_cls is not None:
             wrapper_factory = _primitive_run_factory(class_name)
-            applied = registry.patch(primitive_cls, "run", wrapper_factory) or applied
+            ok, warning = _dispatcher.ensure_patched(primitive_cls, "run", wrapper_factory)
+            if ok:
+                targets.append((primitive_cls, "run"))
+            applied = applied or ok
+            if warning:
+                warnings.append(warning)
     if not applied:
-        registry.warn("no backend or primitive run method found; execution layer disabled")
-    return applied
+        warnings.append("no backend or primitive run method found; execution layer disabled")
+    return InstallResult(applied, warnings, targets)
+
+
+def _suspend_ids(listeners: list["QisDebug"], circuit_ids: set[str]) -> None:
+    for debug in listeners:
+        debug.store.suspend_circuit_ids(circuit_ids)
+
+
+def _resume_ids(listeners: list["QisDebug"], circuit_ids: set[str]) -> None:
+    for debug in listeners:
+        debug.store.resume_circuit_ids(circuit_ids)
 
 
 def _suspended_call_wrapper(original: Callable) -> Callable:
@@ -122,7 +173,7 @@ def _suspended_call_wrapper(original: Callable) -> Callable:
 
     @functools.wraps(original)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
-        with STORE.suspended():
+        with all_suspended(_dispatcher.active_instances()):
             return original(*args, **kwargs)
 
     return wrapper
@@ -138,29 +189,30 @@ def _backend_run_wrapper(original: Callable, instrument: bool = True) -> Callabl
 
     @functools.wraps(original)
     def run(self: Any, circuits: Any, *args: Any, **run_options: Any) -> Any:
-        if STORE.is_suspended():
+        listeners = [d for d in _dispatcher.active_instances() if not d.store.is_suspended()]
+        if not listeners:
             return original(self, circuits, *args, **run_options)
         try:
-            plan = _plan_backend_run(self, circuits, run_options, instrument)
+            plan = _plan_backend_run(self, circuits, run_options, instrument, listeners)
         except Exception:
             logger.debug("qisdebug: failed to plan instrumented run", exc_info=True)
             plan = None
         if plan is None:
             return original(self, circuits, *args, **run_options)
         circuit_ids = _plan_circuit_ids(plan)
-        STORE.suspend_circuit_ids(circuit_ids)
+        _suspend_ids(listeners, circuit_ids)
         try:
-            with STORE.suspended():
+            with all_suspended(listeners):
                 job = original(self, plan.payload, *args, **run_options)
         except BaseException:
-            STORE.resume_circuit_ids(circuit_ids)
+            _resume_ids(listeners, circuit_ids)
             raise
         try:
             _record_submission(plan, job)
-            _intercept_result(job, plan, circuit_ids)
+            _intercept_result(job, plan, listeners, circuit_ids)
         except Exception:
             logger.debug("qisdebug: failed to attach result interception", exc_info=True)
-            STORE.resume_circuit_ids(circuit_ids)
+            _resume_ids(listeners, circuit_ids)
         return job
 
     return run
@@ -184,7 +236,11 @@ def _plan_circuit_ids(plan: RunPlan) -> set[str]:
 
 
 def _plan_backend_run(
-    backend: Any, circuits: Any, run_options: dict, instrument: bool = True
+    backend: Any,
+    circuits: Any,
+    run_options: dict,
+    instrument: bool,
+    listeners: list["QisDebug"],
 ) -> RunPlan | None:
     """Build the run plan, swapping eligible circuits for instrumented copies.
 
@@ -209,42 +265,61 @@ def _plan_backend_run(
     backend_name = backend_name_attr() if callable(backend_name_attr) else backend_name_attr
     backend_name = str(backend_name) if backend_name is not None else None
     shots = run_options.get("shots")
-    config = get_config()
     has_binds = bool(run_options.get("parameter_binds"))
     entries: list[RunEntry] = []
     payload: list[Any] = []
     for index, circuit in enumerate(items):
-        timeline = STORE.timeline_for(circuit, adopt_by_name=True)
-        entry = RunEntry(index=index, timeline=timeline, backend_name=backend_name, shots=shots)
+        timelines = _timelines_for(listeners, circuit)
+        entry = RunEntry(index=index, timelines=timelines, backend_name=backend_name, shots=shots)
         replacement = circuit
-        if instrument and timeline is not None and config.capture_statevectors:
+        eligible = [(d, tl) for d, tl in timelines if instrument and d.config.capture_statevectors]
+        if eligible:
             if has_binds:
-                STORE.add_event(
-                    timeline,
+                _add_event(
+                    eligible,
                     NoteEvent,
                     message="statevector capture skipped: parameter_binds present",
                 )
             else:
-                instrumented = _instrument(circuit, timeline, config)
+                instrumented = _instrument(circuit, eligible)
                 if instrumented is not None:
                     replacement, entry.snapshots = instrumented
+                    entry.snapshot_timelines = eligible
         payload.append(replacement)
         entries.append(entry)
     return RunPlan(payload=payload[0] if single else payload, entries=entries)
 
 
+def _timelines_for(listeners: list["QisDebug"], circuit: Any) -> list[TimelineHandle]:
+    """Resolve one timeline per listener that recognizes ``circuit``."""
+    handles: list[TimelineHandle] = []
+    for debug in listeners:
+        timeline = debug.store.timeline_for(
+            circuit, max_circuits=debug.config.max_circuits, adopt_by_name=True
+        )
+        if timeline is not None:
+            handles.append((debug, timeline))
+    return handles
+
+
+def _add_event(handles: list[TimelineHandle], event_cls: type, **fields: Any) -> None:
+    """Record the same event, independently sequenced, on every handle's store."""
+    for debug, timeline in handles:
+        debug.store.add_event(timeline, event_cls, **fields)
+
+
 def _instrument(
-    circuit: Any, timeline: Timeline, config: QisDebugConfig
+    circuit: Any, eligible: list[TimelineHandle]
 ) -> tuple[Any, list[SnapshotRef]] | None:
     """Copy ``circuit`` with a SaveStatevector inserted after every gate."""
     save_cls = resolve("qiskit_aer.library", "SaveStatevector")
     if save_cls is None:
         return None
-    positions = _snapshot_positions(circuit, timeline, config)
+    positions = _snapshot_positions(circuit, eligible)
     if positions is None:
         return None
     refs: list[SnapshotRef] = []
-    with STORE.suspended():
+    with all_suspended([d for d, _ in eligible]):
         copy = circuit.copy_empty_like()
 
         def save(step: int, gate_index: int | None, gate: str | None) -> None:
@@ -266,26 +341,25 @@ def _instrument(
     return copy, refs
 
 
-def _snapshot_positions(
-    circuit: Any, timeline: Timeline, config: QisDebugConfig
-) -> set[int] | None:
+def _snapshot_positions(circuit: Any, eligible: list[TimelineHandle]) -> set[int] | None:
     """Return data indices to snapshot after, or None when capture must be skipped.
 
     Statevector saves are only deterministic while the circuit is a pure
     unitary evolution, so anything nondeterministic (reset, mid-circuit
     measurement, control flow, noise instructions) disables capture for the
     whole circuit. A trailing measurement layer is fine because snapshots
-    stop before it.
+    stop before it. Limits use the widest value among ``eligible`` instances,
+    since one instrumented copy must satisfy all of them at once.
     """
 
     def skip(reason: str) -> None:
-        STORE.add_event(timeline, NoteEvent, message=f"statevector capture skipped: {reason}")
+        _add_event(eligible, NoteEvent, message=f"statevector capture skipped: {reason}")
 
     if circuit.num_qubits == 0:
         return None
-    if circuit.num_qubits > config.max_statevector_qubits:
-        limit = config.max_statevector_qubits
-        skip(f"{circuit.num_qubits} qubits exceeds max_statevector_qubits={limit}")
+    widest_qubits = max(debug.config.max_statevector_qubits for debug, _ in eligible)
+    if circuit.num_qubits > widest_qubits:
+        skip(f"{circuit.num_qubits} qubits exceeds max_statevector_qubits={widest_qubits}")
         return None
     control_flow = _control_flow_names()
     first_measure: int | None = None
@@ -305,10 +379,11 @@ def _snapshot_positions(
             skip("mid-circuit measurement")
             return None
         positions.append(index)
-    if len(positions) + 1 > config.max_snapshots_per_circuit:
-        keep = config.max_snapshots_per_circuit - 1
-        STORE.add_event(
-            timeline, NoteEvent, message=f"statevector capture truncated to the first {keep} gates"
+    widest_snapshots = max(debug.config.max_snapshots_per_circuit for debug, _ in eligible)
+    if len(positions) + 1 > widest_snapshots:
+        keep = widest_snapshots - 1
+        _add_event(
+            eligible, NoteEvent, message=f"statevector capture truncated to the first {keep} gates"
         )
         positions = positions[:keep]
     return set(positions)
@@ -328,10 +403,8 @@ def _record_submission(plan: RunPlan, job: Any) -> None:
     if callable(job_id):
         job_id = job_id()
     for entry in plan.entries:
-        if entry.timeline is None:
-            continue
-        STORE.add_event(
-            entry.timeline,
+        _add_event(
+            entry.timelines,
             ExecutionSubmittedEvent,
             backend=entry.backend_name,
             shots=entry.shots,
@@ -340,7 +413,9 @@ def _record_submission(plan: RunPlan, job: Any) -> None:
         )
 
 
-def _intercept_result(job: Any, plan: RunPlan, circuit_ids: set[str]) -> None:
+def _intercept_result(
+    job: Any, plan: RunPlan, listeners: list["QisDebug"], circuit_ids: set[str]
+) -> None:
     """Override ``job.result`` so telemetry is ingested when results arrive.
 
     Also releases ``circuit_ids`` from suspension here, once the backend's
@@ -357,7 +432,7 @@ def _intercept_result(job: Any, plan: RunPlan, circuit_ids: set[str]) -> None:
         finally:
             if not state["resumed"]:
                 state["resumed"] = True
-                STORE.resume_circuit_ids(circuit_ids)
+                _resume_ids(listeners, circuit_ids)
         if not state["ingested"]:
             state["ingested"] = True
             try:
@@ -373,7 +448,7 @@ def _ingest_result(result: Any, plan: RunPlan) -> None:
     """Pull snapshots out of the result, strip them, and record completion."""
     fallback_duration = time.time() - plan.submitted_at
     for entry in plan.entries:
-        if entry.timeline is None:
+        if not entry.timelines:
             continue
         experiment = _experiment_for(result, entry.index)
         if entry.snapshots and experiment is not None:
@@ -384,8 +459,8 @@ def _ingest_result(result: Any, plan: RunPlan) -> None:
         except Exception:
             counts = None
         duration = getattr(experiment, "time_taken", None) or getattr(result, "time_taken", None)
-        STORE.add_event(
-            entry.timeline,
+        _add_event(
+            entry.timelines,
             ExecutionFinishedEvent,
             backend=entry.backend_name,
             duration=float(duration) if duration is not None else fallback_duration,
@@ -414,16 +489,17 @@ def _extract_snapshots(experiment: Any, entry: RunEntry) -> None:
     if data is None:
         return
     tracked = getattr(data, "_data_attributes", None)
+    num_qubits = entry.timelines[0][1].num_qubits if entry.timelines else None
     for ref in entry.snapshots:
         value = getattr(data, ref.label, None)
         if value is not None:
-            STORE.add_event(
-                entry.timeline,
+            _add_event(
+                entry.snapshot_timelines,
                 StateSnapshotEvent,
                 step=ref.step,
                 gate_index=ref.gate_index,
                 gate=ref.gate,
-                num_qubits=getattr(value, "num_qubits", None) or entry.timeline.num_qubits,
+                num_qubits=getattr(value, "num_qubits", None) or num_qubits,
                 statevector=value,
             )
             delattr(data, ref.label)
@@ -437,7 +513,8 @@ def _primitive_run_factory(primitive_name: str) -> Callable[[Callable], Callable
     def factory(original: Callable) -> Callable:
         @functools.wraps(original)
         def run(self: Any, pubs: Any, *args: Any, **kwargs: Any) -> Any:
-            if STORE.is_suspended():
+            listeners = [d for d in _dispatcher.active_instances() if not d.store.is_suspended()]
+            if not listeners:
                 return original(self, pubs, *args, **kwargs)
             # Pubs may be a generator; materialize it so telemetry extraction
             # does not consume the caller's iterable.
@@ -445,38 +522,43 @@ def _primitive_run_factory(primitive_name: str) -> Callable[[Callable], Callable
                 pubs = list(pubs)
             except TypeError:
                 return original(self, pubs, *args, **kwargs)
-            timelines = _pub_timelines(pubs)
+            timelines = _pub_timelines(listeners, pubs)
             shots = kwargs.get("shots")
             started = time.time()
             # Primitives bind and rework id-carrying copies of the pub
             # circuits internally (often on job threads); suspending the ids
             # keeps that rework from being recorded as user construction.
-            circuit_ids = {t.circuit_id for t in timelines}
-            STORE.suspend_circuit_ids(circuit_ids)
+            circuit_ids = {timeline.circuit_id for _, timeline in timelines}
+            _suspend_ids(listeners, circuit_ids)
             try:
                 job = original(self, pubs, *args, **kwargs)
             except BaseException:
-                STORE.resume_circuit_ids(circuit_ids)
+                _resume_ids(listeners, circuit_ids)
                 raise
             try:
                 job_id = getattr(job, "job_id", None)
                 if callable(job_id):
                     job_id = job_id()
-                for timeline in timelines:
-                    STORE.add_event(
-                        timeline,
-                        ExecutionSubmittedEvent,
-                        backend=primitive_name,
-                        shots=shots,
-                        job_id=str(job_id) if job_id is not None else None,
-                        instrumented=False,
-                    )
-                _intercept_primitive_result(
-                    job, timelines, primitive_name, started, shots, circuit_ids
+                _add_event(
+                    timelines,
+                    ExecutionSubmittedEvent,
+                    backend=primitive_name,
+                    shots=shots,
+                    job_id=str(job_id) if job_id is not None else None,
+                    instrumented=False,
                 )
+                submission = PrimitiveSubmission(
+                    timelines=timelines,
+                    primitive_name=primitive_name,
+                    started=started,
+                    shots=shots,
+                    listeners=listeners,
+                    circuit_ids=circuit_ids,
+                )
+                _intercept_primitive_result(job, submission)
             except Exception:
                 logger.debug("qisdebug: failed to record primitive submission", exc_info=True)
-                STORE.resume_circuit_ids(circuit_ids)
+                _resume_ids(listeners, circuit_ids)
             return job
 
         return run
@@ -484,20 +566,18 @@ def _primitive_run_factory(primitive_name: str) -> Callable[[Callable], Callable
     return factory
 
 
-def _pub_timelines(pubs: list) -> list[Timeline]:
-    """Resolve one timeline per pub whose circuit can be identified."""
+def _pub_timelines(listeners: list["QisDebug"], pubs: list) -> list[TimelineHandle]:
+    """Resolve one timeline handle per (listener, pub) whose circuit can be identified."""
     circuit_cls = resolve("qiskit.circuit.quantumcircuit", "QuantumCircuit")
     if circuit_cls is None:
         return []
-    timelines = []
+    handles: list[TimelineHandle] = []
     for pub in pubs:
         circuit = _pub_circuit(pub, circuit_cls)
         if circuit is None:
             continue
-        timeline = STORE.timeline_for(circuit, adopt_by_name=True)
-        if timeline is not None:
-            timelines.append(timeline)
-    return timelines
+        handles.extend(_timelines_for(listeners, circuit))
+    return handles
 
 
 def _pub_circuit(pub: Any, circuit_cls: type) -> Any | None:
@@ -512,18 +592,22 @@ def _pub_circuit(pub: Any, circuit_cls: type) -> Any | None:
     return None
 
 
-def _intercept_primitive_result(
-    job: Any,
-    timelines: list[Timeline],
-    primitive_name: str,
-    started: float,
-    shots: int | None,
-    circuit_ids: set[str],
-) -> None:
+class PrimitiveSubmission(NamedTuple):
+    """Bookkeeping for one primitive ``run`` call, carried into its result callback."""
+
+    timelines: list[TimelineHandle]
+    primitive_name: str
+    started: float
+    shots: int | None
+    listeners: list["QisDebug"]
+    circuit_ids: set[str]
+
+
+def _intercept_primitive_result(job: Any, submission: PrimitiveSubmission) -> None:
     """Override the primitive job's result to record completion timing.
 
-    Like the backend variant, this also releases ``circuit_ids`` from
-    suspension once results are in and the primitive's internal circuit
+    Like the backend variant, this also releases the submission's circuit ids
+    from suspension once results are in and the primitive's internal circuit
     rework is guaranteed to be over.
     """
     original_result = job.result
@@ -536,22 +620,21 @@ def _intercept_primitive_result(
         finally:
             if not state["resumed"]:
                 state["resumed"] = True
-                STORE.resume_circuit_ids(circuit_ids)
+                _resume_ids(submission.listeners, submission.circuit_ids)
         if not state["done"]:
             state["done"] = True
-            duration = time.time() - started
-            for timeline in timelines:
-                try:
-                    STORE.add_event(
-                        timeline,
-                        ExecutionFinishedEvent,
-                        backend=primitive_name,
-                        duration=duration,
-                        success=True,
-                        shots=shots,
-                    )
-                except Exception:
-                    logger.debug("qisdebug: failed to record primitive completion", exc_info=True)
+            duration = time.time() - submission.started
+            try:
+                _add_event(
+                    submission.timelines,
+                    ExecutionFinishedEvent,
+                    backend=submission.primitive_name,
+                    duration=duration,
+                    success=True,
+                    shots=submission.shots,
+                )
+            except Exception:
+                logger.debug("qisdebug: failed to record primitive completion", exc_info=True)
         return outcome
 
     job.result = result

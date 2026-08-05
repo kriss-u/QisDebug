@@ -23,7 +23,7 @@ from typing import Mapping, Sequence
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
 
-from ._events import EventType, ExecutionFinishedEvent, StateSnapshotEvent, Timeline
+from ._events import EventType, StateSnapshotEvent, Timeline
 
 Severity = str  # "info" | "warning" | "error"
 
@@ -231,7 +231,6 @@ def find_anomalies(timeline: Timeline) -> list[Anomaly]:
                 )
             )
     for event in timeline.filter(EventType.EXECUTION_FINISHED):
-        assert isinstance(event, ExecutionFinishedEvent)
         if event.success is False:
             anomalies.append(
                 Anomaly(

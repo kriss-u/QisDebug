@@ -14,6 +14,13 @@ Pass manager runs a backend performs internally while executing a circuit
 (detected via the execution hook's suspended circuit ids) are recorded as
 ``phase="backend"`` events so backend-internal lowering is visible without
 masquerading as user transpilation.
+
+As with the other layers, the patch is shared process-wide (see
+:mod:`.._dispatcher`); one pass manager run may serve several independently
+configured :class:`~qisdebug.QisDebug` instances at once. The pass callback
+and circuit snapshot are computed once per pass and handed to every listener
+that wants one; each listener still applies its own ``transpile_snapshots``
+policy to decide whether it keeps the snapshot on its own event.
 """
 
 from __future__ import annotations
@@ -21,10 +28,11 @@ from __future__ import annotations
 import functools
 import threading
 import time
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
-from .._compat import PatchRegistry, logger, resolve
-from .._config import get_config
+from .. import _dispatcher
+from .._compat import logger, resolve
+from .._dispatcher import InstallResult, all_suspended
 from .._events import (
     NoteEvent,
     Timeline,
@@ -32,24 +40,39 @@ from .._events import (
     TranspilePassEvent,
     TranspileStartedEvent,
 )
-from .._store import ID_ATTRIBUTE, STORE
+from .._store import ID_ATTRIBUTE
+
+if TYPE_CHECKING:
+    from .._debug import QisDebug
 
 _local = threading.local()
 
+TranspileTriple = tuple["QisDebug", Timeline, str]
 
-def install(registry: PatchRegistry) -> bool:
-    """Patch ``PassManager.run`` and ``BasePass.__call__``; True when the former applied."""
+
+def install() -> InstallResult:
+    """Patch ``PassManager.run`` and ``BasePass.__call__``; ``applied`` when the former did."""
+    warnings: list[str] = []
+    targets: list[tuple[Any, str]] = []
     pass_manager_cls = resolve("qiskit.transpiler.passmanager", "PassManager")
     if pass_manager_cls is None:
-        registry.warn("PassManager not found; transpile layer disabled")
-        return False
-    applied = registry.patch(pass_manager_cls, "run", _run_wrapper)
+        warnings.append("PassManager not found; transpile layer disabled")
+        return InstallResult(False, warnings, targets)
+    applied, warning = _dispatcher.ensure_patched(pass_manager_cls, "run", _run_wrapper)
+    if applied:
+        targets.append((pass_manager_cls, "run"))
+    if warning:
+        warnings.append(warning)
     base_pass_cls = resolve("qiskit.transpiler.basepasses", "BasePass")
     if base_pass_cls is not None:
-        registry.patch(base_pass_cls, "__call__", _pass_call_wrapper)
+        ok, warning = _dispatcher.ensure_patched(base_pass_cls, "__call__", _pass_call_wrapper)
+        if ok:
+            targets.append((base_pass_cls, "__call__"))
+        if warning:
+            warnings.append(warning)
     else:
-        registry.warn("BasePass not found; directly-applied passes not recorded")
-    return applied
+        warnings.append("BasePass not found; directly-applied passes not recorded")
+    return InstallResult(applied, warnings, targets)
 
 
 def _run_wrapper(original: Callable) -> Callable:
@@ -71,7 +94,10 @@ def _run_wrapper(original: Callable) -> Callable:
         num_processes: Any = None,
         **kwargs: Any,
     ) -> Any:
-        if STORE.is_suspended() or getattr(_local, "depth", 0) > 0:
+        if getattr(_local, "depth", 0) > 0:
+            return original(self, circuits, output_name, callback, num_processes, **kwargs)
+        listeners = [d for d in _dispatcher.active_instances() if not d.store.is_suspended()]
+        if not listeners:
             return original(self, circuits, output_name, callback, num_processes, **kwargs)
         circuit_cls = resolve("qiskit.circuit.quantumcircuit", "QuantumCircuit")
         single = circuit_cls is not None and isinstance(circuits, circuit_cls)
@@ -87,12 +113,10 @@ def _run_wrapper(original: Callable) -> Callable:
         else:
             return original(self, circuits, output_name, callback, num_processes, **kwargs)
 
-        resolved = [_resolve_timeline(c) for c in items]
-        timelines = [timeline for timeline, _ in resolved]
-        phases = [phase for _, phase in resolved]
-        for circuit, timeline, phase in zip(items, timelines, phases):
-            if timeline is not None:
-                STORE.add_event(
+        resolved = [_resolve_triples(listeners, c) for c in items]
+        for circuit, triples in zip(items, resolved):
+            for debug, timeline, phase in triples:
+                debug.store.add_event(
                     timeline,
                     TranspileStartedEvent,
                     pass_manager=type(self).__name__,
@@ -100,97 +124,100 @@ def _run_wrapper(original: Callable) -> Callable:
                     size=circuit.size(),
                     phase=phase,
                 )
-        if len(items) == 1 and timelines[0] is not None:
-            callback = _chained_callback(callback, timelines[0], phases[0])
+        if len(items) == 1 and resolved[0]:
+            callback = _chained_callback(callback, resolved[0])
 
         started = time.perf_counter()
         _local.depth = 1
         try:
-            with STORE.suspended():
+            with all_suspended(listeners):
                 result = original(self, circuits, output_name, callback, num_processes, **kwargs)
         finally:
             _local.depth = 0
         duration = time.perf_counter() - started
 
         outputs = [result] if single else list(result)
-        for timeline, phase, output in zip(timelines, phases, outputs):
-            if timeline is None:
+        for triples, output in zip(resolved, outputs):
+            if not triples:
                 continue
-            snapshot = _output_snapshot(output)
+            snapshot = _maybe_output_snapshot(triples, output)
             try:
-                setattr(output, ID_ATTRIBUTE, timeline.circuit_id)
+                setattr(output, ID_ATTRIBUTE, triples[0][1].circuit_id)
             except Exception:
                 pass
-            STORE.add_event(
-                timeline,
-                TranspileFinishedEvent,
-                duration=duration,
-                depth=output.depth(),
-                size=output.size(),
-                phase=phase,
-                circuit=snapshot,
-            )
+            for debug, timeline, phase in triples:
+                debug.store.add_event(
+                    timeline,
+                    TranspileFinishedEvent,
+                    duration=duration,
+                    depth=output.depth(),
+                    size=output.size(),
+                    phase=phase,
+                    circuit=snapshot if debug.config.transpile_snapshots != "none" else None,
+                )
         return result
 
     return run
 
 
-def _resolve_timeline(circuit: Any) -> tuple[Timeline | None, str]:
-    """Resolve the circuit's timeline and which compilation phase this run is.
+def _resolve_triples(listeners: list["QisDebug"], circuit: Any) -> list[TranspileTriple]:
+    """Resolve each listener's timeline for ``circuit`` and its compilation phase.
 
-    A pass manager run on a circuit whose id the execution hook marked
-    suspended is the backend compiling internally while executing it (Aer
-    does this on worker threads, where context-var suspension is invisible).
-    Those runs are recorded with ``phase="backend"`` so they land on their
-    own visualizer track instead of overwriting the user-facing transpile
-    history -- or, when ``capture_backend_compilation`` is off, suppressed
-    with a note event. Suspension is checked after resolution so copies that
-    lost the id but re-adopt a suspended timeline by name are classified too.
+    A pass manager run on a circuit whose id an instance's own execution hook
+    marked suspended is the backend compiling internally while executing it
+    (Aer does this on worker threads, where context-var suspension is
+    invisible). Those runs are recorded with ``phase="backend"`` so they land
+    on their own visualizer track instead of overwriting the user-facing
+    transpile history -- or, when that instance's ``capture_backend_compilation``
+    is off, suppressed with a note event.
     """
-    timeline = STORE.timeline_for(circuit, adopt_by_name=True)
-    if timeline is None:
-        return None, "user"
-    if not STORE.is_circuit_suspended(circuit):
-        return timeline, "user"
-    if get_config().capture_backend_compilation:
-        return timeline, "backend"
-    STORE.add_event(
-        timeline,
-        NoteEvent,
-        message=(
-            "pass manager run during execution not recorded "
-            "(backend-internal compilation)"
-        ),
-    )
-    return None, "user"
+    triples: list[TranspileTriple] = []
+    for debug in listeners:
+        timeline = debug.store.timeline_for(
+            circuit, max_circuits=debug.config.max_circuits, adopt_by_name=True
+        )
+        if timeline is None:
+            continue
+        if not debug.store.is_circuit_suspended(circuit):
+            triples.append((debug, timeline, "user"))
+        elif debug.config.capture_backend_compilation:
+            triples.append((debug, timeline, "backend"))
+        else:
+            debug.store.add_event(
+                timeline,
+                NoteEvent,
+                message=(
+                    "pass manager run during execution not recorded "
+                    "(backend-internal compilation)"
+                ),
+            )
+    return triples
 
 
-def _output_snapshot(output: Any) -> Any | None:
-    """Copy the final transpiled circuit for the finished event.
+def _maybe_output_snapshot(triples: list[TranspileTriple], output: Any) -> Any | None:
+    """Copy the final transpiled circuit, if any listener wants snapshots at all.
 
     Runs before the timeline id is propagated onto the output, so the copy
     stays untracked; freezing a copy means later user mutations of the
-    returned circuit don't rewrite the timeline. Returns None when snapshots
-    are disabled or the copy fails.
+    returned circuit don't rewrite the timeline. Returns None when no
+    listener wants snapshots or the copy fails.
     """
-    if get_config().transpile_snapshots == "none":
+    if not any(debug.config.transpile_snapshots != "none" for debug, _, _ in triples):
         return None
     try:
-        with STORE.suspended():
+        with all_suspended([debug for debug, _, _ in triples]):
             return output.copy()
     except Exception:
         return None
 
 
-def _chained_callback(
-    user_callback: Callable | None, timeline: Timeline, phase: str = "user"
-) -> Callable:
+def _chained_callback(user_callback: Callable | None, triples: list[TranspileTriple]) -> Callable:
     """Build a pass callback that records telemetry then defers to the user's."""
     state: dict[str, Any] = {"signature": None}
 
     def callback(**details: Any) -> None:
         try:
-            _record_pass(timeline, details, state, phase)
+            _record_pass(triples, details, state)
         except Exception:
             logger.debug("qisdebug: failed to record transpiler pass", exc_info=True)
         if user_callback is not None:
@@ -224,7 +251,7 @@ def _fingerprint(dag: Any, depth: int | None, size: int | None, ops: dict) -> tu
     return (bits, depth, size, tuple(sorted(ops.items())), nodes)
 
 
-def _record_pass(timeline: Timeline, details: dict, state: dict, phase: str = "user") -> None:
+def _record_pass(triples: list[TranspileTriple], details: dict, state: dict) -> None:
     """Record one transpiler pass, snapshotting the circuit when configured."""
     pass_instance = details.get("pass_")
     dag = details.get("dag")
@@ -243,31 +270,32 @@ def _record_pass(timeline: Timeline, details: dict, state: dict, phase: str = "u
     changed = state["signature"] is None or signature != state["signature"]
     state["signature"] = signature
 
-    config = get_config()
     circuit = None
-    wants_snapshot = config.transpile_snapshots == "all" or (
-        config.transpile_snapshots == "changed" and changed
-    )
-    if wants_snapshot and dag is not None:
+    wants_snapshot = any(debug.config.transpile_snapshots != "none" for debug, _, _ in triples)
+    if dag is not None and wants_snapshot:
         converter = resolve("qiskit.converters", "dag_to_circuit")
         if converter is not None:
-            with STORE.suspended():
+            with all_suspended([debug for debug, _, _ in triples]):
                 try:
                     circuit = converter(dag)
                 except Exception:
                     circuit = None
-    STORE.add_event(
-        timeline,
-        TranspilePassEvent,
-        pass_name=name or "unknown",
-        duration=float(details.get("time") or 0.0),
-        depth=depth,
-        size=size,
-        ops=ops,
-        changed=changed,
-        phase=phase,
-        circuit=circuit,
-    )
+
+    for debug, timeline, phase in triples:
+        policy = debug.config.transpile_snapshots
+        wants_snapshot = policy == "all" or (policy == "changed" and changed)
+        debug.store.add_event(
+            timeline,
+            TranspilePassEvent,
+            pass_name=name or "unknown",
+            duration=float(details.get("time") or 0.0),
+            depth=depth,
+            size=size,
+            ops=ops,
+            changed=changed,
+            phase=phase,
+            circuit=circuit if wants_snapshot else None,
+        )
 
 
 def _pass_call_wrapper(original: Callable) -> Callable:
@@ -279,21 +307,26 @@ def _pass_call_wrapper(original: Callable) -> Callable:
 
     @functools.wraps(original)
     def call(self: Any, circuit: Any, *args: Any, **kwargs: Any) -> Any:
-        if (
-            STORE.is_suspended()
-            or STORE.is_circuit_suspended(circuit)
-            or getattr(_local, "depth", 0) > 0
-        ):
+        if getattr(_local, "depth", 0) > 0:
+            return original(self, circuit, *args, **kwargs)
+        listeners = [
+            d
+            for d in _dispatcher.active_instances()
+            if not d.store.is_suspended() and not d.store.is_circuit_suspended(circuit)
+        ]
+        if not listeners:
             return original(self, circuit, *args, **kwargs)
         started = time.perf_counter()
         _local.depth = 1
         try:
-            with STORE.suspended():
+            with all_suspended(listeners):
                 result = original(self, circuit, *args, **kwargs)
         finally:
             _local.depth = 0
         try:
-            _record_standalone_pass(self, circuit, result, time.perf_counter() - started)
+            _record_standalone_pass(
+                self, circuit, result, time.perf_counter() - started, listeners
+            )
         except Exception:
             logger.debug("qisdebug: failed to record standalone pass", exc_info=True)
         return result
@@ -302,15 +335,21 @@ def _pass_call_wrapper(original: Callable) -> Callable:
 
 
 def _record_standalone_pass(
-    pass_instance: Any, circuit: Any, result: Any, duration: float
+    pass_instance: Any, circuit: Any, result: Any, duration: float, listeners: list["QisDebug"]
 ) -> None:
     """Record one directly-applied pass as a transpile_pass event.
 
     The result circuit inherits the timeline id, so later transpiles or runs
     of it stay on the same timeline, mirroring ``PassManager.run`` outputs.
     """
-    timeline = STORE.timeline_for(circuit, adopt_by_name=True)
-    if timeline is None:
+    pairs: list[tuple["QisDebug", Timeline]] = []
+    for debug in listeners:
+        timeline = debug.store.timeline_for(
+            circuit, max_circuits=debug.config.max_circuits, adopt_by_name=True
+        )
+        if timeline is not None:
+            pairs.append((debug, timeline))
+    if not pairs:
         return
     namer = getattr(pass_instance, "name", None)
     name = namer() if callable(namer) else str(pass_instance)
@@ -329,22 +368,32 @@ def _record_standalone_pass(
         depth = None
         size = None
         ops = {}
-    policy = get_config().transpile_snapshots
     snapshot = None
-    if policy == "all" or (policy == "changed" and changed):
-        snapshot = _output_snapshot(result)
+    if any(
+        debug.config.transpile_snapshots == "all"
+        or (debug.config.transpile_snapshots == "changed" and changed)
+        for debug, _ in pairs
+    ):
+        try:
+            with all_suspended([debug for debug, _ in pairs]):
+                snapshot = result.copy()
+        except Exception:
+            snapshot = None
     try:
-        setattr(result, ID_ATTRIBUTE, timeline.circuit_id)
+        setattr(result, ID_ATTRIBUTE, pairs[0][1].circuit_id)
     except Exception:
         pass
-    STORE.add_event(
-        timeline,
-        TranspilePassEvent,
-        pass_name=name or "unknown",
-        duration=duration,
-        depth=depth,
-        size=size,
-        ops=ops,
-        changed=changed,
-        circuit=snapshot,
-    )
+    for debug, timeline in pairs:
+        policy = debug.config.transpile_snapshots
+        wants_snapshot = policy == "all" or (policy == "changed" and changed)
+        debug.store.add_event(
+            timeline,
+            TranspilePassEvent,
+            pass_name=name or "unknown",
+            duration=duration,
+            depth=depth,
+            size=size,
+            ops=ops,
+            changed=changed,
+            circuit=snapshot if wants_snapshot else None,
+        )

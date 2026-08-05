@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import time
 from enum import Enum
-from typing import Any, Iterable, Literal, cast, overload
+from typing import TYPE_CHECKING, Any, Iterable, Literal, cast, overload
 
 import numpy as np
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
+
+if TYPE_CHECKING:
+    from ._store import TelemetryStore
 
 
 class EventType(str, Enum):
@@ -209,6 +212,12 @@ class Timeline(BaseModel):
     created_at: float = Field(default_factory=time.time)
     events: list[TelemetryEvent] = Field(default_factory=list)
 
+    _owning_store: "TelemetryStore | None" = PrivateAttr(default=None)
+
+    def bind_store(self, store: "TelemetryStore") -> None:
+        """Record which store owns this timeline, for internal suspension use."""
+        self._owning_store = store
+
     @overload
     def filter(  # pyright: ignore[reportOverlappingOverload]
         self, event_type: Literal[EventType.GATE_ADDED], /
@@ -299,8 +308,6 @@ class Timeline(BaseModel):
         Returns None when Qiskit is unavailable or the recorded operation
         objects are missing (e.g. on a timeline restored from an export).
         """
-        from ._store import STORE
-
         try:
             from qiskit.circuit import QuantumCircuit
         except ImportError:
@@ -310,18 +317,24 @@ class Timeline(BaseModel):
             gates = gates[:step]
         if any(e.operation is None for e in gates):
             return None
-        with STORE.suspended():
+
+        def build() -> Any:
             circuit = QuantumCircuit(self.num_qubits, self.num_clbits, name=self.name or "qisdebug")
             for event in gates:
-                try:
-                    circuit.append(
-                        event.operation,
-                        [circuit.qubits[i] for i in event.qubits],
-                        [circuit.clbits[i] for i in event.clbits],
-                    )
-                except Exception:
-                    return None
-        return circuit
+                circuit.append(
+                    event.operation,
+                    [circuit.qubits[i] for i in event.qubits],
+                    [circuit.clbits[i] for i in event.clbits],
+                )
+            return circuit
+
+        try:
+            if self._owning_store is not None:
+                with self._owning_store.suspended():
+                    return build()
+            return build()
+        except Exception:
+            return None
 
     def summary(self) -> str:
         """Return a compact plain-text overview of the timeline."""

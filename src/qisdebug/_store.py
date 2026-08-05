@@ -1,4 +1,9 @@
-"""Global telemetry store keyed by hidden per-circuit ids."""
+"""Per-instance telemetry store keyed by hidden per-circuit ids.
+
+Each :class:`~qisdebug.QisDebug` instance owns exactly one
+:class:`TelemetryStore`; there is no process-wide singleton, so independent
+``QisDebug()`` instances never see each other's timelines.
+"""
 
 from __future__ import annotations
 
@@ -9,7 +14,6 @@ from collections import OrderedDict
 from contextlib import contextmanager
 from typing import Any, Iterable, Iterator, Type, TypeVar
 
-from ._config import get_config
 from ._events import TelemetryEvent, Timeline
 
 ID_ATTRIBUTE = "_qisdebug_id"
@@ -47,7 +51,7 @@ class TelemetryStore:
         self._suspended_ids: dict[str, int] = {}
 
     def next_sequence(self) -> int:
-        """Return the next value of the process-wide event counter."""
+        """Return the next value of this store's monotonic event counter."""
         with self._lock:
             self._sequence += 1
             return self._sequence
@@ -95,13 +99,20 @@ class TelemetryStore:
             return circuit_id in self._suspended_ids
 
     def timeline_for(
-        self, circuit: Any, create: bool = True, adopt_by_name: bool = False
+        self,
+        circuit: Any,
+        *,
+        max_circuits: int = 256,
+        create: bool = True,
+        adopt_by_name: bool = False,
     ) -> Timeline | None:
         """Return the timeline tracking ``circuit``, creating one if needed.
 
         With ``adopt_by_name`` a circuit that carries no id yet (typically a
         transpiled copy, since Qiskit drops custom attributes there) is
         matched to the most recent timeline with the same circuit name.
+        ``max_circuits`` caps how many timelines this store keeps before
+        evicting the oldest.
         """
         with self._lock:
             circuit_id = getattr(circuit, ID_ATTRIBUTE, None)
@@ -131,8 +142,9 @@ class TelemetryStore:
                 qregs=_registers(circuit, "qregs"),
                 cregs=_registers(circuit, "cregs"),
             )
+            timeline.bind_store(self)
             self._timelines[circuit_id] = timeline
-            while len(self._timelines) > get_config().max_circuits:
+            while len(self._timelines) > max_circuits:
                 self._timelines.popitem(last=False)
             return timeline
 
@@ -168,6 +180,14 @@ class TelemetryStore:
                 return None
             return self._timelines.get(circuit_id)
 
+    def get_by_name(self, name: str) -> Timeline | None:
+        """Return the most-recently-touched timeline with the given circuit name."""
+        with self._lock:
+            for timeline in reversed(self._timelines.values()):
+                if timeline.name == name:
+                    return timeline
+            return None
+
     def latest(self) -> Timeline | None:
         """Return the most recently touched timeline, if any."""
         with self._lock:
@@ -200,6 +220,3 @@ def _registers(circuit: Any, attribute: str) -> dict[str, list[int]]:
         except Exception:
             continue
     return registers
-
-
-STORE = TelemetryStore()

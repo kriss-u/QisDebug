@@ -3,6 +3,7 @@
 import builtins
 
 import pytest
+from _helpers import build_gui_window
 from qiskit.circuit.quantumcircuit import QuantumCircuit
 from qiskit.circuit import ClassicalRegister, QuantumRegister
 from qiskit_aer import AerSimulator
@@ -124,23 +125,8 @@ def test_cli_watch_and_unwatch_commands(debug, monkeypatch, capsys):
 )
 def test_gui_frontend_add_and_remove_watch(debug, monkeypatch):
     """Adding a watch through the combo boxes updates the watch table; removing clears it."""
-    from PySide6.QtWidgets import QApplication
-
-    from qisdebug._frontends import gui as gui_module
-
     timeline = _traced_bell_with_registers(debug)
-    monkeypatch.setattr(QApplication, "exec", lambda self: None)
-    app = QApplication.instance() or QApplication([])
-    merged, tracks, active_labels = _render.merge_timelines([timeline])
-    # protected-access: this is the frontend module's own test, exercising
-    # internals it has no public constructor or API for.
-    view = gui_module._TimelineView(  # pylint: disable=protected-access
-        merged=merged,
-        tracks=tracks,
-        active_labels=active_labels,
-        timelines_by_id={timeline.circuit_id: timeline},
-    )
-    window = gui_module._TimelineWindow("viz", view)  # pylint: disable=protected-access
+    app, window = build_gui_window(monkeypatch, timeline)
 
     window.watch_kind.setCurrentText("qubit")
     window.watch_ref.setCurrentText("0")

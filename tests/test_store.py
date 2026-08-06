@@ -2,6 +2,7 @@
 
 import json
 
+from _helpers import bell_circuit
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 from qiskit.circuit.quantumcircuit import QuantumCircuit
@@ -64,10 +65,7 @@ def test_timeline_lookup_by_object_and_id(debug):
 def test_summary_and_export_are_serializable(debug):
     """summary() mentions the circuit and export() survives json.dumps."""
     debug.start()
-    qc = QuantumCircuit(2, 2, name="bell")
-    qc.h(0)
-    qc.cx(0, 1)
-    qc.measure([0, 1], [0, 1])
+    qc = bell_circuit()
     timeline = debug.get(qc)
     assert "bell" in timeline.summary()
     assert "gate_added" in timeline.summary()

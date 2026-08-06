@@ -17,7 +17,7 @@ def _current_patch_targets():
 
     return {
         "append": QuantumCircuit.append,
-        "_append": QuantumCircuit._append,
+        "_append": QuantumCircuit._append,  # pylint: disable=protected-access
         "pm_run": PassManager.run,
         "aer_run": AerBackend.run,
     }
@@ -51,12 +51,12 @@ def test_deactivate_restores_original_methods(debug):
     originals = _current_patch_targets()
     debug.start()
     patched = _current_patch_targets()
-    for name in originals:
-        assert patched[name] is not originals[name], name
+    for name, original in originals.items():
+        assert patched[name] is not original, name
     debug.end()
     restored = _current_patch_targets()
-    for name in originals:
-        assert restored[name] is originals[name], name
+    for name, original in originals.items():
+        assert restored[name] is original, name
     assert not debug.active
 
 

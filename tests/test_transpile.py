@@ -1,20 +1,12 @@
 """Transpile hook: per-pass recording, id propagation, callback chaining."""
 
+from _helpers import bell_circuit as _bell
 from qiskit import transpile
 from qiskit.circuit.quantumcircuit import QuantumCircuit
 from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
 from qiskit_aer import AerSimulator
 
 from qisdebug import EventType
-
-
-def _bell(name="bell"):
-    """Return a 2-qubit bell circuit with measurements."""
-    qc = QuantumCircuit(2, 2, name=name)
-    qc.h(0)
-    qc.cx(0, 1)
-    qc.measure([0, 1], [0, 1])
-    return qc
 
 
 def test_transpile_records_start_passes_and_finish(debug):
@@ -53,7 +45,7 @@ def test_user_callback_still_runs(debug):
     debug.start()
     seen = []
 
-    def callback(pass_, dag, time, property_set, count):
+    def callback(pass_, dag, time, property_set, count):  # pylint: disable=unused-argument
         seen.append(pass_.name())
 
     transpile(_bell(), basis_gates=["cx", "u"], callback=callback)

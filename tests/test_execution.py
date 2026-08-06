@@ -2,20 +2,12 @@
 
 import numpy as np
 import pytest
+from _helpers import bell_circuit as _bell
 from qiskit.circuit.quantumcircuit import QuantumCircuit
 from qiskit.primitives import StatevectorSampler
 from qiskit_aer import AerSimulator
 
 from qisdebug import EventType
-
-
-def _bell(name="bell"):
-    """Return a 2-qubit bell circuit with measurements."""
-    qc = QuantumCircuit(2, 2, name=name)
-    qc.h(0)
-    qc.cx(0, 1)
-    qc.measure([0, 1], [0, 1])
-    return qc
 
 
 def test_backend_run_records_and_captures_statevectors(debug):

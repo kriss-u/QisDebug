@@ -4,7 +4,14 @@ These call straight into the same store/Timeline/_analysis logic the CLI and
 GUI frontends use, so the checks here are about the tool layer's contract
 (JSON-serializable in/out, correct lookups, useful errors) rather than
 re-testing statevector math already covered by test_analysis.py.
+
+protected-access is disabled file-wide: by design (see the MCP server section
+of the project's CLAUDE.md) ``tools._debug``/``tools._watches`` are the one
+module-level instance scoping the whole server process, with no public
+accessor -- these tests have to reach into them directly to reset state
+between runs and to assert on session lifecycle.
 """
+# pylint: disable=protected-access
 
 import json
 import textwrap
@@ -60,24 +67,27 @@ def _run_bell_and_get_id(tmp_path) -> str:
 
 
 def test_run_script_activates_captures_and_deactivates(tmp_path):
+    """Activation and deactivation around run_script leave no session active before or after."""
     assert not tools._debug.active
     result = tools.run_script(_write_bell_script(tmp_path))
     assert not tools._debug.active
     assert result["error"] is None
     bell = next(t for t in result["timelines"] if t["name"] == "bell")
-    assert bell["anomalies"] == []
+    assert not bell["anomalies"]
 
 
 def test_run_script_reports_exceptions_without_leaking_them(tmp_path):
+    """An exception inside the target script is reported as a message, not re-raised."""
     script = tmp_path / "broken.py"
     script.write_text("raise ValueError('boom')\n")
     result = tools.run_script(str(script))
     assert result["error"] == "ValueError: boom"
-    assert result["timelines"] == []
+    assert not result["timelines"]
     assert not tools._debug.active
 
 
 def test_list_and_get_timeline_round_trip(tmp_path):
+    """list_timelines/get_timeline_summary/get_timeline agree on the same circuit."""
     circuit_id = _run_bell_and_get_id(tmp_path)
     assert circuit_id in {t["circuit_id"] for t in tools.list_timelines()}
 
@@ -90,11 +100,13 @@ def test_list_and_get_timeline_round_trip(tmp_path):
 
 
 def test_get_timeline_unknown_id_raises_lookup_error():
+    """Looking up an id that was never tracked is a LookupError."""
     with pytest.raises(LookupError):
         tools.get_timeline("not-a-real-id")
 
 
 def test_get_circuit_text_reflects_step(tmp_path):
+    """get_circuit_text(step=...) draws only the gates recorded up to that step."""
     circuit_id = _run_bell_and_get_id(tmp_path)
     after_h = tools.get_circuit_text(circuit_id, step=1)
     full = tools.get_circuit_text(circuit_id)
@@ -125,6 +137,7 @@ def _run_transpile_and_get_id(tmp_path) -> str:
 
 
 def test_get_property_set_returns_full_snapshot(tmp_path):
+    """get_property_set returns the full property_set snapshot for a captured pass."""
     circuit_id = _run_transpile_and_get_id(tmp_path)
     passes = [
         e
@@ -138,12 +151,14 @@ def test_get_property_set_returns_full_snapshot(tmp_path):
 
 
 def test_get_property_set_unknown_seq_raises_value_error(tmp_path):
+    """Asking for a seq with no transpile_pass event at all is a ValueError."""
     circuit_id = _run_transpile_and_get_id(tmp_path)
     with pytest.raises(ValueError, match="no transpile_pass event"):
         tools.get_property_set(circuit_id, 999_999)
 
 
 def test_get_property_set_uncaptured_seq_raises_value_error(tmp_path):
+    """Asking for a snapshot when capture_property_set='none' is a ValueError."""
     tools._debug.configure(capture_property_set="none")
     circuit_id = _run_transpile_and_get_id(tmp_path)
     passes = tools.get_events(circuit_id, types=["transpile_pass"])
@@ -153,6 +168,7 @@ def test_get_property_set_uncaptured_seq_raises_value_error(tmp_path):
 
 
 def test_compare_statevector_via_tool_layer(tmp_path):
+    """compare_statevector via the tool layer matches/rejects the same as the direct API."""
     circuit_id = _run_bell_and_get_id(tmp_path)
     timeline = tools._debug.get(circuit_id)
     final_step = timeline.snapshots[-1].step
@@ -168,6 +184,7 @@ def test_compare_statevector_via_tool_layer(tmp_path):
 
 
 def test_compare_statevector_by_seq(tmp_path):
+    """compare_statevector accepts seq as an alternative to step."""
     circuit_id = _run_bell_and_get_id(tmp_path)
     h_seq = tools.get_events(circuit_id, types=["gate_added"], limit=1)[0]["seq"]
 
@@ -182,12 +199,14 @@ def test_compare_statevector_by_seq(tmp_path):
 
 
 def test_compare_statevector_rejects_step_and_seq_together(tmp_path):
+    """Passing both step and seq to compare_statevector is a ValueError."""
     circuit_id = _run_bell_and_get_id(tmp_path)
     with pytest.raises(ValueError, match="not both"):
         tools.compare_statevector(circuit_id, {"00": [1.0, 0]}, step=0, seq=1)
 
 
 def test_compare_counts_via_tool_layer(tmp_path):
+    """compare_counts via the tool layer reports a match within the given tolerance."""
     circuit_id = _run_bell_and_get_id(tmp_path)
     # 200 shots alone can swing a couple percentage points from the ideal
     # 50/50 split, so use a tolerance wide enough to absorb sampling noise
@@ -197,8 +216,9 @@ def test_compare_counts_via_tool_layer(tmp_path):
 
 
 def test_find_anomalies_via_tool_layer(tmp_path):
+    """find_anomalies via the tool layer finds nothing wrong with a clean bell run."""
     circuit_id = _run_bell_and_get_id(tmp_path)
-    assert tools.find_anomalies(circuit_id) == []
+    assert not tools.find_anomalies(circuit_id)
 
 
 def _write_two_bell_script(tmp_path):
@@ -218,6 +238,7 @@ def _write_two_bell_script(tmp_path):
 
 
 def test_diff_timelines_via_tool_layer(tmp_path):
+    """diff_timelines via the tool layer reports an all-equal gate diff for identical runs."""
     tools.run_script(_write_two_bell_script(tmp_path))
     id_a = next(t for t in tools.list_timelines() if t["name"] == "bell_a")[
         "circuit_id"
@@ -236,6 +257,7 @@ def test_diff_timelines_via_tool_layer(tmp_path):
 
 
 def test_diff_timelines_with_seq_bounds_diffs_two_moments_of_one_circuit(tmp_path):
+    """diff_timelines with seq bounds diffs two moments of the same circuit's history."""
     circuit_id = _run_bell_and_get_id(tmp_path)
     gate_events = tools.get_events(circuit_id, types=["gate_added"], limit=100)
     first_seq = gate_events[0]["seq"]
@@ -252,19 +274,21 @@ def test_diff_timelines_with_seq_bounds_diffs_two_moments_of_one_circuit(tmp_pat
 
 
 def test_diff_timelines_unknown_id_raises_lookup_error(tmp_path):
+    """Diffing against an unknown circuit id is a LookupError."""
     circuit_id = _run_bell_and_get_id(tmp_path)
     with pytest.raises(LookupError):
         tools.diff_timelines(circuit_id, "not-a-real-id")
 
 
 def test_clear_empties_the_store_and_watches(tmp_path):
+    """clear() empties both the timeline store and the watch list."""
     circuit_id = _run_bell_and_get_id(tmp_path)
     tools.add_watch(circuit_id, "qubit", 0)
     assert tools.list_timelines()
     assert tools.list_watches()
     assert tools.clear() == "cleared"
-    assert tools.list_timelines() == []
-    assert tools.list_watches() == []
+    assert not tools.list_timelines()
+    assert not tools.list_watches()
 
 
 def test_run_script_with_auto_activate_false_leaves_this_sessions_debug_untouched(
@@ -294,11 +318,12 @@ def test_run_script_with_auto_activate_false_leaves_this_sessions_debug_untouche
     assert result["error"] is None
     assert tools._debug.active == before
     assert not tools._debug.active
-    assert result["timelines"] == []
-    assert tools._debug.timelines() == []
+    assert not result["timelines"]
+    assert not tools._debug.timelines()
 
 
 def test_run_script_passes_argv(tmp_path):
+    """run_script forwards argv to the target script's sys.argv."""
     script = tmp_path / "argv.py"
     script.write_text(textwrap.dedent("""
             import sys
@@ -313,6 +338,7 @@ def test_run_script_passes_argv(tmp_path):
 
 
 def test_get_events_filters_and_pages(tmp_path):
+    """get_events supports filtering by type, paging with limit, and resuming via since_seq."""
     circuit_id = _run_bell_and_get_id(tmp_path)
     gates = tools.get_events(circuit_id, types=["gate_added"])
     assert [e["gate"] for e in gates] == ["h", "cx", "measure", "measure"]
@@ -327,6 +353,7 @@ def test_get_events_filters_and_pages(tmp_path):
 
 
 def test_get_state_snapshot_returns_structured_state(tmp_path):
+    """get_state_snapshot returns structured amplitudes/probabilities for a given step."""
     circuit_id = _run_bell_and_get_id(tmp_path)
     final = tools.get_state_snapshot(circuit_id)
     assert final["num_qubits"] == 2
@@ -340,12 +367,14 @@ def test_get_state_snapshot_returns_structured_state(tmp_path):
 
 
 def test_get_state_snapshot_unknown_step_lists_available(tmp_path):
+    """Asking for an unavailable step lists the steps that are actually available."""
     circuit_id = _run_bell_and_get_id(tmp_path)
     with pytest.raises(ValueError, match="available steps"):
         tools.get_state_snapshot(circuit_id, step=99)
 
 
 def test_get_state_snapshot_by_seq_matches_equivalent_step(tmp_path):
+    """get_state_snapshot accepts seq as an alternative to step, returning the same data."""
     circuit_id = _run_bell_and_get_id(tmp_path)
     h_seq = tools.get_events(circuit_id, types=["gate_added"], limit=1)[0]["seq"]
 
@@ -355,12 +384,14 @@ def test_get_state_snapshot_by_seq_matches_equivalent_step(tmp_path):
 
 
 def test_get_state_snapshot_rejects_non_gate_seq(tmp_path):
+    """get_state_snapshot rejects a seq that isn't a gate_added event."""
     circuit_id = _run_bell_and_get_id(tmp_path)
     with pytest.raises(ValueError, match="gate_added event"):
         tools.get_state_snapshot(circuit_id, seq=999_999)
 
 
 def test_watch_lifecycle_reports_qubit_state(tmp_path):
+    """add_watch/list_watches/read_watches/remove_watch round-trip a qubit watch."""
     circuit_id = _run_bell_and_get_id(tmp_path)
     message = tools.add_watch(circuit_id, "qubit", 0)
     assert "qubit 0" in message
@@ -374,10 +405,11 @@ def test_watch_lifecycle_reports_qubit_state(tmp_path):
     assert "P(1)=0.5" in reports[0]["text"]
 
     assert "unwatched" in tools.remove_watch(circuit_id, "qubit", 0)
-    assert tools.list_watches() == []
+    assert not tools.list_watches()
 
 
 def test_watch_upto_seq_bounds_the_read(tmp_path):
+    """read_watches(upto_seq=...) bounds the report to gates touched by that point."""
     circuit_id = _run_bell_and_get_id(tmp_path)
     tools.add_watch(circuit_id, "qubit", 1)
     first_gate_seq = tools.get_events(circuit_id, types=["gate_added"], limit=1)[0][
@@ -388,6 +420,7 @@ def test_watch_upto_seq_bounds_the_read(tmp_path):
 
 
 def test_add_watch_validates_targets(tmp_path):
+    """add_watch/remove_watch validate their targets before accepting them."""
     circuit_id = _run_bell_and_get_id(tmp_path)
     with pytest.raises(ValueError, match="out of range"):
         tools.add_watch(circuit_id, "qubit", 5)
@@ -398,6 +431,7 @@ def test_add_watch_validates_targets(tmp_path):
 
 
 def test_save_timeline_round_trips_through_json(tmp_path):
+    """save_timeline writes a JSON file whose contents match the in-memory export."""
     circuit_id = _run_bell_and_get_id(tmp_path)
     out = tmp_path / "evidence.json"
     result = tools.save_timeline(circuit_id, str(out))
@@ -408,6 +442,7 @@ def test_save_timeline_round_trips_through_json(tmp_path):
 
 
 def test_configuration_round_trip():
+    """get_configuration/set_configuration round-trip a changed setting."""
     assert tools.get_configuration()["max_statevector_qubits"] == 12
     updated = tools.set_configuration({"max_statevector_qubits": 20})
     assert updated["max_statevector_qubits"] == 20
@@ -415,6 +450,7 @@ def test_configuration_round_trip():
 
 
 def test_set_configuration_rejects_bad_values():
+    """set_configuration rejects an out-of-range value via pydantic validation."""
     with pytest.raises(ValidationError):
         tools.set_configuration({"max_statevector_qubits": -1})
     assert tools.get_configuration()["max_statevector_qubits"] == 12

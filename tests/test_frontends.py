@@ -3,23 +3,11 @@
 import builtins
 
 import pytest
-from qiskit.circuit.quantumcircuit import QuantumCircuit
-from qiskit_aer import AerSimulator
+from _helpers import build_gui_window, traced_bell as _traced_bell
 
-from qisdebug._frontends import _render, detect_environment, get_frontend
+from qisdebug._frontends import detect_environment, get_frontend
 from qisdebug._frontends.cli import CLIFrontend
 from qisdebug._frontends.gui import QtFrontend
-
-
-def _traced_bell(debug):
-    """Run a bell circuit under instrumentation and return its timeline."""
-    debug.start()
-    qc = QuantumCircuit(2, 2, name="viz")
-    qc.h(0)
-    qc.cx(0, 1)
-    qc.measure([0, 1], [0, 1])
-    AerSimulator().run(qc, shots=10).result()
-    return debug.get(qc)
 
 
 def test_detect_environment_prefers_gui(monkeypatch):
@@ -80,7 +68,7 @@ def test_cli_frontend_navigates_events(debug, monkeypatch, capsys):
     assert "3/" in out
 
 
-def test_cli_frontend_handles_eof(debug, monkeypatch, capsys):
+def test_cli_frontend_handles_eof(debug, monkeypatch):
     """A closed stdin (e.g. piped input) exits cleanly instead of raising."""
     timeline = _traced_bell(debug)
 
@@ -138,47 +126,39 @@ def test_cli_frontend_unmark_clears_diff_panel(debug, monkeypatch, capsys):
     not QtFrontend().is_available(), reason="no display available for Qt"
 )
 def test_gui_frontend_mark_and_diff_panel(debug, monkeypatch):
-    """Mark A / Mark B populate the status label and diff text; clearing resets both."""
-    from PySide6.QtWidgets import QApplication
+    """Mark A / Mark B populate the status label and diff text; clearing resets both.
 
-    from qisdebug._frontends import gui as gui_module
-
+    protected-access: this test exercises the GUI module's own mark/diff
+    internals, which have no public API surface.
+    """
+    # pylint: disable=protected-access
     timeline = _traced_bell(debug)
-    monkeypatch.setattr(QApplication, "exec", lambda self: None)
-    app = QApplication.instance() or QApplication([])
-    merged, tracks, active_labels = _render.merge_timelines([timeline])
-    view = gui_module._TimelineView(  # noqa: SLF001 (internal, but this is the frontend's own test)
-        merged=merged,
-        tracks=tracks,
-        active_labels=active_labels,
-        timelines_by_id={timeline.circuit_id: timeline},
-    )
-    window = gui_module._TimelineWindow("viz", view)  # noqa: SLF001
+    app, window = build_gui_window(monkeypatch, timeline)
 
     assert "(unmarked)" in window.mark_status.text()
-    assert window.tabs.indexOf(window._diff_panel) < 0  # noqa: SLF001
+    assert window.tabs.indexOf(window._diff_panel) < 0
     assert window.show_diff_button.isHidden()
 
-    window._mark_a()  # noqa: SLF001
-    assert window.tabs.indexOf(window._diff_panel) < 0  # noqa: SLF001
+    window._mark_a()
+    assert window.tabs.indexOf(window._diff_panel) < 0
     assert window.show_diff_button.isHidden()
 
-    window._goto(1)  # noqa: SLF001
-    window._mark_b()  # noqa: SLF001
+    window._goto(1)
+    window._mark_b()
 
     assert "(unmarked)" not in window.mark_status.text()
-    assert window.tabs.indexOf(window._diff_panel) >= 0  # noqa: SLF001
+    assert window.tabs.indexOf(window._diff_panel) >= 0
     assert "gates:" in window.diff_text.toPlainText()
     assert not window.show_diff_button.isHidden()
 
     timeline_tab = window.tabs.widget(0)
     assert timeline_tab is not None
     window.tabs.setCurrentWidget(timeline_tab)
-    window._show_diff()  # noqa: SLF001
-    assert window.tabs.currentWidget() is window._diff_panel  # noqa: SLF001
+    window._show_diff()
+    assert window.tabs.currentWidget() is window._diff_panel
 
-    window._clear_marks()  # noqa: SLF001
+    window._clear_marks()
     assert window.marks == {"a": None, "b": None}
-    assert window.tabs.indexOf(window._diff_panel) < 0  # noqa: SLF001
+    assert window.tabs.indexOf(window._diff_panel) < 0
     assert window.show_diff_button.isHidden()
     del app

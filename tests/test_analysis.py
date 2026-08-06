@@ -3,6 +3,7 @@
 import math
 
 import pytest
+from _helpers import traced_bell
 from qiskit import transpile
 from qiskit.circuit import QuantumCircuit
 from qiskit_aer import AerSimulator
@@ -18,16 +19,12 @@ from qisdebug._events import EventType, StateSnapshotEvent
 
 
 def _traced_bell(debug):
-    debug.start()
-    qc = QuantumCircuit(2, 2, name="bell")
-    qc.h(0)
-    qc.cx(0, 1)
-    qc.measure([0, 1], [0, 1])
-    AerSimulator().run(qc, shots=20000, seed_simulator=1234).result()
-    return debug.get(qc)
+    """Run a bell circuit with a fixed seed, for deterministic count comparisons."""
+    return traced_bell(debug, name="bell", shots=20000, seed_simulator=1234)
 
 
 def test_compare_statevector_matches_expected_bell_state(debug):
+    """A statevector matching the expected amplitudes reports full fidelity."""
     timeline = _traced_bell(debug)
     final = timeline.snapshots[-1]
     expected = [1 / math.sqrt(2), 0, 0, 1 / math.sqrt(2)]
@@ -38,6 +35,7 @@ def test_compare_statevector_matches_expected_bell_state(debug):
 
 
 def test_compare_statevector_flags_wrong_state(debug):
+    """A statevector far from expected reports low fidelity and mismatches."""
     timeline = _traced_bell(debug)
     final = timeline.snapshots[-1]
     expected = [1.0, 0, 0, 0]  # |00> instead of the actual Bell state
@@ -48,6 +46,7 @@ def test_compare_statevector_flags_wrong_state(debug):
 
 
 def test_compare_statevector_rejects_wrong_length(debug):
+    """Comparing against a mismatched-length expected vector is a ValueError."""
     timeline = _traced_bell(debug)
     final = timeline.snapshots[-1]
     with pytest.raises(ValueError):
@@ -55,6 +54,7 @@ def test_compare_statevector_rejects_wrong_length(debug):
 
 
 def test_expand_sparse_statevector_fills_named_labels_and_zeros_the_rest():
+    """Basis states missing from the sparse mapping expand to zero amplitude."""
     dense = expand_sparse_statevector(
         {"00": [1 / math.sqrt(2), 0], "11": [1 / math.sqrt(2), 0]}, num_qubits=2
     )
@@ -62,11 +62,13 @@ def test_expand_sparse_statevector_fills_named_labels_and_zeros_the_rest():
 
 
 def test_expand_sparse_statevector_rejects_wrong_width_label():
+    """A basis label with the wrong bit width is a clear ValueError."""
     with pytest.raises(ValueError, match="2-character binary string"):
         expand_sparse_statevector({"1": [1.0, 0.0]}, num_qubits=2)
 
 
 def test_compare_counts_matches_balanced_bell_outcomes(debug):
+    """Measured bell counts match the expected 50/50 distribution."""
     timeline = _traced_bell(debug)
     finished = timeline.filter(EventType.EXECUTION_FINISHED)[0]
     assert finished.counts is not None
@@ -76,6 +78,7 @@ def test_compare_counts_matches_balanced_bell_outcomes(debug):
 
 
 def test_compare_counts_flags_unexpected_distribution():
+    """A skewed distribution reports a mismatch with nonzero TVD."""
     diff = compare_counts({"00": 900, "11": 100}, {"00": 0.5, "11": 0.5})
     assert not diff.matched
     assert diff.total_variation_distance == pytest.approx(0.4, abs=1e-6)
@@ -83,6 +86,7 @@ def test_compare_counts_flags_unexpected_distribution():
 
 
 def test_find_anomalies_reports_failed_execution(debug):
+    """A failed execution event is flagged as an anomaly."""
     timeline = _traced_bell(debug)
     finished = timeline.filter(EventType.EXECUTION_FINISHED)[0]
     finished.success = False
@@ -91,6 +95,7 @@ def test_find_anomalies_reports_failed_execution(debug):
 
 
 def test_find_anomalies_flags_non_normalized_statevector(debug):
+    """A statevector whose norm isn't 1 is flagged as an anomaly."""
     timeline = _traced_bell(debug)
     snapshot = timeline.snapshots[-1]
     tampered = StateSnapshotEvent(
@@ -108,12 +113,14 @@ def test_find_anomalies_flags_non_normalized_statevector(debug):
 
 
 def test_find_anomalies_clean_bell_circuit_has_no_findings(debug):
+    """A normal, successful bell run has nothing to flag."""
     timeline = _traced_bell(debug)
     anomalies = find_anomalies(timeline)
-    assert anomalies == []
+    assert not anomalies
 
 
 def _traced(debug, name, build):
+    """Build a circuit with ``build``, run it, and return its timeline."""
     debug.start()
     qc = QuantumCircuit(2, 2, name=name)
     build(qc)
@@ -122,12 +129,14 @@ def _traced(debug, name, build):
 
 
 def _build_bell(qc):
+    """Add a standard bell-pair circuit body to ``qc`` in place."""
     qc.h(0)
     qc.cx(0, 1)
     qc.measure([0, 1], [0, 1])
 
 
 def test_diff_timelines_identical_circuits_are_all_equal(debug):
+    """Two runs of the same circuit diff as entirely equal gates."""
     timeline_a = _traced(debug, "bell_a", _build_bell)
     timeline_b = _traced(debug, "bell_b", _build_bell)
 
@@ -143,6 +152,7 @@ def test_diff_timelines_identical_circuits_are_all_equal(debug):
 
 
 def test_diff_timelines_detects_inserted_gate(debug):
+    """An extra gate in one circuit shows up as an "insert" diff entry."""
     timeline_a = _traced(debug, "bell_plain", _build_bell)
 
     def _build_with_extra_x(qc):
@@ -165,6 +175,7 @@ def test_diff_timelines_detects_inserted_gate(debug):
 
 
 def test_diff_timelines_reports_depth_and_size_from_last_transpile(debug):
+    """Depth/size deltas come from each timeline's most recent transpile event."""
     debug.start()
     qc_a = QuantumCircuit(2, name="shape_a")
     qc_a.h(0)
@@ -186,6 +197,7 @@ def test_diff_timelines_reports_depth_and_size_from_last_transpile(debug):
 
 
 def test_diff_timelines_no_snapshots_or_counts_reports_none():
+    """Timelines with no events, snapshots, or counts diff to all-None extras."""
     from qisdebug._events import Timeline
 
     timeline_a = Timeline(circuit_id="a", name="a")
@@ -193,7 +205,7 @@ def test_diff_timelines_no_snapshots_or_counts_reports_none():
 
     diff = diff_timelines(timeline_a, timeline_b)
 
-    assert diff.gate_diff == []
+    assert not diff.gate_diff
     assert diff.statevector_diff is None
     assert diff.counts_diff is None
     assert diff.depth_a is None
@@ -201,6 +213,7 @@ def test_diff_timelines_no_snapshots_or_counts_reports_none():
 
 
 def test_timeline_diff_summary_line_and_describe_are_readable(debug):
+    """summary_line() and describe() mention fidelity and the circuit names."""
     timeline_a = _traced(debug, "bell_a2", _build_bell)
     timeline_b = _traced(debug, "bell_b2", _build_bell)
 
@@ -213,6 +226,7 @@ def test_timeline_diff_summary_line_and_describe_are_readable(debug):
 
 
 def test_diff_timelines_seq_bounds_diff_two_moments_of_one_circuit(debug):
+    """seq_a/seq_b bound a diff to two moments within a single circuit's history."""
     debug.start()
     qc = QuantumCircuit(2, name="replay")
     qc.h(0)
@@ -233,6 +247,7 @@ def test_diff_timelines_seq_bounds_diff_two_moments_of_one_circuit(debug):
 
 
 def test_diff_timelines_seq_bounds_use_snapshot_and_counts_upto_seq(debug):
+    """seq_a bounds which snapshot is used, not just which gates are diffed."""
     timeline = _traced(debug, "bell_replay", _build_bell)
     # snapshots[0] is the initial |00> state, snapshots[1] the state right
     # after h(0) -- both captured during execution, strictly after every
@@ -249,6 +264,7 @@ def test_diff_timelines_seq_bounds_use_snapshot_and_counts_upto_seq(debug):
 
 
 def test_diff_timelines_matching_explicit_seqs_across_two_circuits(debug):
+    """Explicit seq_a/seq_b bound each circuit independently before diffing."""
     timeline_a = _traced(debug, "bell_seq_a", _build_bell)
     timeline_b = _traced(debug, "bell_seq_b", _build_bell)
     seq_a = timeline_a.gate_events[0].seq

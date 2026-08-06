@@ -11,6 +11,7 @@ available like the stdlib-only CLI frontend.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Callable, ClassVar
 
 from PySide6.QtCore import QEvent, QObject, QRectF, Qt, QTimer
@@ -35,6 +36,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSlider,
     QSpinBox,
+    QSplitter,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -58,6 +60,22 @@ _PLAY_LABEL = "⏵ Play  (Space)"
 _PAUSE_LABEL = "⏸ Pause  (Space)"
 
 
+@dataclass(frozen=True)
+class _TimelineView:
+    """Everything :class:`_TimelineWindow` needs to render one merged timeline.
+
+    Bundles :func:`~._render.merge_timelines`'s three parallel per-event
+    arrays into one object, so the window constructor takes one view
+    argument instead of growing a parameter for each new piece of render
+    state.
+    """
+
+    merged: list[tuple[Timeline, TelemetryEvent]]
+    tracks: list[dict[str, str]]
+    active_labels: list[str | None]
+    timelines_by_id: dict[str, Timeline]
+
+
 class QtFrontend(TimelineFrontend):
     """Opens a Qt window with a slider, play controls, and a diagram panel."""
 
@@ -69,7 +87,7 @@ class QtFrontend(TimelineFrontend):
     def unavailable_reason(self) -> str:
         return (
             "no display is available for a native GUI window "
-            "(PySide6 not installed -- pip install \"qisdebug[gui]\" -- "
+            '(PySide6 not installed -- pip install "qisdebug[gui]" -- '
             "or DISPLAY/WAYLAND_DISPLAY unset)"
         )
 
@@ -80,8 +98,15 @@ class QtFrontend(TimelineFrontend):
         merged, tracks, active_labels = _render.merge_timelines(timelines)
         names = ", ".join(str(t.name) for t in timelines)
         timelines_by_id = {t.circuit_id: t for t in timelines}
+
+        view = _TimelineView(
+            merged=merged,
+            tracks=tracks,
+            active_labels=active_labels,
+            timelines_by_id=timelines_by_id,
+        )
         app = QApplication.instance() or QApplication([])
-        window = _TimelineWindow(names, merged, tracks, active_labels, timelines_by_id)
+        window = _TimelineWindow(names, view)
         window.show()
         app.exec()
 
@@ -143,7 +168,9 @@ def _active_track_border_color(widget: QWidget) -> str:
     """
     background = widget.palette().color(QPalette.ColorRole.Base)
     is_dark = background.lightness() < 128
-    return ACTIVE_TRACK_BORDER_COLOR_DARK if is_dark else ACTIVE_TRACK_BORDER_COLOR_LIGHT
+    return (
+        ACTIVE_TRACK_BORDER_COLOR_DARK if is_dark else ACTIVE_TRACK_BORDER_COLOR_LIGHT
+    )
 
 
 class _TimelineWidget(QWidget):
@@ -187,7 +214,9 @@ class _PlaybackKeyFilter(QObject):
         return super().eventFilter(watched, event)
 
 
-class _TimelineWindow(Scheduler[QTimer]):  # pylint: disable=too-many-instance-attributes
+class _TimelineWindow(
+    Scheduler[QTimer]
+):  # pylint: disable=too-many-instance-attributes
     """A single Qt window presenting one merged, navigable timeline.
 
     This class only does two things: lay out Qt widgets and translate Qt
@@ -206,18 +235,12 @@ class _TimelineWindow(Scheduler[QTimer]):  # pylint: disable=too-many-instance-a
     push fixed-size widgets out of the window entirely.
     """
 
-    def __init__(
-        self,
-        title: str,
-        merged: list[tuple[Timeline, TelemetryEvent]],
-        tracks: list[dict[str, str]],
-        active_labels: list[str | None],
-        timelines_by_id: dict[str, Timeline],
-    ) -> None:
-        self.tracks = tracks
-        self.active_labels = active_labels
-        self.timelines_by_id = timelines_by_id
+    def __init__(self, title: str, view: _TimelineView) -> None:
+        self.tracks = view.tracks
+        self.active_labels = view.active_labels
+        self.timelines_by_id = view.timelines_by_id
         self.watches: list[_render.WatchTarget] = []
+        self.marks: dict[str, _render.StateMark | None] = {"a": None, "b": None}
         self._syncing_slider = False
         self._timers: list[QTimer] = []
         self._key_filter: _PlaybackKeyFilter | None = None
@@ -227,14 +250,14 @@ class _TimelineWindow(Scheduler[QTimer]):  # pylint: disable=too-many-instance-a
         self.window.resize(900, 650)
         self.window.setMinimumSize(600, 400)
 
-        if not merged:
+        if not view.merged:
             layout = QVBoxLayout(self.window)
             layout.addWidget(QLabel("Timeline(s) have no events."))
             self.controller: PlaybackController | None = None
             return
 
         self.controller = PlaybackController(
-            merged=merged,
+            merged=view.merged,
             scheduler=self,
             hooks=PlaybackHooks(
                 get_interval_ms=self._interval_ms,
@@ -242,8 +265,18 @@ class _TimelineWindow(Scheduler[QTimer]):  # pylint: disable=too-many-instance-a
                 on_play_state_changed=self._on_play_state_changed,
             ),
         )
-        layout = self._build_widgets()
+        container = QWidget()
+        layout = self._build_widgets(container)
         self._build_watch_widgets(layout)
+        diff_panel = self._build_diff_panel()
+
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.addWidget(container)
+        splitter.addWidget(diff_panel)
+        splitter.setSizes([600, 300])
+        window_layout = QHBoxLayout(self.window)
+        window_layout.addWidget(splitter)
+
         self._render()
 
         app = QApplication.instance()
@@ -298,12 +331,14 @@ class _TimelineWindow(Scheduler[QTimer]):  # pylint: disable=too-many-instance-a
 
     # -- Layout ------------------------------------------------------------
 
-    def _build_widgets(self) -> QVBoxLayout:
+    def _build_widgets(self, container: QWidget) -> QVBoxLayout:
         if self.controller is None:
-            raise RuntimeError("internal error: controller accessed before it was built")
+            raise RuntimeError(
+                "internal error: controller accessed before it was built"
+            )
         controller = self.controller
 
-        layout = QVBoxLayout(self.window)
+        layout = QVBoxLayout(container)
 
         self.header = QLabel()
         self.header.setTextFormat(Qt.TextFormat.PlainText)
@@ -319,11 +354,15 @@ class _TimelineWindow(Scheduler[QTimer]):  # pylint: disable=too-many-instance-a
         controls = QHBoxLayout()
         self.first_button = _button("⏮ First", lambda: self._goto(0))
         controls.addWidget(self.first_button)
-        self.prev_button = _button("◀ Prev  (←)", lambda: self._goto(controller.index - 1))
+        self.prev_button = _button(
+            "◀ Prev  (←)", lambda: self._goto(controller.index - 1)
+        )
         controls.addWidget(self.prev_button)
         self.play_button = _button(_PLAY_LABEL, self._toggle_play)
         controls.addWidget(self.play_button)
-        self.next_button = _button("Next ▶  (→)", lambda: self._goto(controller.index + 1))
+        self.next_button = _button(
+            "Next ▶  (→)", lambda: self._goto(controller.index + 1)
+        )
         controls.addWidget(self.next_button)
         self.last_button = _button("Last ⏭", lambda: self._goto(controller.last_index))
         controls.addWidget(self.last_button)
@@ -365,26 +404,98 @@ class _TimelineWindow(Scheduler[QTimer]):  # pylint: disable=too-many-instance-a
         layout.addWidget(self.watch_list)
         self._refresh_watch_ref_choices()
 
+    def _build_diff_panel(self) -> QWidget:
+        """Build the dedicated side panel for pinning and viewing a state diff."""
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+
+        title = QLabel("Diff")
+        title.setTextFormat(Qt.TextFormat.PlainText)
+        layout.addWidget(title)
+
+        self.mark_status = QLabel()
+        self.mark_status.setTextFormat(Qt.TextFormat.PlainText)
+        self.mark_status.setWordWrap(True)
+        layout.addWidget(self.mark_status)
+
+        mark_row = QHBoxLayout()
+        mark_row.addWidget(_button("Mark A", self._mark_a))
+        mark_row.addWidget(_button("Mark B", self._mark_b))
+        mark_row.addWidget(_button("Clear marks", self._clear_marks))
+        layout.addLayout(mark_row)
+
+        self.diff_text = QTextEdit()
+        self.diff_text.setReadOnly(True)
+        self.diff_text.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
+        self.diff_text.setFont(_monospace_font())
+        layout.addWidget(self.diff_text, stretch=1)
+
+        self._refresh_diff_panel()
+        return panel
+
+    def _mark_a(self) -> None:
+        self._set_mark("a")
+
+    def _mark_b(self) -> None:
+        self._set_mark("b")
+
+    def _set_mark(self, slot: str) -> None:
+        """Pin the current playback position as ``slot`` of the diff panel."""
+        if self.controller is None:
+            raise RuntimeError(
+                "internal error: controller accessed before it was built"
+            )
+        source, event = self.controller.current
+        self.marks[slot] = _render.StateMark(
+            circuit_id=source.circuit_id, seq=event.seq
+        )
+        self._refresh_diff_panel()
+
+    def _clear_marks(self) -> None:
+        self.marks = {"a": None, "b": None}
+        self._refresh_diff_panel()
+
+    def _refresh_diff_panel(self) -> None:
+        """Update the mark status label and diff text from the current marks."""
+        self.mark_status.setText(
+            f"A: {self._mark_label('a')}\nB: {self._mark_label('b')}"
+        )
+        diff_text = _render.render_marks_diff(
+            self.marks["a"], self.marks["b"], self.timelines_by_id
+        )
+        self.diff_text.setPlainText(diff_text or "mark two states to compare")
+
+    def _mark_label(self, slot: str) -> str:
+        mark = self.marks[slot]
+        if mark is None:
+            return "(unmarked)"
+        return mark.label(self.timelines_by_id.get(mark.circuit_id))
+
     # -- Widget <-> PlaybackController glue --------------------------------
 
     def _render(self) -> None:
         """Refresh every widget to reflect the controller's current event."""
         if self.controller is None:
-            raise RuntimeError("internal error: controller accessed before it was built")
+            raise RuntimeError(
+                "internal error: controller accessed before it was built"
+            )
         controller = self.controller
 
         source, event = controller.current
         index = controller.index
-        self.header.setText(
+        header_text = (
             f"{index + 1}/{len(controller.merged)} — {source.name} — {event.type.value} "
             f"at {event.timestamp:.3f} — {event.describe()}"
         )
+        self.header.setText(header_text)
 
         tracks_text, active_span = _render.render_tracks_text_with_active(
             self.tracks[index], self.active_labels[index]
         )
         self.text.clear()
-        self.text.setPlainText(tracks_text + "\n\n" + _render.render_event(source, event))
+        self.text.setPlainText(
+            tracks_text + "\n\n" + _render.render_event(source, event)
+        )
 
         label, png_bytes = _render.render_extra_visual_bytes(event)
         if png_bytes:
@@ -402,7 +513,9 @@ class _TimelineWindow(Scheduler[QTimer]):  # pylint: disable=too-many-instance-a
             cursor.insertText(f"-- {label} --\n")
             cursor.insertImage(image)
 
-        watch_text = _render.render_watches(self.watches, self.timelines_by_id, event.seq)
+        watch_text = _render.render_watches(
+            self.watches, self.timelines_by_id, event.seq
+        )
         if watch_text:
             cursor = QTextCursor(self.text.document())
             cursor.movePosition(QTextCursor.MoveOperation.End)
@@ -422,7 +535,9 @@ class _TimelineWindow(Scheduler[QTimer]):  # pylint: disable=too-many-instance-a
     def _refresh_watch_ref_choices(self, _kind: str | None = None) -> None:
         """Repopulate the watch-ref dropdown for the currently selected circuit."""
         if self.controller is None:
-            raise RuntimeError("internal error: controller accessed before it was built")
+            raise RuntimeError(
+                "internal error: controller accessed before it was built"
+            )
         source, _event = self.controller.current
         kind = self.watch_kind.currentText()
         previous = self.watch_ref.currentText()
@@ -442,7 +557,9 @@ class _TimelineWindow(Scheduler[QTimer]):  # pylint: disable=too-many-instance-a
     def _add_watch(self) -> None:
         """Add the currently selected qubit/clbit/register to the watch list."""
         if self.controller is None:
-            raise RuntimeError("internal error: controller accessed before it was built")
+            raise RuntimeError(
+                "internal error: controller accessed before it was built"
+            )
         ref = self.watch_ref.currentText()
         if not ref:
             return
@@ -470,7 +587,9 @@ class _TimelineWindow(Scheduler[QTimer]):  # pylint: disable=too-many-instance-a
     def _update_control_state(self) -> None:
         """Disable controls that can't do anything at the current position."""
         if self.controller is None:
-            raise RuntimeError("internal error: controller accessed before it was built")
+            raise RuntimeError(
+                "internal error: controller accessed before it was built"
+            )
         controller = self.controller
 
         at_first = controller.index <= 0
@@ -515,12 +634,16 @@ class _TimelineWindow(Scheduler[QTimer]):  # pylint: disable=too-many-instance-a
 
     def _goto(self, index: int) -> None:
         if self.controller is None:
-            raise RuntimeError("internal error: controller accessed before it was built")
+            raise RuntimeError(
+                "internal error: controller accessed before it was built"
+            )
         self.controller.goto(index)
 
     def _toggle_play(self) -> None:
         if self.controller is None:
-            raise RuntimeError("internal error: controller accessed before it was built")
+            raise RuntimeError(
+                "internal error: controller accessed before it was built"
+            )
         self.controller.toggle_play()
 
     def _interval_ms(self) -> int:

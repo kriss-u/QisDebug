@@ -155,7 +155,9 @@ def get_circuit_text(circuit_id: str, step: int | None = None) -> str:
     timeline = _require_timeline(circuit_id)
     circuit = timeline.circuit_at(step)
     if circuit is None:
-        raise ValueError(f"circuit for {circuit_id!r} could not be rebuilt at step {step!r}")
+        raise ValueError(
+            f"circuit for {circuit_id!r} could not be rebuilt at step {step!r}"
+        )
     return str(circuit.draw(output="text", fold=-1))
 
 
@@ -170,9 +172,13 @@ def get_property_set(circuit_id: str, seq: int) -> dict[str, str]:
     before a run to guarantee every pass is available).
     """
     timeline = _require_timeline(circuit_id)
-    event = next((e for e in timeline.filter(EventType.TRANSPILE_PASS) if e.seq == seq), None)
+    event = next(
+        (e for e in timeline.filter(EventType.TRANSPILE_PASS) if e.seq == seq), None
+    )
     if event is None:
-        raise ValueError(f"no transpile_pass event at seq {seq} for circuit {circuit_id!r}")
+        raise ValueError(
+            f"no transpile_pass event at seq {seq} for circuit {circuit_id!r}"
+        )
     if event.property_set is None:
         raise ValueError(
             f"no property_set snapshot captured for the pass at seq {seq}; "
@@ -194,7 +200,9 @@ def _resolve_snapshot(
         raise ValueError("pass step or seq, not both")
     snapshots = timeline.snapshots
     if not snapshots:
-        raise ValueError(f"no state snapshots recorded for circuit {timeline.circuit_id!r}")
+        raise ValueError(
+            f"no state snapshots recorded for circuit {timeline.circuit_id!r}"
+        )
     if seq is not None:
         snapshot = timeline.snapshot_at_seq(seq)
         if snapshot is None:
@@ -316,7 +324,12 @@ def read_watches(upto_seq: int | None = None) -> list[dict[str, str]]:
                 bound = max((e.seq for e in timeline.events), default=0)
             text = render_watch(target, timeline, bound)
         reports.append(
-            {"circuit_id": target.circuit_id, "kind": target.kind, "ref": target.ref, "text": text}
+            {
+                "circuit_id": target.circuit_id,
+                "kind": target.kind,
+                "ref": target.ref,
+                "text": text,
+            }
         )
     return reports
 
@@ -361,7 +374,42 @@ def compare_counts(
     finished = timeline.filter(EventType.EXECUTION_FINISHED)
     if not finished or not finished[-1].counts:
         raise ValueError(f"no execution counts recorded for circuit {circuit_id!r}")
-    return _analysis.compare_counts(finished[-1].counts, expected, atol=atol).model_dump()
+    return _analysis.compare_counts(
+        finished[-1].counts, expected, atol=atol
+    ).model_dump()
+
+
+def diff_timelines(
+    circuit_id_a: str,
+    circuit_id_b: str,
+    seq_a: int | None = None,
+    seq_b: int | None = None,
+    atol: float = 1e-6,
+) -> dict[str, Any]:
+    """Compare two points in time: gate-sequence alignment plus state deltas.
+
+    ``seq_a``/``seq_b`` bound each side to "as of that event's seq" (from
+    :func:`get_events`); omit either to mean that circuit's whole timeline /
+    final state. Passing the same circuit_id for both with different seqs
+    diffs two moments of one circuit's own replay (e.g. the state right
+    after gate X vs. the state right after gate Y); passing two different
+    circuit_ids diffs two circuits, at a chosen or final point each.
+
+    Aligns each side's gate_added events (up to its seq bound) with a
+    standard sequence diff (insert/delete/replace, keyed on gate name +
+    qubits) -- useful for confirming a construction-code refactor is
+    equivalent, or spotting where it isn't. When both sides have a state
+    snapshot or execution counts at or before their bound, also reports
+    fidelity (``atol`` is the per-amplitude mismatch threshold) or total
+    variation distance (at compare_counts's own default per-outcome
+    tolerance), treating side A as the baseline/expected side. Also reports
+    each side's transpiled depth/size as of its bound, when available.
+    """
+    timeline_a = _require_timeline(circuit_id_a)
+    timeline_b = _require_timeline(circuit_id_b)
+    return _analysis.diff_timelines(
+        timeline_a, timeline_b, seq_a=seq_a, seq_b=seq_b, atol=atol
+    ).model_dump()
 
 
 def find_anomalies(circuit_id: str) -> list[dict[str, Any]]:

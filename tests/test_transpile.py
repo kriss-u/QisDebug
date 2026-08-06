@@ -94,7 +94,9 @@ def test_layout_widening_is_detected_as_a_change(debug):
     """
     debug.start()
     qc = _bell()
-    transpile(qc, coupling_map=[[0, 1], [1, 2], [2, 3], [3, 4]], basis_gates=["cx", "u"])
+    transpile(
+        qc, coupling_map=[[0, 1], [1, 2], [2, 3], [3, 4]], basis_gates=["cx", "u"]
+    )
     passes = debug.get(qc).filter(EventType.TRANSPILE_PASS)
     widened = [p for p in passes if p.circuit is not None and p.circuit.num_qubits == 5]
     assert widened
@@ -105,7 +107,12 @@ def test_layout_permutation_is_detected_as_a_change(debug):
     """A pure qubit relabeling (same depth, size and ops) is still a change."""
     debug.start()
     qc = _bell()
-    transpile(qc, coupling_map=[[0, 1], [1, 0]], initial_layout=[1, 0], basis_gates=["cx", "u"])
+    transpile(
+        qc,
+        coupling_map=[[0, 1], [1, 0]],
+        initial_layout=[1, 0],
+        basis_gates=["cx", "u"],
+    )
     passes = debug.get(qc).filter(EventType.TRANSPILE_PASS)
     apply_layout = [p for p in passes if p.pass_name == "ApplyLayout"]
     assert apply_layout
@@ -232,7 +239,9 @@ def test_property_set_diff_recorded_on_changed_pass(debug):
     passes = debug.get(qc).filter(EventType.TRANSPILE_PASS)
     with_diff = [p for p in passes if p.property_changes]
     assert with_diff
-    assert any(p.property_changes.added or p.property_changes.changed for p in with_diff)
+    assert any(
+        p.property_changes.added or p.property_changes.changed for p in with_diff
+    )
     assert any(p.property_set is not None for p in passes)
 
 

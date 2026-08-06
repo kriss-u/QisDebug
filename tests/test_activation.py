@@ -96,6 +96,48 @@ def test_get_raises_for_untracked_circuit(debug):
         debug.get(qc)
 
 
+def test_diff_compares_two_tracked_timelines(debug):
+    """debug.diff() is a thin wrapper: resolves both targets, delegates to _analysis."""
+    debug.start()
+    qc_a = QuantumCircuit(2, name="diff_a")
+    qc_a.h(0)
+    qc_a.cx(0, 1)
+    qc_b = QuantumCircuit(2, name="diff_b")
+    qc_b.h(0)
+    qc_b.cx(0, 1)
+
+    result = debug.diff(qc_a, qc_b)
+
+    assert result.circuit_id_a == debug.get(qc_a).circuit_id
+    assert result.circuit_id_b == debug.get(qc_b).circuit_id
+    assert [entry.op for entry in result.gate_diff] == ["equal", "equal"]
+
+
+def test_diff_accepts_names_and_raises_for_untracked(debug):
+    """debug.diff() resolves circuit names the same way debug.get() does."""
+    debug.start()
+    qc = QuantumCircuit(1, name="named")
+    qc.h(0)
+    with pytest.raises(qisdebug.TimelineNotFoundError):
+        debug.diff("named", "missing")
+
+
+def test_diff_with_seq_bounds_compares_two_moments_of_one_circuit(debug):
+    """debug.diff(a, a, seq_a=..., seq_b=...) diffs two points in one circuit's replay."""
+    debug.start()
+    qc = QuantumCircuit(2, name="replay")
+    qc.h(0)
+    first_seq = debug.get(qc).events[-1].seq
+    qc.cx(0, 1)
+    second_seq = debug.get(qc).events[-1].seq
+
+    result = debug.diff(qc, qc, seq_a=first_seq, seq_b=second_seq)
+
+    assert result.seq_a == first_seq
+    assert result.seq_b == second_seq
+    assert [entry.op for entry in result.gate_diff] == ["equal", "insert"]
+
+
 def test_two_instances_patch_concurrently_with_independent_stores():
     """Two started QisDebug instances share patches but never mix telemetry."""
     first = qisdebug.QisDebug()

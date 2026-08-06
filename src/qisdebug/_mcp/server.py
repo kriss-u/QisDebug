@@ -43,12 +43,19 @@ server = MCPServer(
         "(4) You supply what the program should produce: compare_statevector and "
         "compare_counts check your expected state or distribution against the capture "
         "and report exactly where they diverge. compare_statevector's expected argument "
-        "is sparse -- {\"01\": [re, im], ...} keyed by binary label (qubit 0 least "
+        'is sparse -- {"01": [re, im], ...} keyed by binary label (qubit 0 least '
         "significant), only the basis states you have an expectation about, everything "
         "else assumed zero -- rather than every 2**num_qubits amplitude. find_anomalies "
         "is expectation-free and "
         "only catches impossible states (non-normalized/non-finite statevectors, failed "
-        "runs); a clean scan does not mean the program is correct. "
+        "runs); a clean scan does not mean the program is correct. diff_timelines compares "
+        "two points in time directly instead of against a hand-supplied expectation -- "
+        "gate-level alignment plus fidelity/TVD/depth deltas. Its optional seq_a/seq_b (from "
+        "get_events) bound each side to a specific moment: pass the same circuit_id for both "
+        "with different seqs to see what changed between two points in one circuit's own "
+        "replay, or two different circuit_ids to compare two circuits -- omit either seq for "
+        "that side's final state, useful for confirming a refactor is equivalent or spotting "
+        "where two versions of a circuit diverge. "
         "(5) save_timeline persists the evidence to a JSON file. "
         "set_configuration tunes capture (e.g. max_statevector_qubits, "
         "transpile_snapshots='all') before a run."
@@ -70,6 +77,7 @@ for _tool in (
     tools.read_watches,
     tools.compare_statevector,
     tools.compare_counts,
+    tools.diff_timelines,
     tools.find_anomalies,
     tools.save_timeline,
     tools.get_configuration,

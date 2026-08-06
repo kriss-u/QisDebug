@@ -35,9 +35,7 @@ def clean_mcp_debug():
 
 def _write_bell_script(tmp_path):
     script = tmp_path / "bell.py"
-    script.write_text(
-        textwrap.dedent(
-            """
+    script.write_text(textwrap.dedent("""
             from qiskit.circuit import QuantumCircuit
             from qiskit_aer import AerSimulator
 
@@ -46,9 +44,7 @@ def _write_bell_script(tmp_path):
             qc.cx(0, 1)
             qc.measure([0, 1], [0, 1])
             AerSimulator().run(qc, shots=200).result()
-            """
-        )
-    )
+            """))
     return str(script)
 
 
@@ -108,9 +104,7 @@ def test_get_circuit_text_reflects_step(tmp_path):
 
 def _write_transpile_script(tmp_path):
     script = tmp_path / "transpile_bell.py"
-    script.write_text(
-        textwrap.dedent(
-            """
+    script.write_text(textwrap.dedent("""
             from qiskit import transpile
             from qiskit.circuit import QuantumCircuit
 
@@ -119,21 +113,23 @@ def _write_transpile_script(tmp_path):
             qc.cx(0, 1)
             qc.measure([0, 1], [0, 1])
             transpile(qc, coupling_map=[[0, 1], [1, 0]], basis_gates=["cx", "u"])
-            """
-        )
-    )
+            """))
     return str(script)
 
 
 def _run_transpile_and_get_id(tmp_path) -> str:
     tools.run_script(_write_transpile_script(tmp_path))
-    return next(t for t in tools.list_timelines() if t["name"] == "routed")["circuit_id"]
+    return next(t for t in tools.list_timelines() if t["name"] == "routed")[
+        "circuit_id"
+    ]
 
 
 def test_get_property_set_returns_full_snapshot(tmp_path):
     circuit_id = _run_transpile_and_get_id(tmp_path)
     passes = [
-        e for e in tools.get_events(circuit_id, types=["transpile_pass"]) if e["property_changes"]
+        e
+        for e in tools.get_events(circuit_id, types=["transpile_pass"])
+        if e["property_changes"]
     ]
     assert passes
     snapshot = tools.get_property_set(circuit_id, passes[0]["seq"])
@@ -205,6 +201,62 @@ def test_find_anomalies_via_tool_layer(tmp_path):
     assert tools.find_anomalies(circuit_id) == []
 
 
+def _write_two_bell_script(tmp_path):
+    script = tmp_path / "two_bells.py"
+    script.write_text(textwrap.dedent("""
+            from qiskit.circuit import QuantumCircuit
+            from qiskit_aer import AerSimulator
+
+            for name in ("bell_a", "bell_b"):
+                qc = QuantumCircuit(2, 2, name=name)
+                qc.h(0)
+                qc.cx(0, 1)
+                qc.measure([0, 1], [0, 1])
+                AerSimulator().run(qc, shots=20000, seed_simulator=1234).result()
+            """))
+    return str(script)
+
+
+def test_diff_timelines_via_tool_layer(tmp_path):
+    tools.run_script(_write_two_bell_script(tmp_path))
+    id_a = next(t for t in tools.list_timelines() if t["name"] == "bell_a")[
+        "circuit_id"
+    ]
+    id_b = next(t for t in tools.list_timelines() if t["name"] == "bell_b")[
+        "circuit_id"
+    ]
+
+    result = tools.diff_timelines(id_a, id_b)
+
+    assert [entry["op"] for entry in result["gate_diff"]] == ["equal"] * len(
+        result["gate_diff"]
+    )
+    assert result["statevector_diff"]["matched"]
+    assert result["counts_diff"]["matched"]
+
+
+def test_diff_timelines_with_seq_bounds_diffs_two_moments_of_one_circuit(tmp_path):
+    circuit_id = _run_bell_and_get_id(tmp_path)
+    gate_events = tools.get_events(circuit_id, types=["gate_added"], limit=100)
+    first_seq = gate_events[0]["seq"]
+    last_seq = gate_events[-1]["seq"]
+
+    result = tools.diff_timelines(
+        circuit_id, circuit_id, seq_a=first_seq, seq_b=last_seq
+    )
+
+    assert result["seq_a"] == first_seq
+    assert result["seq_b"] == last_seq
+    ops = [entry["op"] for entry in result["gate_diff"]]
+    assert "insert" in ops
+
+
+def test_diff_timelines_unknown_id_raises_lookup_error(tmp_path):
+    circuit_id = _run_bell_and_get_id(tmp_path)
+    with pytest.raises(LookupError):
+        tools.diff_timelines(circuit_id, "not-a-real-id")
+
+
 def test_clear_empties_the_store_and_watches(tmp_path):
     circuit_id = _run_bell_and_get_id(tmp_path)
     tools.add_watch(circuit_id, "qubit", 0)
@@ -215,7 +267,9 @@ def test_clear_empties_the_store_and_watches(tmp_path):
     assert tools.list_watches() == []
 
 
-def test_run_script_with_auto_activate_false_leaves_this_sessions_debug_untouched(tmp_path):
+def test_run_script_with_auto_activate_false_leaves_this_sessions_debug_untouched(
+    tmp_path,
+):
     """auto_activate=False no longer scopes via a removed global activate/deactivate.
 
     A target script cannot reach the MCP tool's own `_debug` instance at all
@@ -227,18 +281,14 @@ def test_run_script_with_auto_activate_false_leaves_this_sessions_debug_untouche
     `_debug.timelines()`.
     """
     script = tmp_path / "scoped.py"
-    script.write_text(
-        textwrap.dedent(
-            """
+    script.write_text(textwrap.dedent("""
             from qiskit.circuit import QuantumCircuit
 
             qc = QuantumCircuit(2, name="scoped")
             qc.h(0)
             qc.cx(0, 1)
             qc.h(1)
-            """
-        )
-    )
+            """))
     before = tools._debug.active
     result = tools.run_script(str(script), auto_activate=False)
     assert result["error"] is None
@@ -250,17 +300,13 @@ def test_run_script_with_auto_activate_false_leaves_this_sessions_debug_untouche
 
 def test_run_script_passes_argv(tmp_path):
     script = tmp_path / "argv.py"
-    script.write_text(
-        textwrap.dedent(
-            """
+    script.write_text(textwrap.dedent("""
             import sys
             from qiskit.circuit import QuantumCircuit
 
             qc = QuantumCircuit(1, name=sys.argv[1])
             qc.x(0)
-            """
-        )
-    )
+            """))
     result = tools.run_script(str(script), argv=["from-argv"])
     assert result["error"] is None
     assert any(t["name"] == "from-argv" for t in result["timelines"])
@@ -274,7 +320,9 @@ def test_get_events_filters_and_pages(tmp_path):
     first_two = tools.get_events(circuit_id, types=["gate_added"], limit=2)
     assert [e["gate"] for e in first_two] == ["h", "cx"]
 
-    rest = tools.get_events(circuit_id, types=["gate_added"], since_seq=first_two[-1]["seq"])
+    rest = tools.get_events(
+        circuit_id, types=["gate_added"], since_seq=first_two[-1]["seq"]
+    )
     assert [e["gate"] for e in rest] == ["measure", "measure"]
 
 
@@ -332,7 +380,9 @@ def test_watch_lifecycle_reports_qubit_state(tmp_path):
 def test_watch_upto_seq_bounds_the_read(tmp_path):
     circuit_id = _run_bell_and_get_id(tmp_path)
     tools.add_watch(circuit_id, "qubit", 1)
-    first_gate_seq = tools.get_events(circuit_id, types=["gate_added"], limit=1)[0]["seq"]
+    first_gate_seq = tools.get_events(circuit_id, types=["gate_added"], limit=1)[0][
+        "seq"
+    ]
     report = tools.read_watches(upto_seq=first_gate_seq)[0]
     assert "gates touched: 0" in report["text"]
 

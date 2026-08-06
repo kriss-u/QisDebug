@@ -16,6 +16,8 @@ from .._events import ExecutionFinishedEvent, TelemetryEvent, Timeline
 from . import _render
 from .base import TimelineFrontend
 
+_MARK_SLOTS = ("a", "b")
+
 
 class _TimelineShell(cmd.Cmd):
     """Line-oriented REPL for stepping through a merged timeline."""
@@ -34,9 +36,10 @@ class _TimelineShell(cmd.Cmd):
         self.timelines_by_id = timelines_by_id
         self.index = 0
         self.watches: list[_render.WatchTarget] = []
+        self.marks: dict[str, _render.StateMark | None] = {"a": None, "b": None}
 
     def print_frame(self) -> None:
-        """Print the currently selected event and its circuit/state/watch panels."""
+        """Print the currently selected event and its circuit/state/watch/diff panels."""
         source, event = self.merged[self.index]
         print()
         print(
@@ -49,11 +52,20 @@ class _TimelineShell(cmd.Cmd):
             print()
             print("Counts histogram:")
             print(_render.render_histogram_ascii(event.counts))
-        watch_text = _render.render_watches(self.watches, self.timelines_by_id, event.seq)
+        watch_text = _render.render_watches(
+            self.watches, self.timelines_by_id, event.seq
+        )
         if watch_text:
             print()
             print("Watches:")
             print(watch_text)
+        diff_text = _render.render_marks_diff(
+            self.marks["a"], self.marks["b"], self.timelines_by_id
+        )
+        if diff_text:
+            print()
+            print("-- Diff A vs B --")
+            print(diff_text)
 
     def emptyline(self) -> bool:
         """A bare Enter repeats "next" rather than cmd's default (repeat last)."""
@@ -151,10 +163,42 @@ class _TimelineShell(cmd.Cmd):
             print(f"  {target.label(self.timelines_by_id.get(target.circuit_id))}")
         return False
 
+    def do_mark(self, arg: str) -> bool:
+        """mark a | mark b: pin the current event as that side of a diff.
+        Once both are pinned, the diff between them appears automatically."""
+        slot = arg.strip()
+        if slot not in _MARK_SLOTS:
+            print("usage: mark a | mark b")
+            return False
+        source, event = self.merged[self.index]
+        mark = _render.StateMark(circuit_id=source.circuit_id, seq=event.seq)
+        self.marks[slot] = mark
+        print(f"marked {slot}: {mark.label(source)}")
+        self.print_frame()
+        return False
+
+    def do_unmark(self, arg: str) -> bool:
+        """unmark a | unmark b | unmark all"""
+        target = arg.strip()
+        if target == "all":
+            self.marks = {"a": None, "b": None}
+            print("cleared all marks")
+            self.print_frame()
+            return False
+        if target not in _MARK_SLOTS:
+            print("usage: unmark a | unmark b | unmark all")
+            return False
+        self.marks[target] = None
+        print(f"unmarked {target}")
+        self.print_frame()
+        return False
+
     def _parse_watch_arg(self, arg: str, command: str) -> _render.WatchTarget | None:
         """Parse ``"<kind> <ref>"`` into a watch target on the current circuit."""
         parts = arg.split(maxsplit=1)
-        usage = f"usage: {command} qubit N | {command} clbit N | {command} register NAME"
+        usage = (
+            f"usage: {command} qubit N | {command} clbit N | {command} register NAME"
+        )
         if len(parts) != 2 or parts[0] not in ("qubit", "clbit", "register"):
             print(usage)
             return None
@@ -201,7 +245,8 @@ class CLIFrontend(TimelineFrontend):
         print(f"QisDebug timeline — {names} ({len(merged)} events)")
         print(
             "commands: n(ext)  p(rev)  f(irst)  l(ast)  g(oto) N  "
-            "w(atch)/unwatch qubit|clbit|register ...  watches  h(elp)  q(uit)"
+            "w(atch)/unwatch qubit|clbit|register ...  watches  "
+            "mark a|b  unmark a|b|all  h(elp)  q(uit)"
         )
 
         timelines_by_id = {t.circuit_id: t for t in timelines}

@@ -18,12 +18,14 @@ lives here, presentation lives in the caller.
 
 from __future__ import annotations
 
-from typing import Mapping, Sequence
+import difflib
+import itertools
+from typing import Literal, Mapping, Sequence
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
 
-from ._events import EventType, StateSnapshotEvent, Timeline
+from ._events import EventType, GateEvent, StateSnapshotEvent, Timeline
 
 Severity = str  # "info" | "warning" | "error"
 
@@ -117,7 +119,9 @@ def expand_sparse_statevector(
     dense: list[complex] = [0j] * (2**num_qubits)
     for label, amplitude in expected.items():
         if len(label) != num_qubits or any(c not in "01" for c in label):
-            raise ValueError(f"label {label!r} must be a {num_qubits}-character binary string")
+            raise ValueError(
+                f"label {label!r} must be a {num_qubits}-character binary string"
+            )
         re, im = amplitude
         dense[int(label, 2)] = complex(re, im)
     return dense
@@ -234,13 +238,17 @@ def find_anomalies(timeline: Timeline) -> list[Anomaly]:
         if event.success is False:
             anomalies.append(
                 Anomaly(
-                    severity="error", seq=event.seq, message=f"{event.describe()}: execution failed"
+                    severity="error",
+                    seq=event.seq,
+                    message=f"{event.describe()}: execution failed",
                 )
             )
         elif event.counts is not None and not event.counts:
             anomalies.append(
                 Anomaly(
-                    severity="warning", seq=event.seq, message=f"{event.describe()}: empty counts"
+                    severity="warning",
+                    seq=event.seq,
+                    message=f"{event.describe()}: empty counts",
                 )
             )
     prev_depth: int | None = None
@@ -263,3 +271,224 @@ def find_anomalies(timeline: Timeline) -> list[Anomaly]:
         if depth is not None:
             prev_depth = depth
     return sorted(anomalies, key=lambda a: a.seq)
+
+
+class GateDiffEntry(BaseModel):
+    """One aligned step in a gate-sequence diff between two timelines.
+
+    ``a``/``b`` are the two timelines' own :class:`GateEvent`, present
+    depending on ``op``: both for ``"equal"``/``"replace"``, only ``a`` for
+    ``"delete"`` (present in ``a``, missing from ``b``), only ``b`` for
+    ``"insert"``.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    op: Literal["equal", "insert", "delete", "replace"]
+    a: GateEvent | None = None
+    b: GateEvent | None = None
+
+
+class TimelineDiff(BaseModel):
+    """Result of comparing two points in time: gate alignment plus state deltas.
+
+    Each side is "timeline as of seq_a/seq_b" -- ``None`` means the whole
+    timeline / final state, so this covers both diffing two different
+    circuits (typically both seqs ``None``, or matching points in each) and
+    diffing two moments of the *same* circuit's replay (``circuit_id_a ==
+    circuit_id_b``, different seqs).
+    """
+
+    circuit_id_a: str
+    circuit_id_b: str
+    name_a: str | None = None
+    name_b: str | None = None
+    seq_a: int | None = None
+    seq_b: int | None = None
+    gate_diff: list[GateDiffEntry] = Field(default_factory=list)
+    statevector_diff: StatevectorDiff | None = None
+    counts_diff: CountsDiff | None = None
+    depth_a: int | None = None
+    depth_b: int | None = None
+    size_a: int | None = None
+    size_b: int | None = None
+
+    def summary_line(self) -> str:
+        """Return a compact one-line fidelity/TVD/depth-delta summary."""
+        parts = [f"{self._op_counts_text()}"]
+        if self.statevector_diff is not None:
+            parts.append(f"fidelity={self.statevector_diff.fidelity:.6f}")
+        if self.counts_diff is not None:
+            parts.append(f"TVD={self.counts_diff.total_variation_distance:.4f}")
+        if self.depth_a is not None or self.depth_b is not None:
+            parts.append(f"depth={self.depth_a}->{self.depth_b}")
+        if self.size_a is not None or self.size_b is not None:
+            parts.append(f"size={self.size_a}->{self.size_b}")
+        return "  ".join(parts)
+
+    def _op_counts_text(self) -> str:
+        counts = {"equal": 0, "insert": 0, "delete": 0, "replace": 0}
+        for entry in self.gate_diff:
+            counts[entry.op] += 1
+        return (
+            f"gates: {counts['equal']} equal, {counts['insert']} inserted, "
+            f"{counts['delete']} deleted, {counts['replace']} replaced"
+        )
+
+    def side_label(self, name: str | None, circuit_id: str, seq: int | None) -> str:
+        """Return e.g. ``"'bell' @ seq 12"`` or ``"'bell' (final)"`` for one side."""
+        bound = f"@ seq {seq}" if seq is not None else "(final)"
+        return f"'{name or circuit_id}' {bound}"
+
+    def describe(self) -> str:
+        """Return a multi-paragraph human-readable summary."""
+        lines = [
+            f"diff {self.side_label(self.name_a, self.circuit_id_a, self.seq_a)} vs "
+            f"{self.side_label(self.name_b, self.circuit_id_b, self.seq_b)}",
+            self._op_counts_text(),
+        ]
+        if self.statevector_diff is not None:
+            lines.append(self.statevector_diff.describe())
+        if self.counts_diff is not None:
+            lines.append(self.counts_diff.describe())
+        if self.depth_a is not None or self.depth_b is not None:
+            lines.append(f"depth: {self.depth_a} -> {self.depth_b}")
+        if self.size_a is not None or self.size_b is not None:
+            lines.append(f"size: {self.size_a} -> {self.size_b}")
+        return "\n".join(lines)
+
+
+def _gate_key(event: GateEvent) -> tuple[str, tuple[int, ...]]:
+    """Key a gate event by name and qubits for sequence alignment."""
+    return (event.gate, event.qubits)
+
+
+def _gate_events_upto(timeline: Timeline, upto_seq: int | None) -> list[GateEvent]:
+    """Return a timeline's gate events, optionally truncated to ``seq <= upto_seq``."""
+    if upto_seq is None:
+        return timeline.gate_events
+    return [e for e in timeline.gate_events if e.seq <= upto_seq]
+
+
+def _diff_gate_events(
+    a_gates: list[GateEvent], b_gates: list[GateEvent]
+) -> list[GateDiffEntry]:
+    """Align two gate sequences with a standard sequence diff, keyed on gate + qubits."""
+    matcher = difflib.SequenceMatcher(
+        a=[_gate_key(e) for e in a_gates],
+        b=[_gate_key(e) for e in b_gates],
+        autojunk=False,
+    )
+    entries: list[GateDiffEntry] = []
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            for ai, bi in zip(range(i1, i2), range(j1, j2)):
+                entries.append(GateDiffEntry(op="equal", a=a_gates[ai], b=b_gates[bi]))
+        elif tag == "delete":
+            entries.extend(
+                GateDiffEntry(op="delete", a=a_gates[ai]) for ai in range(i1, i2)
+            )
+        elif tag == "insert":
+            entries.extend(
+                GateDiffEntry(op="insert", b=b_gates[bi]) for bi in range(j1, j2)
+            )
+        else:  # "replace"
+            for ai, bi in itertools.zip_longest(range(i1, i2), range(j1, j2)):
+                if ai is not None and bi is not None:
+                    entries.append(
+                        GateDiffEntry(op="replace", a=a_gates[ai], b=b_gates[bi])
+                    )
+                elif ai is not None:
+                    entries.append(GateDiffEntry(op="delete", a=a_gates[ai]))
+                elif bi is not None:
+                    entries.append(GateDiffEntry(op="insert", b=b_gates[bi]))
+    return entries
+
+
+def _last_transpile_shape(
+    timeline: Timeline, upto_seq: int | None
+) -> tuple[int | None, int | None]:
+    """Return (depth, size) from the most recent transpile event at/before ``upto_seq``
+    that recorded a depth. ``None`` means no bound (the last such event overall).
+    """
+    for event in reversed(timeline.transpile_events):
+        if event.depth is not None and (upto_seq is None or event.seq <= upto_seq):
+            return event.depth, event.size
+    return None, None
+
+
+def _diff_statevectors(
+    a: Timeline, b: Timeline, seq_a: int | None, seq_b: int | None, atol: float
+) -> StatevectorDiff | None:
+    """Compare the state snapshot at/before each side's seq bound, if both captured one."""
+    a_snapshot = a.snapshot_upto(seq_a)
+    b_snapshot = b.snapshot_upto(seq_b)
+    if a_snapshot is None or b_snapshot is None:
+        return None
+    return compare_statevector(b_snapshot, a_snapshot.amplitudes(), atol=atol)
+
+
+def _diff_counts(
+    a: Timeline, b: Timeline, seq_a: int | None, seq_b: int | None, atol: float = 0.02
+) -> CountsDiff | None:
+    """Compare the execution counts at/before each side's seq bound, if both captured any."""
+    a_finished = a.execution_finished_upto(seq_a)
+    b_finished = b.execution_finished_upto(seq_b)
+    a_counts = a_finished.counts if a_finished else None
+    b_counts = b_finished.counts if b_finished else None
+    if not a_counts or not b_counts:
+        return None
+    a_total = sum(a_counts.values())
+    a_probs = {k: v / a_total for k, v in a_counts.items()} if a_total else {}
+    return compare_counts(b_counts, a_probs, atol=atol)
+
+
+def diff_timelines(
+    a: Timeline,
+    b: Timeline,
+    *,
+    seq_a: int | None = None,
+    seq_b: int | None = None,
+    atol: float = 1e-6,
+) -> TimelineDiff:
+    """Compare two points in time: gate-sequence alignment plus state deltas.
+
+    ``seq_a``/``seq_b`` bound each side to "as of that event's seq" (a
+    ``TelemetryEvent.seq``, e.g. from a currently-displayed event during
+    playback, or from :func:`~qisdebug._mcp.tools.get_events`); ``None``
+    (the default) means that side's whole timeline / final state. Passing
+    the same :class:`Timeline` for ``a`` and ``b`` with different seqs diffs
+    two moments of one circuit's own replay; passing two different
+    timelines (with matching, differing, or unbounded seqs) diffs two
+    circuits at a chosen or final point.
+
+    Aligns each side's ``gate_added`` events up to its bound with a standard
+    sequence diff (insert/delete/replace, keyed on gate name + qubits), so a
+    construction-code refactor that reordered equivalent gates reads clearly
+    instead of as a wall of mismatches. Separately reuses
+    :func:`compare_statevector` (``atol`` is its per-amplitude mismatch
+    threshold) and :func:`compare_counts` (at its own default per-outcome
+    tolerance) on the state snapshot/counts at or before each bound when
+    both sides have one (``a`` is treated as the expected/baseline side),
+    plus a depth/size delta pulled from the last transpile event at or
+    before each bound that recorded one.
+    """
+    depth_a, size_a = _last_transpile_shape(a, seq_a)
+    depth_b, size_b = _last_transpile_shape(b, seq_b)
+    return TimelineDiff(
+        circuit_id_a=a.circuit_id,
+        circuit_id_b=b.circuit_id,
+        name_a=a.name,
+        name_b=b.name,
+        seq_a=seq_a,
+        seq_b=seq_b,
+        gate_diff=_diff_gate_events(
+            _gate_events_upto(a, seq_a), _gate_events_upto(b, seq_b)
+        ),
+        statevector_diff=_diff_statevectors(a, b, seq_a, seq_b, atol),
+        counts_diff=_diff_counts(a, b, seq_a, seq_b),
+        depth_a=depth_a,
+        depth_b=depth_b,
+        size_a=size_a,
+        size_b=size_b,
+    )

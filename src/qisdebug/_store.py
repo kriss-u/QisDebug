@@ -78,7 +78,9 @@ class TelemetryStore:
         """
         with self._lock:
             for circuit_id in circuit_ids:
-                self._suspended_ids[circuit_id] = self._suspended_ids.get(circuit_id, 0) + 1
+                self._suspended_ids[circuit_id] = (
+                    self._suspended_ids.get(circuit_id, 0) + 1
+                )
 
     def resume_circuit_ids(self, circuit_ids: Iterable[str]) -> None:
         """Undo one :meth:`suspend_circuit_ids` call for each id given."""
@@ -163,7 +165,9 @@ class TelemetryStore:
                 return timeline
         return None
 
-    def add_event(self, timeline: Timeline, event_cls: Type[EventT], **fields: Any) -> EventT:
+    def add_event(
+        self, timeline: Timeline, event_cls: Type[EventT], **fields: Any
+    ) -> EventT:
         """Construct an event with the next sequence number and append it."""
         event = event_cls(seq=self.next_sequence(), **fields)
         with self._lock:

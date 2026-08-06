@@ -93,7 +93,9 @@ def release_patched(owner: Any, attribute: str) -> None:
                 delattr(owner, attribute)
         except Exception:
             logger.warning(
-                "qisdebug: failed to restore %s.%s", getattr(owner, "__name__", owner), attribute
+                "qisdebug: failed to restore %s.%s",
+                getattr(owner, "__name__", owner),
+                attribute,
             )
 
 

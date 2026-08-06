@@ -40,8 +40,12 @@ def test_backend_run_records_and_captures_statevectors(debug):
     assert [s.gate for s in snapshots] == [None, "h", "cx"]
     np.testing.assert_allclose(snapshots[0].amplitudes(), [1, 0, 0, 0], atol=1e-9)
     inv_sqrt2 = 1 / np.sqrt(2)
-    np.testing.assert_allclose(snapshots[1].amplitudes(), [inv_sqrt2, inv_sqrt2, 0, 0], atol=1e-9)
-    np.testing.assert_allclose(snapshots[2].amplitudes(), [inv_sqrt2, 0, 0, inv_sqrt2], atol=1e-9)
+    np.testing.assert_allclose(
+        snapshots[1].amplitudes(), [inv_sqrt2, inv_sqrt2, 0, 0], atol=1e-9
+    )
+    np.testing.assert_allclose(
+        snapshots[2].amplitudes(), [inv_sqrt2, 0, 0, inv_sqrt2], atol=1e-9
+    )
 
     finished = timeline.filter(EventType.EXECUTION_FINISHED)
     assert len(finished) == 1

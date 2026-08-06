@@ -44,23 +44,31 @@ def install() -> InstallResult:
     applied = False
     for attribute in ("append", "_append"):
         if getattr(circuit_cls, attribute, None) is not None:
-            ok, warning = _dispatcher.ensure_patched(circuit_cls, attribute, _recording_wrapper)
+            ok, warning = _dispatcher.ensure_patched(
+                circuit_cls, attribute, _recording_wrapper
+            )
             if ok:
                 targets.append((circuit_cls, attribute))
             applied = applied or ok
             if warning:
                 warnings.append(warning)
     if not applied:
-        warnings.append("no QuantumCircuit append method found; construction layer disabled")
+        warnings.append(
+            "no QuantumCircuit append method found; construction layer disabled"
+        )
         return InstallResult(False, warnings, targets)
     if getattr(circuit_cls, "compose", None) is not None:
-        ok, warning = _dispatcher.ensure_patched(circuit_cls, "compose", _compose_wrapper)
+        ok, warning = _dispatcher.ensure_patched(
+            circuit_cls, "compose", _compose_wrapper
+        )
         if ok:
             targets.append((circuit_cls, "compose"))
         if warning:
             warnings.append(warning)
     else:
-        warnings.append("QuantumCircuit.compose not found; composed circuits not recorded")
+        warnings.append(
+            "QuantumCircuit.compose not found; composed circuits not recorded"
+        )
     return InstallResult(applied, warnings, targets)
 
 
@@ -69,7 +77,8 @@ def _listeners(circuit: Any) -> list["QisDebug"]:
     return [
         debug
         for debug in _dispatcher.active_instances()
-        if not debug.store.is_suspended() and not debug.store.is_circuit_suspended(circuit)
+        if not debug.store.is_suspended()
+        and not debug.store.is_circuit_suspended(circuit)
     ]
 
 
@@ -156,7 +165,9 @@ def _record_appended(listeners: list["QisDebug"], circuit: Any, before: int) -> 
         return
     appended = list(data[before:after])
     for debug in listeners:
-        timeline = debug.store.timeline_for(circuit, max_circuits=debug.config.max_circuits)
+        timeline = debug.store.timeline_for(
+            circuit, max_circuits=debug.config.max_circuits
+        )
         if timeline is None:
             continue
         for instruction in appended:

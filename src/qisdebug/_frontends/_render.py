@@ -24,6 +24,7 @@ from .._events import (
     TranspileFinishedEvent,
     TranspilePassEvent,
 )
+from .._analysis import TimelineDiff, diff_timelines
 
 _MAX_PROPERTY_VALUE_LENGTH = 120
 
@@ -73,7 +74,11 @@ def circuit_tracks(timeline: Timeline) -> tuple[list[dict[str, str]], list[str |
             isinstance(event, (TranspilePassEvent, TranspileFinishedEvent))
             and event.circuit is not None
         ):
-            key = "backend" if getattr(event, "phase", "user") == "backend" else "transpiled"
+            key = (
+                "backend"
+                if getattr(event, "phase", "user") == "backend"
+                else "transpiled"
+            )
             try:
                 current[key] = str(event.circuit.draw(output="text", fold=-1))
                 active_key = key
@@ -86,7 +91,9 @@ def circuit_tracks(timeline: Timeline) -> tuple[list[dict[str, str]], list[str |
 
 def merge_timelines(
     timelines: list[Timeline],
-) -> tuple[list[tuple[Timeline, TelemetryEvent]], list[dict[str, str]], list[str | None]]:
+) -> tuple[
+    list[tuple[Timeline, TelemetryEvent]], list[dict[str, str]], list[str | None]
+]:
     """Interleave events from several timelines in global sequence order.
 
     ``seq`` is a process-wide monotonic counter (see
@@ -114,7 +121,9 @@ def merge_timelines(
         )
         combined.update({f"{prefix}:{key}": text for key, text in local.items()})
         series.append(dict(combined))
-        active_labels.append(track_label(f"{prefix}:{active_key}") if active_key else None)
+        active_labels.append(
+            track_label(f"{prefix}:{active_key}") if active_key else None
+        )
     return merged, series, active_labels
 
 
@@ -329,7 +338,9 @@ def render_bloch(event: StateSnapshotEvent) -> str | None:
     try:
         from qiskit.visualization import plot_bloch_multivector
 
-        return _figure_to_data_uri(plot_bloch_multivector(np.asarray(event.statevector)))
+        return _figure_to_data_uri(
+            plot_bloch_multivector(np.asarray(event.statevector))
+        )
     except Exception:
         return None
 
@@ -341,7 +352,9 @@ def render_bloch_bytes(event: StateSnapshotEvent) -> bytes | None:
     try:
         from qiskit.visualization import plot_bloch_multivector
 
-        return _figure_to_png_bytes(plot_bloch_multivector(np.asarray(event.statevector)))
+        return _figure_to_png_bytes(
+            plot_bloch_multivector(np.asarray(event.statevector))
+        )
     except Exception:
         return None
 
@@ -384,14 +397,92 @@ class WatchTarget:
 
     def label(self, timeline: Timeline | None) -> str:
         """Return a human-readable label, e.g. ``"bell — qubit 0"``."""
-        name = timeline.name or timeline.circuit_id if timeline is not None else self.circuit_id
+        name = (
+            timeline.name or timeline.circuit_id
+            if timeline is not None
+            else self.circuit_id
+        )
         return f"{name} — {self.kind} {self.ref}"
+
+
+@dataclass(frozen=True)
+class StateMark:
+    """One pinned (circuit, seq) point in a timeline's replay.
+
+    Pinned interactively (mark a/mark b) while stepping through a timeline
+    in any frontend, mirroring :class:`WatchTarget`; not persisted on the
+    :class:`~qisdebug._events.Timeline` itself. Two marks are diffed against
+    each other with :func:`render_marks_diff`.
+    """
+
+    circuit_id: str
+    seq: int
+
+    def label(self, timeline: Timeline | None) -> str:
+        """Return a human-readable label, e.g. ``"bell — seq 12"``."""
+        name = (
+            timeline.name or timeline.circuit_id
+            if timeline is not None
+            else self.circuit_id
+        )
+        return f"{name} — seq {self.seq}"
+
+
+def render_state_diff(diff: TimelineDiff) -> str:
+    """Render a :class:`~qisdebug._analysis.TimelineDiff` as readable +/-/= text.
+
+    The gate alignment prints as unified-diff-style lines over
+    :meth:`~qisdebug._events.GateEvent.describe`; a ``"replace"`` entry
+    prints as a ``-`` line followed by a ``+`` line. Followed by the
+    summary line, then the statevector/counts diffs when present.
+    """
+    lines = [
+        f"diff: {diff.side_label(diff.name_a, diff.circuit_id_a, diff.seq_a)}"
+        f"  vs  {diff.side_label(diff.name_b, diff.circuit_id_b, diff.seq_b)}",
+        "",
+        "gates:",
+    ]
+    for entry in diff.gate_diff:
+        if entry.op == "equal" and entry.a is not None:
+            lines.append(f"    {entry.a.describe()}")
+        else:
+            if entry.a is not None:
+                lines.append(f"  - {entry.a.describe()}")
+            if entry.b is not None:
+                lines.append(f"  + {entry.b.describe()}")
+    lines.append("")
+    lines.append(diff.summary_line())
+    if diff.statevector_diff is not None:
+        lines.append("")
+        lines.append(diff.statevector_diff.describe())
+    if diff.counts_diff is not None:
+        lines.append("")
+        lines.append(diff.counts_diff.describe())
+    return "\n".join(lines)
+
+
+def render_marks_diff(
+    mark_a: StateMark | None,
+    mark_b: StateMark | None,
+    timelines_by_id: dict[str, Timeline],
+) -> str:
+    """Render the diff panel for two marked states, or ``""`` if not both set."""
+    if mark_a is None or mark_b is None:
+        return ""
+    timeline_a = timelines_by_id.get(mark_a.circuit_id)
+    timeline_b = timelines_by_id.get(mark_b.circuit_id)
+    if timeline_a is None or timeline_b is None:
+        return "(a marked circuit is no longer tracked)"
+    diff = diff_timelines(timeline_a, timeline_b, seq_a=mark_a.seq, seq_b=mark_b.seq)
+    return render_state_diff(diff)
 
 
 _WatchBitKind = Literal["qubit", "clbit"]
 
 
-def _watch_bits(target: WatchTarget, timeline: Timeline) -> tuple[_WatchBitKind, tuple[int, ...]]:
+def _watch_bits(
+    target: WatchTarget, timeline: Timeline
+) -> tuple[_WatchBitKind, tuple[int, ...]]:
     """Resolve a watch target to the concrete bit kind and indices it covers."""
     if target.kind == "qubit":
         return "qubit", (int(target.ref),)
@@ -444,17 +535,14 @@ def render_watch(target: WatchTarget, timeline: Timeline, upto_seq: int) -> str:
 
 def _latest_snapshot(timeline: Timeline, upto_seq: int) -> StateSnapshotEvent | None:
     """Return the most recent state snapshot at or before ``upto_seq``, if any."""
-    candidates = [e for e in timeline.snapshots if e.seq <= upto_seq]
-    return candidates[-1] if candidates else None
+    return timeline.snapshot_upto(upto_seq)
 
 
-def _latest_execution_finished(timeline: Timeline, upto_seq: int) -> ExecutionFinishedEvent | None:
+def _latest_execution_finished(
+    timeline: Timeline, upto_seq: int
+) -> ExecutionFinishedEvent | None:
     """Return the most recent execution-finished event at or before ``upto_seq``, if any."""
-    result = None
-    for event in timeline.events:
-        if isinstance(event, ExecutionFinishedEvent) and event.seq <= upto_seq:
-            result = event
-    return result
+    return timeline.execution_finished_upto(upto_seq)
 
 
 def _render_qubit_watch(snapshot: StateSnapshotEvent, qubits: tuple[int, ...]) -> str:
@@ -466,7 +554,9 @@ def _render_qubit_watch(snapshot: StateSnapshotEvent, qubits: tuple[int, ...]) -
     lines = [f"state {snapshot.describe()}:"]
     for qubit in qubits:
         probability_one = _qubit_probability_one(amplitudes, qubit)
-        x, y, z = (_clean(v) for v in _reduced_bloch_vector(amplitudes, qubit, num_qubits))
+        x, y, z = (
+            _clean(v) for v in _reduced_bloch_vector(amplitudes, qubit, num_qubits)
+        )
         lines.append(
             f"    qubit {qubit}: P(1)={probability_one:.4f}   "
             f"bloch=({x:+.3f}, {y:+.3f}, {z:+.3f})"
@@ -481,7 +571,9 @@ def _clean(value: float, epsilon: float = 1e-9) -> float:
 
 def _qubit_probability_one(amplitudes: list[complex], qubit: int) -> float:
     """Return the marginal probability of measuring ``qubit`` as 1."""
-    return sum(abs(amp) ** 2 for basis, amp in enumerate(amplitudes) if (basis >> qubit) & 1)
+    return sum(
+        abs(amp) ** 2 for basis, amp in enumerate(amplitudes) if (basis >> qubit) & 1
+    )
 
 
 def _reduced_bloch_vector(
@@ -506,8 +598,14 @@ def _render_clbit_watch(event: ExecutionFinishedEvent, clbits: tuple[int, ...]) 
         return "(no counts yet)"
     lines = [f"counts {event.describe()}:"]
     for clbit in clbits:
-        ones = sum(n for bitstring, n in counts.items() if _clbit_value(bitstring, clbit) == "1")
-        lines.append(f"    clbit {clbit}: P(1)={ones / total:.4f}  ({ones}/{total} shots)")
+        ones = sum(
+            n
+            for bitstring, n in counts.items()
+            if _clbit_value(bitstring, clbit) == "1"
+        )
+        lines.append(
+            f"    clbit {clbit}: P(1)={ones / total:.4f}  ({ones}/{total} shots)"
+        )
     return "\n".join(lines)
 
 

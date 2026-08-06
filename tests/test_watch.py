@@ -68,7 +68,9 @@ def test_watch_qubit_bloch_vector_for_ground_state(debug):
 def test_watch_register_aggregates_its_qubits(debug):
     """Watching register q covers both of its qubits' gate touches and state."""
     timeline = _traced_bell_with_registers(debug)
-    target = _render.WatchTarget(circuit_id=timeline.circuit_id, kind="register", ref="q")
+    target = _render.WatchTarget(
+        circuit_id=timeline.circuit_id, kind="register", ref="q"
+    )
     last_seq = timeline.events[-1].seq
     text = _render.render_watch(target, timeline, last_seq)
     assert "gates touched: 4" in text  # h, cx, measure, measure
@@ -89,7 +91,9 @@ def test_watch_clbit_reports_measured_distribution(debug):
 def test_watch_unresolved_register_reports_not_found(debug):
     """A watch on a register name that doesn't exist degrades cleanly."""
     timeline = _traced_bell_with_registers(debug)
-    target = _render.WatchTarget(circuit_id=timeline.circuit_id, kind="register", ref="nope")
+    target = _render.WatchTarget(
+        circuit_id=timeline.circuit_id, kind="register", ref="nope"
+    )
     text = _render.render_watch(target, timeline, timeline.events[-1].seq)
     assert "not found on this circuit" in text
 
@@ -115,7 +119,9 @@ def test_cli_watch_and_unwatch_commands(debug, monkeypatch, capsys):
     assert "no active watches" in out
 
 
-@pytest.mark.skipif(not QtFrontend().is_available(), reason="no display available for Qt")
+@pytest.mark.skipif(
+    not QtFrontend().is_available(), reason="no display available for Qt"
+)
 def test_gui_frontend_add_and_remove_watch(debug, monkeypatch):
     """Adding a watch through the combo boxes updates the text panel; removing clears it."""
     from PySide6.QtWidgets import QApplication
@@ -126,9 +132,13 @@ def test_gui_frontend_add_and_remove_watch(debug, monkeypatch):
     monkeypatch.setattr(QApplication, "exec", lambda self: None)
     app = QApplication.instance() or QApplication([])
     merged, tracks, active_labels = _render.merge_timelines([timeline])
-    window = gui_module._TimelineWindow(  # noqa: SLF001 (internal, but this is the frontend's own test)
-        "viz", merged, tracks, active_labels, {timeline.circuit_id: timeline}
+    view = gui_module._TimelineView(  # noqa: SLF001 (internal, but this is the frontend's own test)
+        merged=merged,
+        tracks=tracks,
+        active_labels=active_labels,
+        timelines_by_id={timeline.circuit_id: timeline},
     )
+    window = gui_module._TimelineWindow("viz", view)  # noqa: SLF001
 
     window.watch_kind.setCurrentText("qubit")
     window.watch_ref.setCurrentText("0")

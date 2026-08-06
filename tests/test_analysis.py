@@ -3,12 +3,14 @@
 import math
 
 import pytest
+from qiskit import transpile
 from qiskit.circuit import QuantumCircuit
 from qiskit_aer import AerSimulator
 
 from qisdebug._analysis import (
     compare_counts,
     compare_statevector,
+    diff_timelines,
     expand_sparse_statevector,
     find_anomalies,
 )
@@ -109,3 +111,150 @@ def test_find_anomalies_clean_bell_circuit_has_no_findings(debug):
     timeline = _traced_bell(debug)
     anomalies = find_anomalies(timeline)
     assert anomalies == []
+
+
+def _traced(debug, name, build):
+    debug.start()
+    qc = QuantumCircuit(2, 2, name=name)
+    build(qc)
+    AerSimulator().run(qc, shots=20000, seed_simulator=1234).result()
+    return debug.get(qc)
+
+
+def _build_bell(qc):
+    qc.h(0)
+    qc.cx(0, 1)
+    qc.measure([0, 1], [0, 1])
+
+
+def test_diff_timelines_identical_circuits_are_all_equal(debug):
+    timeline_a = _traced(debug, "bell_a", _build_bell)
+    timeline_b = _traced(debug, "bell_b", _build_bell)
+
+    diff = diff_timelines(timeline_a, timeline_b)
+
+    assert [entry.op for entry in diff.gate_diff] == ["equal"] * len(
+        timeline_a.gate_events
+    )
+    assert diff.statevector_diff is not None
+    assert diff.statevector_diff.fidelity == pytest.approx(1.0, abs=1e-6)
+    assert diff.counts_diff is not None
+    assert diff.counts_diff.matched
+
+
+def test_diff_timelines_detects_inserted_gate(debug):
+    timeline_a = _traced(debug, "bell_plain", _build_bell)
+
+    def _build_with_extra_x(qc):
+        qc.h(0)
+        qc.x(1)
+        qc.cx(0, 1)
+        qc.measure([0, 1], [0, 1])
+
+    timeline_b = _traced(debug, "bell_extra_x", _build_with_extra_x)
+
+    diff = diff_timelines(timeline_a, timeline_b)
+
+    ops = [entry.op for entry in diff.gate_diff]
+    assert "insert" in ops
+    inserted = next(entry for entry in diff.gate_diff if entry.op == "insert")
+    assert inserted.b is not None
+    assert inserted.b.gate == "x"
+    assert diff.statevector_diff is not None
+    assert not diff.statevector_diff.matched
+
+
+def test_diff_timelines_reports_depth_and_size_from_last_transpile(debug):
+    debug.start()
+    qc_a = QuantumCircuit(2, name="shape_a")
+    qc_a.h(0)
+    qc_a.cx(0, 1)
+    transpile(qc_a, basis_gates=["cx", "u"], optimization_level=1)
+
+    qc_b = QuantumCircuit(2, name="shape_b")
+    qc_b.h(0)
+    qc_b.cx(0, 1)
+    qc_b.cx(0, 1)
+    transpile(qc_b, basis_gates=["cx", "u"], optimization_level=1)
+
+    diff = diff_timelines(debug.get(qc_a), debug.get(qc_b))
+
+    assert diff.depth_a is not None
+    assert diff.depth_b is not None
+    assert diff.size_a is not None
+    assert diff.size_b is not None
+
+
+def test_diff_timelines_no_snapshots_or_counts_reports_none():
+    from qisdebug._events import Timeline
+
+    timeline_a = Timeline(circuit_id="a", name="a")
+    timeline_b = Timeline(circuit_id="b", name="b")
+
+    diff = diff_timelines(timeline_a, timeline_b)
+
+    assert diff.gate_diff == []
+    assert diff.statevector_diff is None
+    assert diff.counts_diff is None
+    assert diff.depth_a is None
+    assert diff.depth_b is None
+
+
+def test_timeline_diff_summary_line_and_describe_are_readable(debug):
+    timeline_a = _traced(debug, "bell_a2", _build_bell)
+    timeline_b = _traced(debug, "bell_b2", _build_bell)
+
+    diff = diff_timelines(timeline_a, timeline_b)
+
+    assert "equal" in diff.summary_line()
+    assert "fidelity" in diff.summary_line()
+    assert "bell_a2" in diff.describe()
+    assert "bell_b2" in diff.describe()
+
+
+def test_diff_timelines_seq_bounds_diff_two_moments_of_one_circuit(debug):
+    debug.start()
+    qc = QuantumCircuit(2, name="replay")
+    qc.h(0)
+    seq_after_h = debug.get(qc).events[-1].seq
+    qc.cx(0, 1)
+    seq_after_cx = debug.get(qc).events[-1].seq
+
+    diff = diff_timelines(
+        debug.get(qc), debug.get(qc), seq_a=seq_after_h, seq_b=seq_after_cx
+    )
+
+    assert diff.seq_a == seq_after_h
+    assert diff.seq_b == seq_after_cx
+    assert [entry.op for entry in diff.gate_diff] == ["equal", "insert"]
+    inserted = next(entry for entry in diff.gate_diff if entry.op == "insert")
+    assert inserted.b is not None
+    assert inserted.b.gate == "cx"
+
+
+def test_diff_timelines_seq_bounds_use_snapshot_and_counts_upto_seq(debug):
+    timeline = _traced(debug, "bell_replay", _build_bell)
+    # snapshots[0] is the initial |00> state, snapshots[1] the state right
+    # after h(0) -- both captured during execution, strictly after every
+    # gate_added event's own seq.
+    seq_after_h = timeline.snapshots[1].seq
+
+    diff = diff_timelines(timeline, timeline, seq_a=seq_after_h, seq_b=None)
+
+    # As of just the h gate, the state is a superposition, not the final
+    # bell state -- diffing it against the (identical) timeline's final
+    # state must show a mismatch, proving snapshot_upto bounded the "a" side.
+    assert diff.statevector_diff is not None
+    assert not diff.statevector_diff.matched
+
+
+def test_diff_timelines_matching_explicit_seqs_across_two_circuits(debug):
+    timeline_a = _traced(debug, "bell_seq_a", _build_bell)
+    timeline_b = _traced(debug, "bell_seq_b", _build_bell)
+    seq_a = timeline_a.gate_events[0].seq
+    seq_b = timeline_b.gate_events[0].seq
+
+    diff = diff_timelines(timeline_a, timeline_b, seq_a=seq_a, seq_b=seq_b)
+
+    assert diff.gate_diff == [entry for entry in diff.gate_diff if entry.op == "equal"]
+    assert len(diff.gate_diff) == 1

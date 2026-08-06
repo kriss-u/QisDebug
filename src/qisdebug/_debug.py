@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, Field
 
 from . import _dispatcher
+from ._analysis import TimelineDiff, diff_timelines
 from ._compat import logger, qiskit_version
 from ._config import QisDebugConfig
 from ._errors import TimelineNotFoundError
@@ -32,7 +33,9 @@ if TYPE_CHECKING:
     from qiskit.circuit import QuantumCircuit
 
     TimelineLike = QuantumCircuit | str | Timeline
-    TimelineContainer = list[TimelineLike] | tuple[TimelineLike, ...] | set[TimelineLike]
+    TimelineContainer = (
+        list[TimelineLike] | tuple[TimelineLike, ...] | set[TimelineLike]
+    )
     # A container type rather than a generic Iterable so isinstance narrows
     # cleanly in _resolve_timelines: list/tuple/set are the only container
     # shapes it actually recognizes.
@@ -88,7 +91,9 @@ class QisDebug:
         self._patch_targets: list[tuple[Any, str]] = []
         self._active_state = {"active": False}
         self._report: ActivationReport | None = None
-        self._finalizer = weakref.finalize(self, _warn_if_still_active, self._active_state)
+        self._finalizer = weakref.finalize(
+            self, _warn_if_still_active, self._active_state
+        )
 
     def start(self) -> ActivationReport:
         """Attach all instrumentation layers to Qiskit.
@@ -106,7 +111,9 @@ class QisDebug:
             "execution": results[1].applied,
             "transpile": results[2].applied,
         }
-        self._patch_targets = [target for result in results for target in result.targets]
+        self._patch_targets = [
+            target for result in results for target in result.targets
+        ]
         _dispatcher.register(self)
         self._active_state["active"] = True
         report = ActivationReport(
@@ -145,7 +152,9 @@ class QisDebug:
 
     def circuits(self) -> list[str]:
         """Return the names of tracked circuits, most recently touched first."""
-        return [timeline.name for timeline in self.store.all_timelines() if timeline.name]
+        return [
+            timeline.name for timeline in self.store.all_timelines() if timeline.name
+        ]
 
     def get(self, target: TimelineLike) -> Timeline:
         """Return the timeline for ``target``.
@@ -191,7 +200,10 @@ class QisDebug:
         one, or a list of any of those to show several together -- events
         from multiple timelines are merged into one chronological sequence,
         with the circuit panel showing each circuit's most recently known
-        state side by side.
+        state side by side. Both frontends let you pin two points in that
+        playback (possibly the same circuit at two different moments, or two
+        different circuits shown together) and see everything that differs
+        between them, computed the same way as :meth:`diff`.
 
         Auto-detects a native GUI window or a text-based CLI based on the
         running environment. Force a specific one with ``frontend="gui"|"cli"``,
@@ -200,6 +212,31 @@ class QisDebug:
         ``"gui"`` with no display) raises ``RuntimeError``.
         """
         return get_frontend(frontend).show(self._resolve_timelines(target))
+
+    def diff(
+        self,
+        a: TimelineLike,
+        b: TimelineLike,
+        *,
+        seq_a: int | None = None,
+        seq_b: int | None = None,
+        atol: float = 1e-6,
+    ) -> TimelineDiff:
+        """Compare two points in time: gate-sequence alignment plus state deltas.
+
+        Thin wrapper around :func:`~qisdebug._analysis.diff_timelines`; ``a``
+        and ``b`` take the same circuit/name/:class:`Timeline` shapes as
+        :meth:`get`. ``seq_a``/``seq_b`` bound each side to "as of that
+        event's seq" (from :attr:`~qisdebug.Timeline.events` or
+        :meth:`~qisdebug._mcp.tools.get_events`); omitted, a side means its
+        whole timeline / final state. Passing the same target for ``a`` and
+        ``b`` with different seqs diffs two moments of the same circuit's
+        replay. ``atol`` is the statevector comparison's per-amplitude
+        mismatch threshold.
+        """
+        return diff_timelines(
+            self.get(a), self.get(b), seq_a=seq_a, seq_b=seq_b, atol=atol
+        )
 
     def export(self, target: TimelineTargets = None) -> list[dict]:
         """Export timelines as a list of JSON-serializable dicts.

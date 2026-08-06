@@ -149,7 +149,9 @@ def _gate_sequences(draw):
     for _ in range(count):
         name, arity, param_count = draw(st.sampled_from(_GATE_POOL))
         qubit_values = st.integers(min_value=0, max_value=2)
-        qubits = draw(st.lists(qubit_values, min_size=arity, max_size=arity, unique=True))
+        qubits = draw(
+            st.lists(qubit_values, min_size=arity, max_size=arity, unique=True)
+        )
         angles = st.floats(min_value=-3.14, max_value=3.14, allow_nan=False)
         params = [draw(angles)] * param_count
         sequence.append((name, qubits, params))
@@ -157,7 +159,9 @@ def _gate_sequences(draw):
 
 
 @settings(
-    deadline=None, max_examples=30, suppress_health_check=[HealthCheck.function_scoped_fixture]
+    deadline=None,
+    max_examples=30,
+    suppress_health_check=[HealthCheck.function_scoped_fixture],
 )
 @given(sequence=_gate_sequences())
 def test_every_random_gate_sequence_is_fully_recorded(sequence):
@@ -172,6 +176,8 @@ def test_every_random_gate_sequence_is_fully_recorded(sequence):
         assert len(recorded) == len(qc.data)
         for event, instruction in zip(recorded, qc.data):
             assert event.gate == instruction.operation.name
-            assert event.qubits == tuple(qc.find_bit(b).index for b in instruction.qubits)
+            assert event.qubits == tuple(
+                qc.find_bit(b).index for b in instruction.qubits
+            )
     finally:
         debug.end()

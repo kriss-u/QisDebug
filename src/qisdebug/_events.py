@@ -80,7 +80,11 @@ class TranspileStartedEvent(TelemetryEvent):
 
     def describe(self) -> str:
         """Return the pass manager name with the input circuit shape."""
-        verb = "backend compile started" if self.phase == "backend" else "transpile started"
+        verb = (
+            "backend compile started"
+            if self.phase == "backend"
+            else "transpile started"
+        )
         return f"{verb} ({self.pass_manager}, depth={self.depth}, size={self.size})"
 
 
@@ -114,7 +118,9 @@ class TranspilePassEvent(TelemetryEvent):
         """Return the pass name and whether it changed the circuit or property_set."""
         marker = "*" if self.changed else " "
         prefix = "backend pass" if self.phase == "backend" else "pass"
-        text = f"{prefix}{marker} {self.pass_name} (depth={self.depth}, size={self.size})"
+        text = (
+            f"{prefix}{marker} {self.pass_name} (depth={self.depth}, size={self.size})"
+        )
         if self.property_changes:
             text += (
                 f" [props +{len(self.property_changes.added)}"
@@ -136,7 +142,11 @@ class TranspileFinishedEvent(TelemetryEvent):
 
     def describe(self) -> str:
         """Return the total duration and output circuit shape."""
-        verb = "backend compile finished" if self.phase == "backend" else "transpile finished"
+        verb = (
+            "backend compile finished"
+            if self.phase == "backend"
+            else "transpile finished"
+        )
         return f"{verb} in {self.duration:.4f}s (depth={self.depth}, size={self.size})"
 
 
@@ -288,7 +298,9 @@ class Timeline(BaseModel):
         return cast(
             "list[TranspileStartedEvent | TranspilePassEvent | TranspileFinishedEvent]",
             self.filter(
-                EventType.TRANSPILE_STARTED, EventType.TRANSPILE_PASS, EventType.TRANSPILE_FINISHED
+                EventType.TRANSPILE_STARTED,
+                EventType.TRANSPILE_PASS,
+                EventType.TRANSPILE_FINISHED,
             ),
         )
 
@@ -296,7 +308,9 @@ class Timeline(BaseModel):
     def execution_events(self) -> list[TelemetryEvent]:
         """All execution-related events, including state snapshots."""
         return self.filter(
-            EventType.EXECUTION_SUBMITTED, EventType.STATE_SNAPSHOT, EventType.EXECUTION_FINISHED
+            EventType.EXECUTION_SUBMITTED,
+            EventType.STATE_SNAPSHOT,
+            EventType.EXECUTION_FINISHED,
         )
 
     @property
@@ -322,6 +336,35 @@ class Timeline(BaseModel):
         step = index + 1
         return next((s for s in self.snapshots if s.step == step), None)
 
+    def snapshot_upto(self, upto_seq: int | None) -> StateSnapshotEvent | None:
+        """Return the most recent state snapshot at or before ``upto_seq``.
+
+        ``None`` means "the final captured state" (no bound). Used both by
+        the watch panel and by :func:`~qisdebug._analysis.diff_timelines` to
+        resolve "the state as of this point in the replay".
+        """
+        candidates = (
+            self.snapshots
+            if upto_seq is None
+            else [e for e in self.snapshots if e.seq <= upto_seq]
+        )
+        return candidates[-1] if candidates else None
+
+    def execution_finished_upto(
+        self, upto_seq: int | None
+    ) -> ExecutionFinishedEvent | None:
+        """Return the most recent execution-finished event at or before ``upto_seq``.
+
+        ``None`` means "the final execution result" (no bound).
+        """
+        result = None
+        for event in self.events:
+            if isinstance(event, ExecutionFinishedEvent) and (
+                upto_seq is None or event.seq <= upto_seq
+            ):
+                result = event
+        return result
+
     def circuit_at(self, step: int | None = None) -> Any | None:
         """Rebuild the circuit as it looked after the first ``step`` gates.
 
@@ -339,7 +382,9 @@ class Timeline(BaseModel):
             return None
 
         def build() -> Any:
-            circuit = QuantumCircuit(self.num_qubits, self.num_clbits, name=self.name or "qisdebug")
+            circuit = QuantumCircuit(
+                self.num_qubits, self.num_clbits, name=self.name or "qisdebug"
+            )
             for event in gates:
                 circuit.append(
                     event.operation,

@@ -19,7 +19,8 @@ class QisDebugConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     max_circuits: int = Field(
-        default=256, ge=1,
+        default=256,
+        ge=1,
         description="Maximum number of circuits tracked before the oldest timelines are evicted.",
     )
     capture_statevectors: bool = Field(
@@ -27,11 +28,14 @@ class QisDebugConfig(BaseModel):
         description="Whether the execution hook inserts statevector snapshots on Aer backends.",
     )
     max_statevector_qubits: int = Field(
-        default=12, ge=1, le=30,
+        default=12,
+        ge=1,
+        le=30,
         description="Circuits wider than this skip statevector capture, since snapshot memory grows as 2**num_qubits.",
     )
     max_snapshots_per_circuit: int = Field(
-        default=256, ge=1,
+        default=256,
+        ge=1,
         description="Snapshot insertion stops after this many snapshots for a single circuit.",
     )
     transpile_snapshots: Literal["all", "changed", "none"] = Field(
@@ -49,7 +53,7 @@ class QisDebugConfig(BaseModel):
         default=True,
         description=(
             "Whether pass manager runs a backend performs internally while executing a circuit "
-            "(e.g. Aer lowering control flow) are recorded as phase=\"backend\" transpile events. "
+            '(e.g. Aer lowering control flow) are recorded as phase="backend" transpile events. '
             "When off they are suppressed with a note event instead."
         ),
     )

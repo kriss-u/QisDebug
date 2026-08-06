@@ -157,9 +157,11 @@ def test_gui_frontend_mark_and_diff_panel(debug, monkeypatch):
 
     assert "(unmarked)" in window.mark_status.text()
     assert window.tabs.indexOf(window._diff_panel) < 0  # noqa: SLF001
+    assert window.show_diff_button.isHidden()
 
     window._mark_a()  # noqa: SLF001
     assert window.tabs.indexOf(window._diff_panel) < 0  # noqa: SLF001
+    assert window.show_diff_button.isHidden()
 
     window._goto(1)  # noqa: SLF001
     window._mark_b()  # noqa: SLF001
@@ -167,8 +169,16 @@ def test_gui_frontend_mark_and_diff_panel(debug, monkeypatch):
     assert "(unmarked)" not in window.mark_status.text()
     assert window.tabs.indexOf(window._diff_panel) >= 0  # noqa: SLF001
     assert "gates:" in window.diff_text.toPlainText()
+    assert not window.show_diff_button.isHidden()
+
+    timeline_tab = window.tabs.widget(0)
+    assert timeline_tab is not None
+    window.tabs.setCurrentWidget(timeline_tab)
+    window._show_diff()  # noqa: SLF001
+    assert window.tabs.currentWidget() is window._diff_panel  # noqa: SLF001
 
     window._clear_marks()  # noqa: SLF001
     assert window.marks == {"a": None, "b": None}
     assert window.tabs.indexOf(window._diff_panel) < 0  # noqa: SLF001
+    assert window.show_diff_button.isHidden()
     del app

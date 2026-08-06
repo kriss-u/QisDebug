@@ -410,12 +410,28 @@ class _TimelineWindow(
         the timeline, not on a separate tab.
         """
         mark_row = QHBoxLayout()
-        mark_row.addWidget(_button("Mark A", self._mark_a))
-        mark_row.addWidget(_button("Mark B", self._mark_b))
-        mark_row.addWidget(_button("Clear marks", self._clear_marks))
+        mark_a_button = _button("Mark A", self._mark_a)
+        mark_a_button.setToolTip(
+            "Pin the event currently shown below as point A of a diff"
+        )
+        mark_row.addWidget(mark_a_button)
+        mark_b_button = _button("Mark B", self._mark_b)
+        mark_b_button.setToolTip(
+            "Pin the event currently shown below as point B of a diff"
+        )
+        mark_row.addWidget(mark_b_button)
+        clear_marks_button = _button("Clear marks", self._clear_marks)
+        clear_marks_button.setToolTip("Remove both A and B marks")
+        mark_row.addWidget(clear_marks_button)
         self.mark_status = QLabel()
         self.mark_status.setTextFormat(Qt.TextFormat.PlainText)
         mark_row.addWidget(self.mark_status)
+        self.show_diff_button = _button("Show diff →", self._show_diff)
+        self.show_diff_button.setToolTip(
+            "Mark A and B pinned -- open the Diff tab to compare them"
+        )
+        self.show_diff_button.setVisible(False)
+        mark_row.addWidget(self.show_diff_button)
         mark_row.addStretch(1)
         layout.addLayout(mark_row)
 
@@ -454,15 +470,23 @@ class _TimelineWindow(
         self.marks = {"a": None, "b": None}
         self._refresh_diff_panel()
 
+    def _show_diff(self) -> None:
+        """Switch straight to the Diff tab, rather than making the user
+        notice and click it themselves once it appears.
+        """
+        self.tabs.setCurrentWidget(self._diff_panel)
+
     def _refresh_diff_panel(self) -> None:
         """Update the mark status label, and show or hide the Diff tab
-        depending on whether both marks are now set.
+        and its "Show diff" shortcut depending on whether both marks are
+        now set.
         """
         self.mark_status.setText(
             f"A: {self._mark_label('a')}   B: {self._mark_label('b')}"
         )
         diff_index = self.tabs.indexOf(self._diff_panel)
         both_marked = self.marks["a"] is not None and self.marks["b"] is not None
+        self.show_diff_button.setVisible(both_marked)
         if both_marked:
             diff_text = _render.render_marks_diff(
                 self.marks["a"], self.marks["b"], self.timelines_by_id

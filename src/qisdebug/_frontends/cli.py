@@ -10,6 +10,7 @@ in any environment.
 from __future__ import annotations
 
 import cmd
+from dataclasses import dataclass
 from typing import ClassVar
 
 from .._events import ExecutionFinishedEvent, TelemetryEvent, Timeline
@@ -17,6 +18,16 @@ from . import _render
 from .base import TimelineFrontend
 
 _MARK_SLOTS = ("a", "b")
+
+
+@dataclass
+class _DiffSelection:
+    """Which circuits (by name/id) to diff on each side, and whether to show
+    the full per-pair diff or the "overall" one-line-per-circuit summary."""
+
+    overall: bool = False
+    circuit_a: str | None = None
+    circuit_b: str | None = None
 
 
 class _TimelineShell(cmd.Cmd):
@@ -36,7 +47,8 @@ class _TimelineShell(cmd.Cmd):
         self.timelines_by_id = timelines_by_id
         self.index = 0
         self.watches: list[_render.WatchTarget] = []
-        self.marks: dict[str, _render.StateMark | None] = {"a": None, "b": None}
+        self.marks: dict[str, _render.StageMark | None] = {"a": None, "b": None}
+        self.diff_selection = _DiffSelection()
 
     def print_frame(self) -> None:
         """Print the currently selected event and its circuit/state/watch/diff panels."""
@@ -59,9 +71,7 @@ class _TimelineShell(cmd.Cmd):
             print()
             print("Watches:")
             print(watch_text)
-        diff_text = _render.render_marks_diff(
-            self.marks["a"], self.marks["b"], self.timelines_by_id
-        )
+        diff_text = self._render_diff()
         if diff_text:
             print()
             print("-- Diff A vs B --")
@@ -164,16 +174,20 @@ class _TimelineShell(cmd.Cmd):
         return False
 
     def do_mark(self, arg: str) -> bool:
-        """mark a | mark b: pin the current event as that side of a diff.
-        Once both are pinned, the diff between them appears automatically."""
+        """mark a | mark b: pin the current event's point in time as that
+        side of a diff. A stage can hold more than one circuit (e.g.
+        construction and transpile can both be mid-flight at once); use
+        "diff <circuit_a> <circuit_b>" to pick which one on each side if a
+        stage is ambiguous. Once both are pinned, the diff between them
+        appears automatically."""
         slot = arg.strip()
         if slot not in _MARK_SLOTS:
             print("usage: mark a | mark b")
             return False
-        source, event = self.merged[self.index]
-        mark = _render.StateMark(circuit_id=source.circuit_id, seq=event.seq)
+        _source, event = self.merged[self.index]
+        mark = _render.StageMark(seq=event.seq)
         self.marks[slot] = mark
-        print(f"marked {slot}: {mark.label(source)}")
+        print(f"marked {slot}: {mark.label(self.timelines_by_id)}")
         self.print_frame()
         return False
 
@@ -182,6 +196,7 @@ class _TimelineShell(cmd.Cmd):
         target = arg.strip()
         if target == "all":
             self.marks = {"a": None, "b": None}
+            self.diff_selection = _DiffSelection()
             print("cleared all marks")
             self.print_frame()
             return False
@@ -189,17 +204,35 @@ class _TimelineShell(cmd.Cmd):
             print("usage: unmark a | unmark b | unmark all")
             return False
         self.marks[target] = None
+        if target == "a":
+            self.diff_selection.circuit_a = None
+        else:
+            self.diff_selection.circuit_b = None
         print(f"unmarked {target}")
         self.print_frame()
         return False
 
-    def do_diff(self, _arg: str) -> bool:
+    def do_diff(self, arg: str) -> bool:
         """d, diff: print the diff between marks A and B on demand, without
         stepping. Also shown automatically after every frame once both are
-        marked."""
-        diff_text = _render.render_marks_diff(
-            self.marks["a"], self.marks["b"], self.timelines_by_id
-        )
+        marked.
+        diff overall: one summary line per circuit common to both stages,
+        instead of the full detail for a single chosen pair.
+        diff <circuit_a> <circuit_b>: pick which circuit to compare on each
+        side (by name) when a stage holds more than one; remembered for
+        later frames until changed or unmarked."""
+        parts = arg.split()
+        if parts == ["overall"]:
+            self.diff_selection.overall = True
+        elif len(parts) == 2:
+            self.diff_selection.circuit_a, self.diff_selection.circuit_b = parts
+            self.diff_selection.overall = False
+        elif parts:
+            print("usage: diff | diff overall | diff <circuit_a> <circuit_b>")
+            return False
+        else:
+            self.diff_selection.overall = False
+        diff_text = self._render_diff()
         if diff_text:
             print("-- Diff A vs B --")
             print(diff_text)
@@ -208,6 +241,23 @@ class _TimelineShell(cmd.Cmd):
         return False
 
     do_d = do_diff
+
+    def _render_diff(self) -> str:
+        """Render the current A/B diff per ``self.diff_selection``."""
+        mark_a, mark_b = self.marks["a"], self.marks["b"]
+        if mark_a is None or mark_b is None:
+            return ""
+        if self.diff_selection.overall:
+            return _render.render_stage_overall_diff(
+                mark_a, mark_b, self.timelines_by_id
+            )
+        return _render.render_stage_diff(
+            mark_a,
+            mark_b,
+            self.timelines_by_id,
+            circuit_a=self.diff_selection.circuit_a,
+            circuit_b=self.diff_selection.circuit_b,
+        )
 
     def _parse_watch_arg(self, arg: str, command: str) -> _render.WatchTarget | None:
         """Parse ``"<kind> <ref>"`` into a watch target on the current circuit."""
@@ -262,7 +312,8 @@ class CLIFrontend(TimelineFrontend):
         print(
             "commands: n(ext)  p(rev)  f(irst)  l(ast)  g(oto) N  "
             "w(atch)/unwatch qubit|clbit|register ...  watches  "
-            "mark a|b  unmark a|b|all  d(iff)  h(elp)  q(uit)"
+            "mark a|b  unmark a|b|all  "
+            "d(iff) [overall | <circuit_a> <circuit_b>]  h(elp)  q(uit)"
         )
 
         timelines_by_id = {t.circuit_id: t for t in timelines}

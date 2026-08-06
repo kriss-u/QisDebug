@@ -28,6 +28,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QHBoxLayout,
     QLabel,
@@ -240,7 +241,7 @@ class _TimelineWindow(
         self.active_labels = view.active_labels
         self.timelines_by_id = view.timelines_by_id
         self.watches: list[_render.WatchTarget] = []
-        self.marks: dict[str, _render.StateMark | None] = {"a": None, "b": None}
+        self.marks: dict[str, _render.StageMark | None] = {"a": None, "b": None}
         self._syncing_slider = False
         self._timers: list[QTimer] = []
         self._key_filter: _PlaybackKeyFilter | None = None
@@ -436,9 +437,37 @@ class _TimelineWindow(
         layout.addLayout(mark_row)
 
     def _build_diff_panel(self) -> QWidget:
-        """Build the "Diff" tab's contents, shown only once both marks are set."""
+        """Build the "Diff" tab's contents, shown only once both marks are set.
+
+        A mark pins a *stage* (a point in time), which can hold more than
+        one circuit -- construction and transpile can both be mid-flight at
+        once -- so the A/B pickers let the user choose which circuit on
+        each side to diff in detail; "Overall" instead summarizes every
+        circuit common to both stages in one line each.
+        """
         panel = QWidget()
         layout = QVBoxLayout(panel)
+
+        selector_row = QHBoxLayout()
+        selector_row.addWidget(QLabel("Circuit A:"))
+        self.diff_circuit_a = QComboBox()
+        self.diff_circuit_a.currentIndexChanged.connect(  # pylint: disable=no-member
+            self._update_diff_text
+        )
+        selector_row.addWidget(self.diff_circuit_a)
+        selector_row.addWidget(QLabel("Circuit B:"))
+        self.diff_circuit_b = QComboBox()
+        self.diff_circuit_b.currentIndexChanged.connect(  # pylint: disable=no-member
+            self._update_diff_text
+        )
+        selector_row.addWidget(self.diff_circuit_b)
+        self.diff_overall_checkbox = QCheckBox("Overall (every common circuit)")
+        self.diff_overall_checkbox.toggled.connect(  # pylint: disable=no-member
+            self._update_diff_text
+        )
+        selector_row.addWidget(self.diff_overall_checkbox)
+        selector_row.addStretch(1)
+        layout.addLayout(selector_row)
 
         self.diff_text = QTextEdit()
         self.diff_text.setReadOnly(True)
@@ -455,15 +484,13 @@ class _TimelineWindow(
         self._set_mark("b")
 
     def _set_mark(self, slot: str) -> None:
-        """Pin the current playback position as ``slot`` of the diff panel."""
+        """Pin the current playback position's stage as ``slot`` of the diff panel."""
         if self.controller is None:
             raise RuntimeError(
                 "internal error: controller accessed before it was built"
             )
-        source, event = self.controller.current
-        self.marks[slot] = _render.StateMark(
-            circuit_id=source.circuit_id, seq=event.seq
-        )
+        _source, event = self.controller.current
+        self.marks[slot] = _render.StageMark(seq=event.seq)
         self._refresh_diff_panel()
 
     def _clear_marks(self) -> None:
@@ -477,9 +504,9 @@ class _TimelineWindow(
         self.tabs.setCurrentWidget(self._diff_panel)
 
     def _refresh_diff_panel(self) -> None:
-        """Update the mark status label, and show or hide the Diff tab
-        and its "Show diff" shortcut depending on whether both marks are
-        now set.
+        """Update the mark status label, the per-stage circuit pickers, and
+        show or hide the Diff tab and its "Show diff" shortcut depending on
+        whether both marks are now set.
         """
         self.mark_status.setText(
             f"A: {self._mark_label('a')}   B: {self._mark_label('b')}"
@@ -487,21 +514,60 @@ class _TimelineWindow(
         diff_index = self.tabs.indexOf(self._diff_panel)
         both_marked = self.marks["a"] is not None and self.marks["b"] is not None
         self.show_diff_button.setVisible(both_marked)
+        self._populate_diff_circuit_choices()
         if both_marked:
-            diff_text = _render.render_marks_diff(
-                self.marks["a"], self.marks["b"], self.timelines_by_id
-            )
-            self.diff_text.setPlainText(diff_text)
+            self._update_diff_text()
             if diff_index < 0:
                 self.tabs.addTab(self._diff_panel, "Diff")
         elif diff_index >= 0:
             self.tabs.removeTab(diff_index)
 
+    def _populate_diff_circuit_choices(self) -> None:
+        """Refill the circuit A/B pickers from each stage's available circuits,
+        keeping the previous selection when it is still one of the options.
+        """
+        for slot, combo in (("a", self.diff_circuit_a), ("b", self.diff_circuit_b)):
+            mark = self.marks[slot]
+            previous = combo.currentText()
+            combo.blockSignals(True)
+            combo.clear()
+            if mark is not None:
+                names = [
+                    timeline.name or timeline.circuit_id
+                    for timeline in mark.circuits_at(self.timelines_by_id)
+                ]
+                combo.addItems(names)
+                if previous in names:
+                    combo.setCurrentText(previous)
+            combo.blockSignals(False)
+
+    def _update_diff_text(self) -> None:
+        """Recompute the diff panel's text from the current marks/picks, without
+        touching the circuit picker contents (see :meth:`_populate_diff_circuit_choices`).
+        """
+        mark_a, mark_b = self.marks["a"], self.marks["b"]
+        if mark_a is None or mark_b is None:
+            self.diff_text.setPlainText("")
+            return
+        if self.diff_overall_checkbox.isChecked():
+            text = _render.render_stage_overall_diff(
+                mark_a, mark_b, self.timelines_by_id
+            )
+        else:
+            text = _render.render_stage_diff(
+                mark_a,
+                mark_b,
+                self.timelines_by_id,
+                circuit_a=self.diff_circuit_a.currentText() or None,
+                circuit_b=self.diff_circuit_b.currentText() or None,
+            )
+        self.diff_text.setPlainText(text)
+
     def _mark_label(self, slot: str) -> str:
         mark = self.marks[slot]
         if mark is None:
             return "(unmarked)"
-        return mark.label(self.timelines_by_id.get(mark.circuit_id))
+        return mark.label(self.timelines_by_id)
 
     # -- Widget <-> PlaybackController glue --------------------------------
 

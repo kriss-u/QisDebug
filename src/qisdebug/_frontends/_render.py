@@ -23,6 +23,7 @@ from .._events import (
     Timeline,
     TranspileFinishedEvent,
     TranspilePassEvent,
+    TranspileStartedEvent,
 )
 from .._analysis import TimelineDiff, diff_timelines
 
@@ -54,12 +55,20 @@ def circuit_tracks(timeline: Timeline) -> tuple[list[dict[str, str]], list[str |
     Also returns, per event, which track was most recently touched (carried
     forward the same way), so callers can highlight/scroll to the circuit
     that is actually relevant to the currently selected event.
+
+    A transpile track is keyed by *run*, not just phase: each
+    :class:`~qisdebug._events.TranspileStartedEvent` for a given phase
+    (``"user"`` or ``"backend"``) starts a fresh run counter, so a second
+    call to ``transpile()`` on the same circuit opens a new ``transpiled#2``
+    section instead of overwriting ``transpiled`` in place -- mirroring how
+    a genuinely different circuit gets its own section under construction.
     """
     current: dict[str, str] = {}
     series: list[dict[str, str]] = []
     active_series: list[str | None] = []
     active_key: str | None = None
     gate_count = 0
+    run_counters: dict[str, int] = {"transpiled": 0, "backend": 0}
     for event in timeline.events:
         if isinstance(event, GateEvent):
             gate_count += 1
@@ -70,15 +79,20 @@ def circuit_tracks(timeline: Timeline) -> tuple[list[dict[str, str]], list[str |
                     active_key = "circuit"
                 except Exception:
                     pass
+        elif isinstance(event, TranspileStartedEvent):
+            base = "backend" if event.phase == "backend" else "transpiled"
+            run_counters[base] += 1
         elif (
             isinstance(event, (TranspilePassEvent, TranspileFinishedEvent))
             and event.circuit is not None
         ):
-            key = (
+            base = (
                 "backend"
                 if getattr(event, "phase", "user") == "backend"
                 else "transpiled"
             )
+            run = max(run_counters.get(base, 0), 1)
+            key = base if run == 1 else f"{base}#{run}"
             try:
                 current[key] = str(event.circuit.draw(output="text", fold=-1))
                 active_key = key
@@ -146,9 +160,12 @@ def _advance_track_cursor(
 
 
 def track_label(combined_key: str) -> str:
-    """Turn a ``circuit_name:track`` key into a display label."""
+    """Turn a ``circuit_name:track`` or ``circuit_name:track#run`` key into a label."""
     prefix, _, key = combined_key.rpartition(":")
-    label = TRACK_LABELS.get(key, key)
+    base, sep, run = key.partition("#")
+    label = TRACK_LABELS.get(base, base)
+    if sep:
+        label = f"{label} #{run}"
     return f"{prefix} — {label}" if prefix else label
 
 
@@ -406,26 +423,41 @@ class WatchTarget:
 
 
 @dataclass(frozen=True)
-class StateMark:
-    """One pinned (circuit, seq) point in a timeline's replay.
+class StageMark:
+    """One pinned point in time across every circuit tracked so far.
 
-    Pinned interactively (mark a/mark b) while stepping through a timeline
-    in any frontend, mirroring :class:`WatchTarget`; not persisted on the
-    :class:`~qisdebug._events.Timeline` itself. Two marks are diffed against
-    each other with :func:`render_marks_diff`.
+    Pinned interactively (mark a/mark b) while stepping through a merged,
+    possibly multi-circuit timeline in any frontend, mirroring
+    :class:`WatchTarget`; not persisted on any :class:`~qisdebug._events.Timeline`
+    itself. A *stage* is deliberately just "as of this global seq", not a
+    single circuit -- construction and transpilation can both be mid-flight
+    at the same point in time, so a stage can hold more than one circuit.
+    Which circuits actually qualify is derived on demand from whichever
+    timelines are loaded (:meth:`circuits_at`) rather than captured at mark
+    time, so it stays correct even if more circuits appear afterwards. Two
+    stages are diffed against each other with :func:`render_stage_diff`
+    (one chosen circuit per side) or :func:`render_stage_overall_diff`
+    (every circuit common to both).
     """
 
-    circuit_id: str
     seq: int
 
-    def label(self, timeline: Timeline | None) -> str:
-        """Return a human-readable label, e.g. ``"bell — seq 12"``."""
-        name = (
+    def circuits_at(self, timelines_by_id: dict[str, Timeline]) -> list[Timeline]:
+        """Every tracked circuit with at least one event at or before this stage."""
+        return [
+            timeline
+            for timeline in timelines_by_id.values()
+            if any(event.seq <= self.seq for event in timeline.events)
+        ]
+
+    def label(self, timelines_by_id: dict[str, Timeline]) -> str:
+        """Return e.g. ``"stage @ seq 12 (bell, bell_t)"``."""
+        names = ", ".join(
             timeline.name or timeline.circuit_id
-            if timeline is not None
-            else self.circuit_id
+            for timeline in self.circuits_at(timelines_by_id)
         )
-        return f"{name} — seq {self.seq}"
+        suffix = f" ({names})" if names else ""
+        return f"stage @ seq {self.seq}{suffix}"
 
 
 def render_state_diff(diff: TimelineDiff) -> str:
@@ -461,20 +493,97 @@ def render_state_diff(diff: TimelineDiff) -> str:
     return "\n".join(lines)
 
 
-def render_marks_diff(
-    mark_a: StateMark | None,
-    mark_b: StateMark | None,
+def _circuit_key(timeline: Timeline) -> str:
+    return timeline.name or timeline.circuit_id
+
+
+def _find_circuit(name_or_id: str, circuits: list[Timeline]) -> Timeline | None:
+    """Look up one of a stage's circuits by its name or circuit id."""
+    for timeline in circuits:
+        if name_or_id in (timeline.circuit_id, timeline.name):
+            return timeline
+    return None
+
+
+def resolve_stage_element(
+    stage: StageMark, timelines_by_id: dict[str, Timeline], choice: str | None
+) -> Timeline | None:
+    """Pick one circuit within a stage: an explicit ``choice`` (name or circuit
+    id) if given, the stage's only circuit if it has exactly one, or ``None``
+    if the pick is ambiguous and the caller must ask (see
+    :meth:`StageMark.circuits_at` for the option list).
+    """
+    circuits = stage.circuits_at(timelines_by_id)
+    if choice is not None:
+        return _find_circuit(choice, circuits)
+    if len(circuits) == 1:
+        return circuits[0]
+    return None
+
+
+def render_stage_diff(
+    stage_a: StageMark,
+    stage_b: StageMark,
     timelines_by_id: dict[str, Timeline],
+    circuit_a: str | None = None,
+    circuit_b: str | None = None,
 ) -> str:
-    """Render the diff panel for two marked states, or ``""`` if not both set."""
-    if mark_a is None or mark_b is None:
-        return ""
-    timeline_a = timelines_by_id.get(mark_a.circuit_id)
-    timeline_b = timelines_by_id.get(mark_b.circuit_id)
-    if timeline_a is None or timeline_b is None:
-        return "(a marked circuit is no longer tracked)"
-    diff = diff_timelines(timeline_a, timeline_b, seq_a=mark_a.seq, seq_b=mark_b.seq)
+    """Render the full per-gate diff between one circuit from each stage.
+
+    ``circuit_a``/``circuit_b`` pick which circuit to use on each side (by
+    name or circuit id) when a stage holds more than one; left unset, a
+    stage with exactly one circuit resolves automatically. Ambiguous or
+    unresolved picks return a message listing that stage's options instead
+    of guessing. For a birds-eye view across every circuit a stage holds,
+    use :func:`render_stage_overall_diff` instead.
+    """
+    resolved_a = resolve_stage_element(stage_a, timelines_by_id, circuit_a)
+    resolved_b = resolve_stage_element(stage_b, timelines_by_id, circuit_b)
+    if resolved_a is None:
+        options = ", ".join(
+            _circuit_key(t) for t in stage_a.circuits_at(timelines_by_id)
+        )
+        return (
+            f"stage A has multiple circuits ({options}) -- "
+            "specify which one, e.g. diff <a> <b>"
+        )
+    if resolved_b is None:
+        options = ", ".join(
+            _circuit_key(t) for t in stage_b.circuits_at(timelines_by_id)
+        )
+        return (
+            f"stage B has multiple circuits ({options}) -- "
+            "specify which one, e.g. diff <a> <b>"
+        )
+    diff = diff_timelines(resolved_a, resolved_b, seq_a=stage_a.seq, seq_b=stage_b.seq)
     return render_state_diff(diff)
+
+
+def render_stage_overall_diff(
+    stage_a: StageMark, stage_b: StageMark, timelines_by_id: dict[str, Timeline]
+) -> str:
+    """Render a one-line summary diff for every circuit common to both stages.
+
+    Unlike :func:`render_stage_diff`, which drills into one chosen pair,
+    this covers every circuit (matched by name/id) present in both stages
+    at once, each reduced to :meth:`~qisdebug._analysis.TimelineDiff.summary_line`.
+    """
+    circuits_a = {
+        _circuit_key(t): t for t in stage_a.circuits_at(timelines_by_id)
+    }
+    circuits_b = {
+        _circuit_key(t): t for t in stage_b.circuits_at(timelines_by_id)
+    }
+    common = sorted(set(circuits_a) & set(circuits_b))
+    if not common:
+        return "(no circuit is present in both stages)"
+    lines = []
+    for name in common:
+        diff = diff_timelines(
+            circuits_a[name], circuits_b[name], seq_a=stage_a.seq, seq_b=stage_b.seq
+        )
+        lines.append(f"{name}: {diff.summary_line()}")
+    return "\n".join(lines)
 
 
 _WatchBitKind = Literal["qubit", "clbit"]

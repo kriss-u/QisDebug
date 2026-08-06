@@ -261,8 +261,9 @@ class _PlaybackKeyFilter(QObject):
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802
         """Consume Ctrl+Left/Ctrl+Right/Ctrl+Space before the focused widget sees them."""
         if isinstance(event, QKeyEvent) and event.type() == QEvent.Type.KeyPress:
-            if event.modifiers() == Qt.KeyboardModifier.ControlModifier and self._handler(
-                event.key()
+            if (
+                event.modifiers() == Qt.KeyboardModifier.ControlModifier
+                and self._handler(event.key())
             ):
                 return True
         return super().eventFilter(watched, event)
@@ -625,7 +626,7 @@ class _TimelineWindow(
         self.breakpoint_scope = QComboBox()
         self.breakpoint_scope.setToolTip(
             "Which circuit this breakpoint watches -- defaults to the one "
-            "currently on screen; '*' means any circuit (gate/seq/anomaly only)"
+            "currently on screen; '(all)' means any circuit (gate/seq/anomaly only)"
         )
         breakpoint_row.addWidget(self.breakpoint_scope)
 
@@ -647,6 +648,10 @@ class _TimelineWindow(
         hit_row.addWidget(_button("Last hit ⏭", self._goto_last_hit))
         hit_row.addStretch(1)
         layout.addLayout(hit_row)
+
+        self.hit_status_label = QLabel("")
+        self.hit_status_label.setWordWrap(True)
+        layout.addWidget(self.hit_status_label)
 
         self._refresh_breakpoint_fields()
 
@@ -1060,6 +1065,7 @@ class _TimelineWindow(
         self._update_diff_text()
 
     _BREAKPOINT_SCOPE_CURRENT = "(current)"
+    _BREAKPOINT_SCOPE_ALL = "(all)"
 
     def _refresh_breakpoint_fields(self, _value: object = None) -> None:
         """Repopulate every dynamic breakpoint field (watch ref, expect
@@ -1097,18 +1103,26 @@ class _TimelineWindow(
         if index >= 0:
             self.bp_expect_qubit.setCurrentIndex(index)
 
-        previous_scope = self.breakpoint_scope.currentText()
+        previous_scope_data = (
+            self.breakpoint_scope.currentData()
+            if self.breakpoint_scope.count()
+            else None
+        )
         self.breakpoint_scope.blockSignals(True)
         self.breakpoint_scope.clear()
-        self.breakpoint_scope.addItems(
-            [
-                self._BREAKPOINT_SCOPE_CURRENT,
-                "*",
-                *_bp.circuit_choices(self.timelines_by_id),
-            ]
-        )
-        index = self.breakpoint_scope.findText(previous_scope)
-        self.breakpoint_scope.setCurrentIndex(index if index >= 0 else 0)
+        self.breakpoint_scope.addItem(self._BREAKPOINT_SCOPE_CURRENT, None)
+        self.breakpoint_scope.addItem(self._BREAKPOINT_SCOPE_ALL, "*")
+        for circuit_id in _bp.circuit_choices(self.timelines_by_id):
+            timeline = self.timelines_by_id.get(circuit_id)
+            name = timeline.name if timeline is not None else None
+            label = f"{name} ({circuit_id})" if name else circuit_id
+            self.breakpoint_scope.addItem(label, circuit_id)
+        new_index = 0
+        for i in range(self.breakpoint_scope.count()):
+            if self.breakpoint_scope.itemData(i) == previous_scope_data:
+                new_index = i
+                break
+        self.breakpoint_scope.setCurrentIndex(new_index)
         self.breakpoint_scope.blockSignals(False)
 
     def _breakpoint_tokens(self, kind: str) -> list[str]:
@@ -1149,8 +1163,8 @@ class _TimelineWindow(
         else:
             severity = self.bp_anomaly_severity.currentText()
             tokens = [severity] if severity else []
-        scope = self.breakpoint_scope.currentText()
-        if scope and scope != self._BREAKPOINT_SCOPE_CURRENT:
+        scope = self.breakpoint_scope.currentData()
+        if scope is not None:
             tokens += ["on", scope]
         return tokens
 
@@ -1184,50 +1198,76 @@ class _TimelineWindow(
             self.breakpoints.remove(handle)
             self.breakpoint_list.takeItem(self.breakpoint_list.row(item))
 
-    def _goto_hit(self, hit: tuple[int, str] | None) -> None:
+    def _goto_hit(self, hit: tuple[int, str] | None, *, none_message: str) -> None:
+        """Jump to a breakpoint hit and report which condition matched (or
+        why there wasn't one), mirroring the CLI's ``_jump_to_hit`` so both
+        frontends give the same feedback when several breakpoints are active.
+        """
         if hit is None:
+            self.hit_status_label.setText(none_message)
             return
-        index, _handle = hit
+        index, handle = hit
+        condition = self.breakpoints.get(handle)
+        assert condition is not None
+        self.hit_status_label.setText(
+            f"hit breakpoint [{handle}] {_bp.describe_condition(condition)}"
+        )
         self._goto(index)
 
     def _goto_first_hit(self) -> None:
         """Jump to the earliest event matching any active breakpoint."""
-        if self.controller is None or not self.breakpoints:
+        if self.controller is None:
+            return
+        if not self.breakpoints:
+            self.hit_status_label.setText("no active breakpoints")
             return
         self._goto_hit(
-            _bp.find_first_hit(self.controller.merged, self.breakpoints.as_dict())
+            _bp.find_first_hit(self.controller.merged, self.breakpoints.as_dict()),
+            none_message="no event matches any breakpoint",
         )
 
     def _goto_prev_hit(self) -> None:
         """Jump to the previous event matching any active breakpoint."""
-        if self.controller is None or not self.breakpoints:
+        if self.controller is None:
+            return
+        if not self.breakpoints:
+            self.hit_status_label.setText("no active breakpoints")
             return
         self._goto_hit(
             _bp.find_prev_hit(
                 self.controller.merged,
                 self.breakpoints.as_dict(),
                 self.controller.index,
-            )
+            ),
+            none_message="no earlier event matches any breakpoint",
         )
 
     def _goto_next_hit(self) -> None:
         """Jump forward to the next event matching any active breakpoint."""
-        if self.controller is None or not self.breakpoints:
+        if self.controller is None:
+            return
+        if not self.breakpoints:
+            self.hit_status_label.setText("no active breakpoints")
             return
         self._goto_hit(
             _bp.find_next_hit(
                 self.controller.merged,
                 self.breakpoints.as_dict(),
                 self.controller.index,
-            )
+            ),
+            none_message="no later event matches any breakpoint",
         )
 
     def _goto_last_hit(self) -> None:
         """Jump to the latest event matching any active breakpoint."""
-        if self.controller is None or not self.breakpoints:
+        if self.controller is None:
+            return
+        if not self.breakpoints:
+            self.hit_status_label.setText("no active breakpoints")
             return
         self._goto_hit(
-            _bp.find_last_hit(self.controller.merged, self.breakpoints.as_dict())
+            _bp.find_last_hit(self.controller.merged, self.breakpoints.as_dict()),
+            none_message="no event matches any breakpoint",
         )
 
     def _update_control_state(self) -> None:

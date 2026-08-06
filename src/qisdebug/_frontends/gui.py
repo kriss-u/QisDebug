@@ -9,6 +9,13 @@ This is why the GUI frontend is behind the ``gui`` extra rather than always
 available like the stdlib-only CLI frontend.
 """
 
+# pylint: disable=too-many-lines
+# One cohesive Qt widget class (_TimelineWindow) implements every timeline
+# feature end to end, per the project's own rule that a presentation feature
+# must land in both frontends -- splitting the file along feature lines would
+# scatter tightly coupled widget/handler pairs across modules for no benefit
+# to readability, only to satisfy a line-count heuristic.
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -31,6 +38,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QPushButton,
@@ -44,6 +52,7 @@ from PySide6.QtWidgets import (
 )
 
 from .._events import TelemetryEvent, Timeline
+from . import _breakpoints as _bp
 from . import _circuit_diff, _render
 from ._display import gui_available
 from ._playback import PlaybackController, PlaybackHooks, Scheduler
@@ -204,7 +213,9 @@ def _diff_text_color(widget: QWidget, kind: Literal["removed", "added"]) -> str:
     background = widget.palette().color(QPalette.ColorRole.Base)
     is_dark = background.lightness() < 128
     if kind == "removed":
-        return DIFF_REMOVED_TEXT_COLOR_DARK if is_dark else DIFF_REMOVED_TEXT_COLOR_LIGHT
+        return (
+            DIFF_REMOVED_TEXT_COLOR_DARK if is_dark else DIFF_REMOVED_TEXT_COLOR_LIGHT
+        )
     return DIFF_ADDED_TEXT_COLOR_DARK if is_dark else DIFF_ADDED_TEXT_COLOR_LIGHT
 
 
@@ -276,6 +287,7 @@ class _TimelineWindow(
         self.timelines_by_id = view.timelines_by_id
         self.watches: list[_render.WatchTarget] = []
         self.marks: dict[str, _render.StageMark | None] = {"a": None, "b": None}
+        self.breakpoints = _bp.FrontendBreakpoints()
         self._syncing_slider = False
         self._timers: list[QTimer] = []
         self._key_filter: _PlaybackKeyFilter | None = None
@@ -304,6 +316,7 @@ class _TimelineWindow(
         layout = self._build_widgets(container)
         self._build_watch_widgets(layout)
         self._build_mark_widgets(layout)
+        self._build_breakpoint_widgets(layout)
         self._diff_panel = self._build_diff_panel()
 
         self.tabs = QTabWidget()
@@ -439,7 +452,7 @@ class _TimelineWindow(
         self.watch_ref.setToolTip(
             "For qubit/clbit/register, gates-touched is reported for every "
             "circuit lineage (construction, transpiled, backend-compiled) "
-            "automatically. Pick \"track\" instead to watch one lineage's "
+            'automatically. Pick "track" instead to watch one lineage\'s '
             "transpile pass stats directly."
         )
         watch_row.addWidget(self.watch_ref)
@@ -495,6 +508,36 @@ class _TimelineWindow(
         mark_row.addWidget(self.show_diff_button)
         mark_row.addStretch(1)
         layout.addLayout(mark_row)
+
+    def _build_breakpoint_widgets(self, layout: QVBoxLayout) -> None:
+        """Lay out the breakpoint condition builder, active-breakpoint list,
+        and "run to next breakpoint" navigation, mirroring the watch row
+        above -- adding/removing entries on the left, what's active on the
+        right, one line each.
+        """
+        breakpoint_row = QHBoxLayout()
+        breakpoint_row.addWidget(QLabel("Break:"))
+        self.breakpoint_kind = QComboBox()
+        self.breakpoint_kind.addItems(["gate", "seq", "watch", "anomaly"])
+        breakpoint_row.addWidget(self.breakpoint_kind)
+        self.breakpoint_args = QLineEdit()
+        self.breakpoint_args.setPlaceholderText(_bp.CONDITION_USAGE)
+        self.breakpoint_args.setToolTip(
+            f"Arguments after the kind, e.g. {_bp.CONDITION_USAGE}"
+        )
+        breakpoint_row.addWidget(self.breakpoint_args, stretch=1)
+        breakpoint_row.addWidget(_button("+ Add breakpoint", self._add_breakpoint))
+        breakpoint_row.addWidget(
+            _button("Remove selected", self._remove_selected_breakpoint)
+        )
+        breakpoint_row.addWidget(
+            _button("Run to next breakpoint →", self._run_to_next_breakpoint)
+        )
+        layout.addLayout(breakpoint_row)
+
+        self.breakpoint_list = QListWidget()
+        self.breakpoint_list.setMaximumHeight(60)
+        layout.addWidget(self.breakpoint_list)
 
     def _build_diff_panel(self) -> QWidget:
         """Build the "Diff" tab's contents, shown only once both marks are set.
@@ -666,25 +709,23 @@ class _TimelineWindow(
             return
         element_a = self.diff_circuit_a.currentData()
         element_b = self.diff_circuit_b.currentData()
-        split_diff = _circuit_diff.render_circuit_split_diff(
-            mark_a, mark_b, self.timelines_by_id,
-            element_a=element_a, element_b=element_b,
+        resolved = _circuit_diff.resolve_split_and_stage_diff(
+            mark_a,
+            mark_b,
+            self.timelines_by_id,
+            element_a=element_a,
+            element_b=element_b,
         )
-        if isinstance(split_diff, str):
-            # Ambiguous/unresolved pick -- render_stage_diff below would
-            # hit the exact same element resolution and repeat this same
-            # message, so report it once instead of twice.
-            self.diff_text.setPlainText(split_diff)
+        if isinstance(resolved, str):
+            # Ambiguous/unresolved pick.
+            self.diff_text.setPlainText(resolved)
             self.diff_text.setExtraSelections([])
             self.watch_diff_text.setPlainText("")
             self.watch_diff_text.setExtraSelections([])
             self._set_diff_pane(self.diff_label_a, self.diff_text_a, "", "")
             self._set_diff_pane(self.diff_label_b, self.diff_text_b, "", "")
             return
-        stage_diff_text = _render.render_stage_diff(
-            mark_a, mark_b, self.timelines_by_id,
-            element_a=element_a, element_b=element_b,
-        )
+        split_diff, stage_diff_text = resolved
         self.diff_text.setPlainText(stage_diff_text)
         self._highlight_diff_lines(self.diff_text, stage_diff_text)
         watch_diff_text = _render.render_watch_diff(
@@ -702,7 +743,9 @@ class _TimelineWindow(
         self._highlight_diff_spans(self.diff_text_b, split_diff.b.spans, "added")
 
     @staticmethod
-    def _set_diff_pane(label: QLabel, text: QTextEdit, label_text: str, body: str) -> None:
+    def _set_diff_pane(
+        label: QLabel, text: QTextEdit, label_text: str, body: str
+    ) -> None:
         label.setText(label_text)
         text.setExtraSelections([])
         text.setPlainText(body)
@@ -890,6 +933,51 @@ class _TimelineWindow(
             self.watch_list.takeItem(self.watch_list.row(item))
         self._render()
         self._update_diff_text()
+
+    def _add_breakpoint(self) -> None:
+        """Parse the condition-builder row and register a breakpoint,
+        scoped to the circuit currently on screen.
+        """
+        if self.controller is None:
+            raise RuntimeError(
+                "internal error: controller accessed before it was built"
+            )
+        source, _event = self.controller.current
+        kind = self.breakpoint_kind.currentText()
+        args = self.breakpoint_args.text().split()
+        try:
+            condition = _bp.parse_condition_args(kind, args, source.circuit_id)
+        except ValueError as exc:
+            self.breakpoint_args.setToolTip(str(exc))
+            return
+        handle = self.breakpoints.add(condition)
+        item = QListWidgetItem(f"[{handle}] {_bp.describe_condition(condition)}")
+        item.setData(Qt.ItemDataRole.UserRole, handle)
+        self.breakpoint_list.addItem(item)
+        self.breakpoint_args.clear()
+
+    def _remove_selected_breakpoint(self) -> None:
+        """Remove whichever breakpoint-list rows are currently selected."""
+        for item in self.breakpoint_list.selectedItems():
+            handle = item.data(Qt.ItemDataRole.UserRole)
+            self.breakpoints.remove(handle)
+            self.breakpoint_list.takeItem(self.breakpoint_list.row(item))
+
+    def _run_to_next_breakpoint(self) -> None:
+        """Jump forward to the next event matching any active breakpoint."""
+        if self.controller is None:
+            raise RuntimeError(
+                "internal error: controller accessed before it was built"
+            )
+        if not self.breakpoints:
+            return
+        hit = _bp.find_next_hit(
+            self.controller.merged, self.breakpoints.as_dict(), self.controller.index
+        )
+        if hit is None:
+            return
+        index, _handle = hit
+        self._goto(index)
 
     def _update_control_state(self) -> None:
         """Disable controls that can't do anything at the current position."""

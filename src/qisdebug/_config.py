@@ -63,3 +63,11 @@ class QisDebugConfig(BaseModel):
             "When off they are suppressed with a note event instead."
         ),
     )
+    max_breakpoints: int = Field(
+        default=32,
+        ge=1,
+        description=(
+            "Maximum number of conditional breakpoints an instance may have "
+            "registered at once."
+        ),
+    )

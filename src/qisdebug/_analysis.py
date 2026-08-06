@@ -26,9 +26,10 @@ import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
 
 from ._events import (
-    EventType,
+    ExecutionFinishedEvent,
     GateEvent,
     StateSnapshotEvent,
+    TelemetryEvent,
     Timeline,
     TranspileFinishedEvent,
     TranspilePassEvent,
@@ -208,6 +209,93 @@ def compare_counts(
     return CountsDiff(matched=not deltas, total_variation_distance=tvd, deltas=deltas)
 
 
+def _snapshot_anomaly(event: StateSnapshotEvent) -> Anomaly | None:
+    """Check one state snapshot for non-finite amplitudes or a non-unit norm."""
+    amplitudes = np.asarray(event.amplitudes(), dtype=complex)
+    if amplitudes.size == 0:
+        return None
+    if not np.all(np.isfinite(amplitudes)):
+        return Anomaly(
+            severity="error",
+            seq=event.seq,
+            message=f"{event.describe()}: non-finite amplitude",
+        )
+    norm = float(np.sum(np.abs(amplitudes) ** 2))
+    if abs(norm - 1.0) > 1e-6:
+        return Anomaly(
+            severity="error",
+            seq=event.seq,
+            message=f"{event.describe()}: statevector norm is {norm:.6f}, expected 1.0",
+        )
+    return None
+
+
+def _execution_finished_anomaly(event: ExecutionFinishedEvent) -> Anomaly | None:
+    """Check one execution result for failure or an empty counts dict."""
+    if event.success is False:
+        return Anomaly(
+            severity="error",
+            seq=event.seq,
+            message=f"{event.describe()}: execution failed",
+        )
+    if event.counts is not None and not event.counts:
+        return Anomaly(
+            severity="warning",
+            seq=event.seq,
+            message=f"{event.describe()}: empty counts",
+        )
+    return None
+
+
+def _transpile_depth_anomaly(
+    event: TranspileStartedEvent | TranspilePassEvent | TranspileFinishedEvent,
+    prev_depth: int | None,
+) -> Anomaly | None:
+    """Check one transpile-track event for a depth blow-up vs. ``prev_depth``."""
+    depth = event.depth
+    if (
+        depth is not None
+        and prev_depth is not None
+        and depth > prev_depth * 3
+        and depth - prev_depth > 8
+    ):
+        return Anomaly(
+            severity="warning",
+            seq=event.seq,
+            message=f"{event.describe()}: depth jumped from {prev_depth} to {depth}",
+        )
+    return None
+
+
+def anomaly_for_event(
+    event: TelemetryEvent, *, prev_depth: int | None
+) -> tuple[Anomaly | None, int | None]:
+    """Check a single event in isolation, returning the finding (if any) and
+    the ``prev_depth`` to pass in for the *next* transpile-track event.
+
+    This is the incremental primitive :func:`find_anomalies` loops over to
+    scan a whole timeline; it also lets a caller that only wants to react to
+    *new* events -- the conditional-breakpoint live-pause path in
+    :mod:`qisdebug._store`, via :mod:`qisdebug._breakpoints` -- check each one
+    in O(1) as it's recorded instead of rescanning the whole timeline per
+    event, which would be O(n^2) over a long-running script. ``prev_depth``
+    only matters for transpile-track events (:class:`TranspileStartedEvent`,
+    :class:`TranspilePassEvent`, :class:`TranspileFinishedEvent`); pass
+    ``None`` through unchanged for every other event type.
+    """
+    if isinstance(event, StateSnapshotEvent):
+        return _snapshot_anomaly(event), prev_depth
+    if isinstance(event, ExecutionFinishedEvent):
+        return _execution_finished_anomaly(event), prev_depth
+    if isinstance(
+        event, (TranspileStartedEvent, TranspilePassEvent, TranspileFinishedEvent)
+    ):
+        depth = event.depth
+        anomaly = _transpile_depth_anomaly(event, prev_depth)
+        return anomaly, (depth if depth is not None else prev_depth)
+    return None, prev_depth
+
+
 def find_anomalies(timeline: Timeline) -> list[Anomaly]:
     """Scan a timeline for heuristic signs of a semantic or numerical bug.
 
@@ -217,68 +305,59 @@ def find_anomalies(timeline: Timeline) -> list[Anomaly]:
     transpiler pass that blew up circuit depth. This is a fixed set of
     cheap, general checks, not a substitute for comparing against a
     known-expected state or distribution -- use :func:`compare_statevector`
-    or :func:`compare_counts` for that.
+    or :func:`compare_counts` for that. Built on :func:`anomaly_for_event`,
+    checked one event at a time in timeline order so this and the
+    conditional-breakpoint "anomaly" condition never disagree about what
+    counts as one.
     """
     anomalies: list[Anomaly] = []
-    for event in timeline.snapshots:
-        amplitudes = np.asarray(event.amplitudes(), dtype=complex)
-        if amplitudes.size == 0:
-            continue
-        if not np.all(np.isfinite(amplitudes)):
-            anomalies.append(
-                Anomaly(
-                    severity="error",
-                    seq=event.seq,
-                    message=f"{event.describe()}: non-finite amplitude",
-                )
-            )
-            continue
-        norm = float(np.sum(np.abs(amplitudes) ** 2))
-        if abs(norm - 1.0) > 1e-6:
-            anomalies.append(
-                Anomaly(
-                    severity="error",
-                    seq=event.seq,
-                    message=f"{event.describe()}: statevector norm is {norm:.6f}, expected 1.0",
-                )
-            )
-    for event in timeline.filter(EventType.EXECUTION_FINISHED):
-        if event.success is False:
-            anomalies.append(
-                Anomaly(
-                    severity="error",
-                    seq=event.seq,
-                    message=f"{event.describe()}: execution failed",
-                )
-            )
-        elif event.counts is not None and not event.counts:
-            anomalies.append(
-                Anomaly(
-                    severity="warning",
-                    seq=event.seq,
-                    message=f"{event.describe()}: empty counts",
-                )
-            )
     prev_depth: int | None = None
-    for event in timeline.transpile_events:
-        depth = getattr(event, "depth", None)
-        depth_spiked = (
-            depth is not None
-            and prev_depth is not None
-            and depth > prev_depth * 3
-            and depth - prev_depth > 8
-        )
-        if depth_spiked:
-            anomalies.append(
-                Anomaly(
-                    severity="warning",
-                    seq=event.seq,
-                    message=f"{event.describe()}: depth jumped from {prev_depth} to {depth}",
-                )
-            )
-        if depth is not None:
-            prev_depth = depth
+    for event in timeline.events:
+        anomaly, prev_depth = anomaly_for_event(event, prev_depth=prev_depth)
+        if anomaly is not None:
+            anomalies.append(anomaly)
     return sorted(anomalies, key=lambda a: a.seq)
+
+
+def qubit_probability_one(amplitudes: Sequence[complex], qubit: int) -> float:
+    """Return the marginal probability of measuring ``qubit`` as 1.
+
+    Shared by the watch panel (:mod:`qisdebug._frontends._render`) and the
+    conditional-breakpoint watch-threshold condition
+    (:mod:`qisdebug._breakpoints`) so the two never compute this differently.
+    """
+    return sum(
+        abs(amp) ** 2 for basis, amp in enumerate(amplitudes) if (basis >> qubit) & 1
+    )
+
+
+def clbit_value(bitstring: str, clbit: int) -> str:
+    """Extract one classical bit's value from a Qiskit counts key.
+
+    Counts keys may contain register-separating spaces (e.g. ``"01 10"`` for
+    two classical registers); strip them so indices line up with the flat
+    clbit numbering used elsewhere, then index from the right since bit 0 is
+    the rightmost character.
+    """
+    flat = bitstring.replace(" ", "")
+    if clbit >= len(flat):
+        return "?"
+    return flat[len(flat) - 1 - clbit]
+
+
+def clbit_ones_total(counts: Mapping[str, int], clbit: int) -> tuple[int, int] | None:
+    """Return ``(ones, total)`` shots for one watched clbit, or ``None`` if empty.
+
+    Shared by the watch panel and the conditional-breakpoint watch-threshold
+    condition, mirroring :func:`qubit_probability_one`.
+    """
+    total = sum(counts.values())
+    if not total:
+        return None
+    ones = sum(
+        n for bitstring, n in counts.items() if clbit_value(bitstring, clbit) == "1"
+    )
+    return ones, total
 
 
 def circuit_object_tracks(

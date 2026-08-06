@@ -22,6 +22,14 @@ original method this instance was using. Multiple independently scoped
 
 from __future__ import annotations
 
+from ._breakpoints import (
+    AnomalyCondition,
+    BreakpointCondition,
+    BreakpointHit,
+    GateMatchCondition,
+    SeqThresholdCondition,
+    WatchThresholdCondition,
+)
 from ._config import QisDebugConfig
 from ._debug import ActivationReport, QisDebug
 from ._errors import QisDebugError, TimelineNotFoundError
@@ -44,15 +52,20 @@ __version__ = "0.1.0"
 
 __all__ = [
     "ActivationReport",
+    "AnomalyCondition",
+    "BreakpointCondition",
+    "BreakpointHit",
     "EventType",
     "ExecutionFinishedEvent",
     "ExecutionSubmittedEvent",
     "GateEvent",
+    "GateMatchCondition",
     "NoteEvent",
     "PropertySetChanges",
     "QisDebug",
     "QisDebugConfig",
     "QisDebugError",
+    "SeqThresholdCondition",
     "StateSnapshotEvent",
     "TelemetryEvent",
     "Timeline",
@@ -60,4 +73,5 @@ __all__ = [
     "TranspileFinishedEvent",
     "TranspilePassEvent",
     "TranspileStartedEvent",
+    "WatchThresholdCondition",
 ]

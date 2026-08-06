@@ -115,7 +115,9 @@ def _run_wrapper(original: Callable) -> Callable:
         resolved = [_resolve_triples(listeners, c) for c in items]
         _record_started_events(items, resolved, type(self).__name__)
         if len(items) == 1 and resolved[0]:
-            fallback = fallback._replace(callback=_chained_callback(callback, resolved[0]))
+            fallback = fallback._replace(
+                callback=_chained_callback(callback, resolved[0])
+            )
 
         result, duration = _run_instrumented(fallback, listeners)
 

@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 
 from . import _dispatcher
 from ._analysis import TimelineDiff, diff_timelines
+from ._breakpoints import BreakpointCondition, BreakpointHit
 from ._compat import logger, qiskit_version
 from ._config import QisDebugConfig
 from ._errors import TimelineNotFoundError
@@ -252,6 +253,51 @@ class QisDebug:
     def clear(self) -> None:
         """Drop all recorded telemetry without touching active patches."""
         self.store.clear()
+
+    def add_breakpoint(self, condition: BreakpointCondition) -> str:
+        """Register a conditional breakpoint, returning a handle for :meth:`remove_breakpoint`.
+
+        ``condition`` is one of a closed set of predicate kinds (see
+        :mod:`qisdebug._breakpoints`: a gate name/qubit match, a ``seq``
+        threshold, a watched qubit/clbit/register's numeric value crossing a
+        threshold, or the next event :func:`~qisdebug._analysis.find_anomalies`
+        would flag) -- never arbitrary code. Once registered, any thread that
+        triggers a matching event (via the construction, execution, or
+        transpile hook) blocks at that exact point until :meth:`resume` or
+        :meth:`~qisdebug.QisDebug.remove_breakpoint` releases it; a caller
+        running the instrumented code on its own thread observes the pause
+        with :meth:`wait_for_breakpoint`. Raises ``ValueError`` past
+        ``config.max_breakpoints``.
+        """
+        if len(self.store.breakpoints.list()) >= self.config.max_breakpoints:
+            raise ValueError(
+                f"already at max_breakpoints ({self.config.max_breakpoints}); "
+                "remove one first or raise the limit via configure()"
+            )
+        return self.store.breakpoints.add(condition)
+
+    def remove_breakpoint(self, handle: str) -> None:
+        """Unregister a breakpoint by the handle :meth:`add_breakpoint` returned."""
+        self.store.breakpoints.remove(handle)
+
+    def list_breakpoints(self) -> list[tuple[str, BreakpointCondition]]:
+        """Return every active ``(handle, condition)`` pair."""
+        return self.store.breakpoints.list()
+
+    def wait_for_breakpoint(self, timeout: float | None = None) -> BreakpointHit | None:
+        """Block the calling thread until a breakpoint hits, or ``timeout`` elapses.
+
+        For a caller running the target script on its own thread (e.g. a
+        background worker), so it can be notified without polling. Returns
+        ``None`` on timeout. The thread that actually hit the breakpoint stays
+        paused until :meth:`resume` is called, regardless of which thread
+        calls this.
+        """
+        return self.store.breakpoints.wait_for_hit(timeout=timeout)
+
+    def resume(self) -> None:
+        """Release the thread currently paused at a breakpoint hit. No-op if none is paused."""
+        self.store.breakpoints.resume()
 
     def configure(self, **overrides: object) -> QisDebugConfig:
         """Update this instance's configuration and return the resulting config.

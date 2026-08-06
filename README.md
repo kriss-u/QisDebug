@@ -134,10 +134,10 @@ diff.depth_a, diff.depth_b              # depth/size deltas from each side's las
 ```
 
 `a`/`b` take the same circuit/name/`Timeline` shapes as `debug.get()`;
-`seq_a`/`seq_b` bound either side to "as of that event's `seq`" instead of
-the whole timeline, so the same circuit can be diffed against an earlier
-moment of its own replay. The interactive frontends (below) expose the same
-comparison as "Mark A"/"Mark B" over the live timeline view.
+`seq_a`/`seq_b` bound either side to "as of that event's `seq`" instead of the
+whole timeline, so the same circuit can be diffed against an earlier moment of
+its own replay. The interactive frontends (below) expose the same comparison as
+"Mark A"/"Mark B" over the live timeline view.
 
 ### Configuration
 
@@ -171,10 +171,10 @@ the instrumentation and the visualizer can evolve independently.
 
 Pin the event currently on screen as one side of a diff — "Mark A"/"Mark B" in
 the GUI, `mark a`/`mark b` in the CLI — and once both are pinned, the diff
-between them (the same comparison `debug.diff()` returns) renders
-automatically: a per-gate diff, a side-by-side circuit-drawing split view, a
-summary across every element common to both marked points, and a diff of any
-currently active watch.
+between them (the same comparison `debug.diff()` returns) renders automatically:
+a per-gate diff, a side-by-side circuit-drawing split view, a summary across
+every element common to both marked points, and a diff of any currently active
+watch.
 
 ## Debugging with an AI agent (MCP)
 
@@ -207,10 +207,11 @@ and does the arithmetic:
   `read_watches` reports their gate history, marginal P(1), and Bloch vector as
   of any point in the sequence — the same watch feature the GUI and CLI expose
   interactively.
-- **Compare two points in time** — `diff_timelines(circuit_id_a, circuit_id_b,
-  seq_a=..., seq_b=...)` reports the same gate-alignment plus
-  statevector/counts/depth diff as `debug.diff()`, for two different circuits
-  or two moments of the same circuit's replay.
+- **Compare two points in time** —
+  `diff_timelines(circuit_id_a, circuit_id_b,
+  seq_a=..., seq_b=...)` reports
+  the same gate-alignment plus statevector/counts/depth diff as `debug.diff()`,
+  for two different circuits or two moments of the same circuit's replay.
 - **Check an expectation** — the agent supplies the state or distribution it
   believes the program should produce; `compare_statevector` and
   `compare_counts` report fidelity, total variation distance, and exactly which
@@ -223,17 +224,79 @@ and does the arithmetic:
 The server is a thin protocol wrapper: every tool delegates to the same store,
 rendering, and comparison code the GUI and CLI use.
 
+## Conditional breakpoints
+
+Everything above is passive: it tells you what already happened. Conditional
+breakpoints pause a **live** run the instant a condition matches, so you can
+inspect state mid-execution instead of only replaying a finished timeline.
+See [`examples/breakpoints.py`](examples/breakpoints.py) for a runnable,
+end-to-end example (`python examples/breakpoints.py`).
+
+A condition is one of a small closed set of kinds — never arbitrary code, so
+there's no `eval`-style injection surface:
+
+| Kind      | Matches when...                                                           |
+| --------- | ------------------------------------------------------------------------- |
+| `gate`    | A named gate (optionally on specific qubits) is added to a circuit        |
+| `seq`     | Any event reaches a given sequence number                                 |
+| `watch`   | A watched qubit/clbit/register's value (P(1)) crosses a numeric threshold |
+| `anomaly` | The next event `find_anomalies` would flag, at or above a chosen severity |
+
+### Python API
+
+```python
+import qisdebug
+from qisdebug import GateMatchCondition, WatchThresholdCondition
+
+debug = qisdebug.QisDebug()
+debug.start()
+
+handle = debug.add_breakpoint(GateMatchCondition(gate="cx"))
+# or: debug.add_breakpoint(WatchThresholdCondition(
+#         circuit_id=circuit_id, watch_kind="qubit", ref="0",
+#         comparator="gt", threshold=0.9))
+
+# On the thread building/running the circuit, execution blocks the instant
+# the breakpoint matches. From another thread (or the one driving the run):
+hit = debug.wait_for_breakpoint(timeout=10)   # -> BreakpointHit | None
+print(hit.condition, hit.event_summary)
+debug.resume()                                 # release the paused thread
+
+debug.remove_breakpoint(handle)
+debug.list_breakpoints()
+```
+
+### MCP (agent-driven stepping)
+
+Live pausing needs the script to run in the background, since a pause blocks the
+thread — `run_script(..., background=True)` returns immediately with a `run_id`
+instead of waiting for the script to finish:
+
+```text
+add_breakpoint({"kind": "gate", "gate": "cx"})
+run_script("script.py", background=True)      # -> {"run_id": "..."}
+poll_run(run_id)                                # -> running | paused | finished | error | stopped
+# when paused, poll_run's response includes which condition hit and on what event
+resume_run(run_id)
+stop_run(run_id)                                # best-effort; guaranteed only while paused
+```
+
+### Interactive frontends
+
+Breakpoints also work as a navigation aid over an **already-captured** timeline
+— "jump to next hit" walks recorded events instead of blocking anything live:
+
+- **CLI**: `break gate cx`, `break seq 40`, `break watch qubit 0 gt 0.9`,
+  `break anomaly warning`; `breakpoints` lists them, `unbreak <handle>` removes
+  one, and `continue` jumps to the next matching event.
+- **GUI**: a condition-builder row (kind dropdown + argument field, same syntax
+  as the CLI) next to the watch row, a list of active breakpoints, and a "Run to
+  next breakpoint →" button.
+
 ## Roadmap
 
-Planned next, on top of what's above — see `CLAUDE.md` for the full design of
-each, including which internal modules they touch:
+Planned next, on top of what's above — see `CLAUDE.md` for the full design:
 
-- **Conditional breakpoints** — pause a _live_ run when a gate, watch threshold,
-  or anomaly condition is hit, not just inspect after the fact.
-  `debug.add_breakpoint(...)`/`debug.wait_for_breakpoint()` for the Python API;
-  a backgrounded `run_script` plus `poll_run`/`resume_run`/`stop_run` for MCP,
-  so an agent can step a script instead of only replaying it; and a "jump to
-  next hit" command in both the GUI and CLI over already-captured timelines.
 - **Visual polish** — a proper stylesheet for the GUI (buttons, spacing, type
   scale) and consistent prompt/column formatting for the CLI; both are currently
   unstyled toolkit defaults.

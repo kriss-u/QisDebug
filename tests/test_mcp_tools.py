@@ -11,10 +11,12 @@ module-level instance scoping the whole server process, with no public
 accessor -- these tests have to reach into them directly to reset state
 between runs and to assert on session lifecycle.
 """
+
 # pylint: disable=protected-access
 
 import json
 import textwrap
+import time
 
 import pytest
 from pydantic import ValidationError
@@ -29,15 +31,50 @@ def clean_mcp_debug():
     one real MCP server process; reset all of it around each test since there
     is no per-test fixture instance to isolate them for us.
     """
-    tools._debug.end()
-    tools._debug.clear()
-    tools._debug.config = QisDebugConfig()
-    tools._watches.clear()
+
+    def _reset():
+        tools._debug.end()
+        tools._debug.clear()
+        tools._debug.config = QisDebugConfig()
+        tools._watches.clear()
+        tools._runs.clear()
+        for handle, _condition in list(tools._debug.list_breakpoints()):
+            tools._debug.remove_breakpoint(handle)
+        tools._debug.store.breakpoints.resume()
+
+    _reset()
     yield
-    tools._debug.end()
-    tools._debug.clear()
-    tools._debug.config = QisDebugConfig()
-    tools._watches.clear()
+    _reset()
+
+
+def _wait_until(predicate, timeout=5.0):
+    """Poll ``predicate`` until it's truthy or ``timeout`` elapses; returns
+    the last (possibly falsy) result, matching background-run tests'
+    "wait for the worker thread to reach some state" needs without sleeping
+    a fixed, possibly-flaky duration.
+    """
+    deadline = time.monotonic() + timeout
+    result = predicate()
+    while not result and time.monotonic() < deadline:
+        time.sleep(0.01)
+        result = predicate()
+    return result
+
+
+def _wait_for_status(run_id, status):
+    """Poll ``poll_run`` until it reports ``status``; returns the last response."""
+    return _wait_until(
+        lambda: (lambda s: s if s["status"] == status else None)(tools.poll_run(run_id))
+    )
+
+
+def _wait_while_paused(run_id):
+    """Poll ``poll_run`` until it stops reporting "paused"; returns the last response."""
+    return _wait_until(
+        lambda: (lambda s: s if s["status"] != "paused" else None)(
+            tools.poll_run(run_id)
+        )
+    )
 
 
 def _write_bell_script(tmp_path):
@@ -454,3 +491,77 @@ def test_set_configuration_rejects_bad_values():
     with pytest.raises(ValidationError):
         tools.set_configuration({"max_statevector_qubits": -1})
     assert tools.get_configuration()["max_statevector_qubits"] == 12
+
+
+def test_add_list_remove_breakpoint():
+    """add_breakpoint/list_breakpoints/remove_breakpoint round-trip a condition."""
+    result = tools.add_breakpoint({"kind": "gate", "gate": "cx"})
+    handle = result["handle"]
+    listed = tools.list_breakpoints()
+    assert len(listed) == 1
+    assert listed[0]["handle"] == handle
+    assert listed[0]["condition"]["gate"] == "cx"
+    assert tools.remove_breakpoint(handle) == f"removed breakpoint {handle}"
+    assert not tools.list_breakpoints()
+
+
+def test_add_breakpoint_rejects_invalid_condition():
+    """An unknown/malformed condition shape raises instead of silently registering."""
+    with pytest.raises(ValidationError):
+        tools.add_breakpoint({"kind": "not-a-real-kind"})
+
+
+def test_background_run_hits_breakpoint_polls_paused_then_resumes(tmp_path):
+    """A gate breakpoint pauses a background run; poll_run reports the hit;
+    resume_run lets it finish and report the usual timeline/anomaly payload.
+    """
+    tools.add_breakpoint({"kind": "gate", "gate": "cx"})
+    started = tools.run_script(_write_bell_script(tmp_path), background=True)
+    run_id = started["run_id"]
+
+    status = _wait_for_status(run_id, "paused")
+    assert status is not None
+    assert status["hit"]["condition"]["gate"] == "cx"
+    assert status["hit"]["event_summary"].startswith("cx")
+
+    tools.resume_run(run_id)
+    status = _wait_for_status(run_id, "finished")
+    assert status is not None
+    bell = next(t for t in status["timelines"] if t["name"] == "bell")
+    assert bell["event_count"] > 0
+
+
+def test_background_run_stop_while_paused_reports_stopped(tmp_path):
+    """stop_run on a paused run cancels it cleanly, reported as status "stopped"."""
+    tools.add_breakpoint({"kind": "gate", "gate": "cx"})
+    started = tools.run_script(_write_bell_script(tmp_path), background=True)
+    run_id = started["run_id"]
+
+    assert _wait_for_status(run_id, "paused") is not None
+    tools.stop_run(run_id)
+    status = _wait_for_status(run_id, "stopped")
+    assert status is not None
+
+
+def test_background_run_rejects_second_concurrent_run(tmp_path):
+    """Only one background run may be in flight at a time on the shared session."""
+    tools.add_breakpoint({"kind": "gate", "gate": "cx"})
+    started = tools.run_script(_write_bell_script(tmp_path), background=True)
+    run_id = started["run_id"]
+    assert _wait_for_status(run_id, "paused") is not None
+
+    with pytest.raises(ValueError, match="already in flight"):
+        tools.run_script(_write_bell_script(tmp_path), background=True)
+
+    tools.resume_run(run_id)
+    _wait_while_paused(run_id)
+
+
+def test_poll_run_unknown_run_id_raises():
+    """poll_run/resume_run/stop_run on a never-registered run_id raise, not silently no-op."""
+    with pytest.raises(ValueError, match="no background run"):
+        tools.poll_run("does-not-exist")
+    with pytest.raises(ValueError, match="no background run"):
+        tools.resume_run("does-not-exist")
+    with pytest.raises(ValueError, match="no background run"):
+        tools.stop_run("does-not-exist")

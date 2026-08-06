@@ -194,8 +194,7 @@ def test_render_watch_diff_skips_unknown_circuit_ids(debug):
     timeline = _traced_bell_with_registers(debug)
     target = _render.WatchTarget(circuit_id="does-not-exist", kind="qubit", ref="0")
     assert (
-        _render.render_watch_diff([target], {timeline.circuit_id: timeline}, 0, 0)
-        == ""
+        _render.render_watch_diff([target], {timeline.circuit_id: timeline}, 0, 0) == ""
     )
 
 

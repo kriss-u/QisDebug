@@ -58,12 +58,23 @@ server = MCPServer(
         "where two versions of a circuit diverge. "
         "(5) save_timeline persists the evidence to a JSON file. "
         "set_configuration tunes capture (e.g. max_statevector_qubits, "
-        "transpile_snapshots='all') before a run."
+        "transpile_snapshots='all') before a run. "
+        "(6) add_breakpoint pauses a live run the instant a condition matches -- a gate "
+        "name/qubit match, a seq threshold, a watched qubit/clbit/register's value crossing "
+        "a numeric threshold, or the next event find_anomalies would flag. Live pausing "
+        "needs run_script(background=True), which returns a run_id immediately instead of "
+        "waiting for the script to finish; poll_run(run_id) reports running/paused/finished "
+        "and, when paused, which breakpoint hit and on what event; resume_run continues "
+        "execution; stop_run cancels (best-effort: only guaranteed to work while paused, "
+        "since a live Python thread can't be forcibly killed while it's actually running)."
     ),
 )
 
 for _tool in (
     tools.run_script,
+    tools.poll_run,
+    tools.resume_run,
+    tools.stop_run,
     tools.list_timelines,
     tools.get_timeline_summary,
     tools.get_timeline,
@@ -75,6 +86,9 @@ for _tool in (
     tools.remove_watch,
     tools.list_watches,
     tools.read_watches,
+    tools.add_breakpoint,
+    tools.remove_breakpoint,
+    tools.list_breakpoints,
     tools.compare_statevector,
     tools.compare_counts,
     tools.diff_timelines,

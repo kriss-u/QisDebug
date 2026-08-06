@@ -28,8 +28,10 @@ from .._analysis import (
     DiffPoint,
     TimelineDiff,
     circuit_object_tracks,
+    clbit_ones_total,
     diff_timeline_points,
     gate_events_for_track,
+    qubit_probability_one,
     resolve_track_circuit,
     track_keys_upto,
     transpile_pass_events_for_track,
@@ -539,9 +541,7 @@ def resolve_stage_element(
         candidates = [choice]
     else:
         candidates = [
-            element
-            for element in elements
-            if choice in element.split(":", 1)
+            element for element in elements if choice in element.split(":", 1)
         ]
     if len(candidates) != 1:
         return None
@@ -695,7 +695,9 @@ def render_watch(target: WatchTarget, timeline: Timeline, upto_seq: int) -> str:
             for event in track_gates
             if index_set & set(event.qubits if bit_kind == "qubit" else event.clbits)
         ]
-        lines.append(f"  [{track_label(f':{track_key}')}] gates touched: {len(touches)}")
+        lines.append(
+            f"  [{track_label(f':{track_key}')}] gates touched: {len(touches)}"
+        )
         for event in touches[-5:]:
             lines.append(f"    seq {event.seq}: {event.describe()}")
     if bit_kind == "qubit":
@@ -829,7 +831,7 @@ def _qubit_watch_rows(
     num_qubits = snapshot.num_qubits or int(np.log2(len(amplitudes)))
     rows = []
     for qubit in qubits:
-        probability_one = _qubit_probability_one(amplitudes, qubit)
+        probability_one = qubit_probability_one(amplitudes, qubit)
         bloch = tuple(
             _clean(v) for v in _reduced_bloch_vector(amplitudes, qubit, num_qubits)
         )
@@ -840,13 +842,6 @@ def _qubit_watch_rows(
 def _clean(value: float, epsilon: float = 1e-9) -> float:
     """Snap near-zero floats to exactly 0.0 so formatting never prints ``-0.000``."""
     return 0.0 if abs(value) < epsilon else value
-
-
-def _qubit_probability_one(amplitudes: list[complex], qubit: int) -> float:
-    """Return the marginal probability of measuring ``qubit`` as 1."""
-    return sum(
-        abs(amp) ** 2 for basis, amp in enumerate(amplitudes) if (basis >> qubit) & 1
-    )
 
 
 def _reduced_bloch_vector(
@@ -884,29 +879,13 @@ def _clbit_watch_rows(
     key/value table rows below so the two never drift apart.
     """
     counts = event.counts or {}
-    total = sum(counts.values())
-    if not total:
+    if not sum(counts.values()):
         return None
     rows = []
     for clbit in clbits:
-        ones = sum(
-            n
-            for bitstring, n in counts.items()
-            if _clbit_value(bitstring, clbit) == "1"
-        )
+        result = clbit_ones_total(counts, clbit)
+        if result is None:
+            continue
+        ones, total = result
         rows.append((clbit, ones, total))
     return rows
-
-
-def _clbit_value(bitstring: str, clbit: int) -> str:
-    """Extract one classical bit's value from a Qiskit counts key.
-
-    Counts keys may contain register-separating spaces (e.g. ``"01 10"`` for
-    two classical registers); strip them so indices line up with the flat
-    clbit numbering used elsewhere, then index from the right since bit 0 is
-    the rightmost character.
-    """
-    flat = bitstring.replace(" ", "")
-    if clbit >= len(flat):
-        return "?"
-    return flat[len(flat) - 1 - clbit]

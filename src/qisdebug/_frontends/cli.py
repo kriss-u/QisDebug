@@ -14,7 +14,9 @@ import sys
 from dataclasses import dataclass
 from typing import ClassVar
 
+from .._breakpoints import BreakpointCondition
 from .._events import ExecutionFinishedEvent, TelemetryEvent, Timeline
+from . import _breakpoints as _bp
 from . import _circuit_diff, _render
 from .base import TimelineFrontend
 
@@ -39,7 +41,7 @@ def _highlight_row(row: str, column_ranges: list[tuple[int, int]], color: str) -
         if start >= len(row):
             break
         pieces.append(row[cursor:start])
-        pieces.append(color + row[start:min(end, len(row))] + _DIFF_HIGHLIGHT_OFF)
+        pieces.append(color + row[start : min(end, len(row))] + _DIFF_HIGHLIGHT_OFF)
         cursor = end
     pieces.append(row[cursor:])
     return "".join(pieces)
@@ -104,8 +106,14 @@ class _DiffSelection:
     element_b: str | None = None
 
 
-class _TimelineShell(cmd.Cmd):
-    """Line-oriented REPL for stepping through a merged timeline."""
+class _TimelineShell(cmd.Cmd):  # pylint: disable=too-many-instance-attributes
+    """Line-oriented REPL for stepping through a merged timeline.
+
+    One attribute per independent interactive feature (watches, marks/diff
+    selection, breakpoints) plus the underlying merged-timeline state --
+    the same shape as the GUI's ``_TimelineWindow``, which carries the same
+    disable for the same reason.
+    """
 
     prompt = "qisdebug> "
 
@@ -123,6 +131,7 @@ class _TimelineShell(cmd.Cmd):
         self.watches: list[_render.WatchTarget] = []
         self.marks: dict[str, _render.StageMark | None] = {"a": None, "b": None}
         self.diff_selection = _DiffSelection()
+        self.breakpoints = _bp.FrontendBreakpoints()
 
     def print_frame(self) -> None:
         """Print the currently selected event and its circuit/state/watch/diff panels."""
@@ -374,26 +383,102 @@ class _TimelineShell(cmd.Cmd):
             return "\n\n".join(sections)
         element_a = self.diff_selection.element_a
         element_b = self.diff_selection.element_b
-        split_diff = _circuit_diff.render_circuit_split_diff(
-            mark_a, mark_b, self.timelines_by_id,
-            element_a=element_a, element_b=element_b,
+        # Identical to the GUI's call below -- both frontends resolving the
+        # same (mark_a, mark_b, element_a, element_b) pick through the one
+        # shared function is the intended fix for what used to be duplicated
+        # *logic*, not a second instance of the duplication itself.
+        # pylint: disable=duplicate-code
+        resolved = _circuit_diff.resolve_split_and_stage_diff(
+            mark_a,
+            mark_b,
+            self.timelines_by_id,
+            element_a=element_a,
+            element_b=element_b,
         )
-        if isinstance(split_diff, str):
-            # Ambiguous/unresolved pick -- render_stage_diff below would
-            # hit the exact same element resolution and repeat this same
-            # message, so report it once instead of twice.
-            sections.append(split_diff)
+        if isinstance(resolved, str):
+            sections.append(resolved)
             return "\n\n".join(sections)
+        # pylint: enable=duplicate-code
+        split_diff, stage_diff_text = resolved
         sections.append(_render_circuit_split_diff_text(split_diff))
-        sections.append(
-            _highlight_gate_diff_lines(
-                _render.render_stage_diff(
-                    mark_a, mark_b, self.timelines_by_id,
-                    element_a=element_a, element_b=element_b,
-                )
-            )
-        )
+        sections.append(_highlight_gate_diff_lines(stage_diff_text))
         return "\n\n".join(sections)
+
+    def do_break(self, arg: str) -> bool:
+        """b, break gate NAME [Q1 Q2 ...] | break seq N | break watch qubit|clbit|register
+        REF gt|lt|ge|le|eq|ne THRESHOLD | break anomaly [info|warning|error]
+        Add a conditional breakpoint, scoped to the circuit currently on
+        screen. "continue" jumps to the first later event matching any
+        breakpoint."""
+        condition = self._parse_break_arg(arg)
+        if condition is None:
+            return False
+        handle = self.breakpoints.add(condition)
+        print(f"breakpoint {handle}: {_bp.describe_condition(condition)}")
+        return False
+
+    do_b = do_break
+
+    def do_breakpoints(self, _arg: str) -> bool:
+        """bp, breakpoints: list active breakpoints."""
+        if not self.breakpoints:
+            print("no active breakpoints")
+            return False
+        for handle, condition in self.breakpoints.items():
+            print(f"  [{handle}] {_bp.describe_condition(condition)}")
+        return False
+
+    do_bp = do_breakpoints
+
+    def do_unbreak(self, arg: str) -> bool:
+        """unbreak HANDLE | unbreak all"""
+        target = arg.strip()
+        if target == "all":
+            self.breakpoints.clear()
+            print("cleared all breakpoints")
+            return False
+        if target not in self.breakpoints:
+            print(f"no breakpoint {target!r} (see: breakpoints)")
+            return False
+        self.breakpoints.remove(target)
+        print(f"removed breakpoint {target}")
+        return False
+
+    def do_continue(self, _arg: str) -> bool:
+        """c, continue: jump to the next event matching any breakpoint."""
+        if not self.breakpoints:
+            print("no active breakpoints (see: break)")
+            return False
+        hit = _bp.find_next_hit(self.merged, self.breakpoints.as_dict(), self.index)
+        if hit is None:
+            print("no later event matches any breakpoint")
+            return False
+        index, handle = hit
+        self.index = index
+        condition = self.breakpoints.get(handle)
+        assert condition is not None
+        print(f"hit breakpoint {handle}: {_bp.describe_condition(condition)}")
+        self.print_frame()
+        return False
+
+    do_c = do_continue
+
+    def _parse_break_arg(self, arg: str) -> BreakpointCondition | None:
+        """Parse one ``break`` command's arguments into a condition, scoped
+        to the circuit currently on screen. Delegates the actual tokenizing
+        to :func:`~._breakpoints.parse_condition_args`, shared with the GUI's
+        condition-builder row so both accept exactly the same syntax.
+        """
+        parts = arg.split()
+        if not parts:
+            print(f"usage: break {_bp.CONDITION_USAGE}")
+            return None
+        source, _event = self.merged[self.index]
+        try:
+            return _bp.parse_condition_args(parts[0], parts[1:], source.circuit_id)
+        except ValueError as exc:
+            print(str(exc))
+            return None
 
     def _parse_watch_arg(self, arg: str, command: str) -> _render.WatchTarget | None:
         """Parse ``"<kind> <ref>"`` into a watch target on the current circuit."""
@@ -448,7 +533,9 @@ class CLIFrontend(TimelineFrontend):
             "commands: n(ext)  p(rev)  f(irst)  l(ast)  g(oto) N  "
             "w(atch)/unwatch qubit|clbit|register|track ...  watches  "
             "mark a|b  unmark a|b|all  elements a|b  "
-            "d(iff) [overall | <element_a> <element_b>]  h(elp)  q(uit)"
+            "d(iff) [overall | <element_a> <element_b>]  "
+            "b(reak) gate|seq|watch|anomaly ...  bp  unbreak HANDLE|all  c(ontinue)  "
+            "h(elp)  q(uit)"
         )
 
         timelines_by_id = {t.circuit_id: t for t in timelines}

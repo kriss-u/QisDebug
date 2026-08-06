@@ -22,7 +22,13 @@ from typing import Any
 
 from .._analysis import GateDiffEntry, resolve_track_circuit
 from .._events import Timeline
-from ._render import StageMark, diff_at_marks, resolve_stage_element, track_label
+from ._render import (
+    StageMark,
+    diff_at_marks,
+    render_stage_diff,
+    resolve_stage_element,
+    track_label,
+)
 
 
 @dataclass
@@ -171,7 +177,9 @@ def _align_gate_chunks(
     gate_chunks_b: list[list[str]],
     rows_a: int,
     rows_b: int,
-) -> tuple[list[list[str]], list[list[str]], list[tuple[int, int]], list[tuple[int, int]]]:
+) -> tuple[
+    list[list[str]], list[list[str]], list[tuple[int, int]], list[tuple[int, int]]
+]:
     """Walk a gate-aligned diff, pairing each entry with the column
     chunk(s) it consumes from each side (see :func:`_paired_gate_chunks`),
     and return each side's per-row gate content blocks plus the
@@ -206,7 +214,9 @@ def _assemble_diff_side(
     prefix_width = len(prefix[0]) if rows else 0
     lines = [prefix[row] + "".join(blocks[row]) for row in range(rows)]
     row_width = len(lines[0]) if rows else prefix_width
-    shifted_ranges = [(prefix_width + start, prefix_width + end) for start, end in row_ranges]
+    shifted_ranges = [
+        (prefix_width + start, prefix_width + end) for start, end in row_ranges
+    ]
     spans = [
         (row * (row_width + 1) + start, row * (row_width + 1) + end)
         for row in range(rows)
@@ -243,7 +253,10 @@ def render_gate_diff_circuits(
 
 
 def _resolve_diff_side(
-    stage: StageMark, timelines_by_id: dict[str, Timeline], element: str | None, side: str
+    stage: StageMark,
+    timelines_by_id: dict[str, Timeline],
+    element: str | None,
+    side: str,
 ) -> tuple[Timeline, str, Any] | str:
     """Resolve one side of a diff to ``(timeline, track, circuit)``, or an
     error message listing that stage's elements when the pick is ambiguous
@@ -296,3 +309,35 @@ def render_circuit_split_diff(
         label_a=track_label(f"{timeline_a.name or timeline_a.circuit_id}:{track_a}"),
         label_b=track_label(f"{timeline_b.name or timeline_b.circuit_id}:{track_b}"),
     )
+
+
+def resolve_split_and_stage_diff(
+    stage_a: StageMark,
+    stage_b: StageMark,
+    timelines_by_id: dict[str, Timeline],
+    element_a: str | None = None,
+    element_b: str | None = None,
+) -> tuple[CircuitSplitDiff, str] | str:
+    """Resolve both the circuit split-view diff and the gate/state-level
+    stage diff text for one ``(element_a, element_b)`` pick, in one call.
+
+    Both frontends' diff panels need exactly this pair together -- the
+    split view for the diagram pane, the text for the summary pane -- and
+    always with the same ``element_a``/``element_b`` picks passed to both
+    :func:`render_circuit_split_diff` and :func:`~._render.render_stage_diff`;
+    bundling them here means the two frontends can't drift on that
+    resolution the way two separate call sites risk. Returns the
+    ambiguous/unresolved-pick message (a ``str``) instead when
+    :func:`render_circuit_split_diff` can't resolve one side -- mirroring
+    that function's own return shape, since :func:`~._render.render_stage_diff`
+    would only hit the exact same resolution failure and repeat the message.
+    """
+    split_diff = render_circuit_split_diff(
+        stage_a, stage_b, timelines_by_id, element_a=element_a, element_b=element_b
+    )
+    if isinstance(split_diff, str):
+        return split_diff
+    stage_diff_text = render_stage_diff(
+        stage_a, stage_b, timelines_by_id, element_a=element_a, element_b=element_b
+    )
+    return split_diff, stage_diff_text

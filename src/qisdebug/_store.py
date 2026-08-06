@@ -14,11 +14,209 @@ from collections import OrderedDict
 from contextlib import contextmanager
 from typing import Any, Iterable, Iterator, Type, TypeVar
 
+from ._breakpoints import BreakpointCondition, BreakpointHit, matches
 from ._events import TelemetryEvent, Timeline
 
 ID_ATTRIBUTE = "_qisdebug_id"
 
 EventT = TypeVar("EventT", bound=TelemetryEvent)
+
+
+class BreakpointStopped(BaseException):
+    """Raised on the paused thread when :meth:`TelemetryStore.stop` cancels it.
+
+    Deliberately a direct :class:`BaseException` subclass, not
+    :class:`Exception` -- the same reason :class:`KeyboardInterrupt` is. The
+    recording hooks (:mod:`qisdebug._hooks`) wrap every call into
+    :meth:`TelemetryStore.add_event` in a broad ``except Exception:`` so a bug
+    in *recording* telemetry can never crash the user's actual program; that
+    same broad catch would otherwise also swallow this deliberate
+    cancellation signal before it ever reached the caller that requested it.
+    Propagates out through whatever Qiskit call the user's code made when the
+    breakpoint hit, the same way any other exception from their script would
+    -- callers that run user scripts (e.g.
+    :func:`qisdebug._mcp.tools.run_script`) already catch it (checking for it
+    ahead of any broader ``except Exception:``) and report it as the run's
+    status rather than letting it escape further.
+    """
+
+
+class _PauseGate:
+    """The ``threading.Event`` block/release/cancel primitives behind one
+    live breakpoint pause, split out of :class:`BreakpointRegistry` so that
+    class's own attribute count stays about condition bookkeeping.
+    """
+
+    def __init__(self) -> None:
+        self._pause_event = threading.Event()
+        self._pause_event.set()
+        self._hit_event = threading.Event()
+        self.last_hit: BreakpointHit | None = None
+        self.cancelled = False
+
+    @property
+    def is_paused(self) -> bool:
+        """True while some thread is blocked at a breakpoint hit."""
+        return not self._pause_event.is_set()
+
+    def resume(self) -> None:
+        """Release a thread currently blocked at a breakpoint hit."""
+        self._pause_event.set()
+
+    def stop(self) -> None:
+        """Arm cancellation: :meth:`block` raises instead of returning
+        normally, whether it's already waiting or hasn't been called yet."""
+        self.cancelled = True
+        self._pause_event.set()
+
+    def wait_for_hit(self, timeout: float | None = None) -> BreakpointHit | None:
+        """Block the calling thread until the next breakpoint hit, or timeout.
+
+        For a caller running the instrumented script on its own thread. Does
+        *not* resume the hit thread -- call :meth:`resume` (or :meth:`stop`)
+        once the hit has been inspected.
+        """
+        if self._hit_event.wait(timeout=timeout):
+            self._hit_event.clear()
+            return self.last_hit
+        return None
+
+    def block(self, hit: BreakpointHit) -> None:
+        """Record ``hit`` and block the calling thread until :meth:`resume`.
+
+        Raises :class:`BreakpointStopped` instead of returning normally if
+        :meth:`stop` was called either before this was reached or while it
+        was blocked.
+        """
+        if self.cancelled:
+            self.cancelled = False
+            raise BreakpointStopped(
+                f"breakpoint {hit.handle} hit after stop() was called"
+            )
+        self.last_hit = hit
+        self._pause_event.clear()
+        self._hit_event.set()
+        self._pause_event.wait(timeout=None)
+        if self.cancelled:
+            self.cancelled = False
+            raise BreakpointStopped(
+                f"breakpoint {hit.handle} hit; stop() cancelled the run while paused"
+            )
+
+
+class BreakpointRegistry:
+    """One store's conditional breakpoints, plus the live-pause primitives.
+
+    Split out of :class:`TelemetryStore` so that class's own attribute/method
+    surface stays about timeline storage; everything breakpoint-related
+    (condition registry, per-circuit transpile-depth tracking for the
+    anomaly condition, and the pause/resume/stop machinery in
+    :class:`_PauseGate`) lives here as one cohesive, independently testable
+    unit, reached from the store as ``store.breakpoints``.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._conditions: dict[str, BreakpointCondition] = {}
+        self._next_id = 0
+        self._prev_transpile_depth: dict[str, int | None] = {}
+        self._pause = _PauseGate()
+
+    def add(self, condition: BreakpointCondition) -> str:
+        """Register a condition, returning a handle for :meth:`remove`."""
+        with self._lock:
+            self._next_id += 1
+            handle = str(self._next_id)
+            self._conditions[handle] = condition
+        return handle
+
+    def remove(self, handle: str) -> None:
+        """Unregister a breakpoint by its handle. No-op if already removed."""
+        with self._lock:
+            self._conditions.pop(handle, None)
+
+    def list(self) -> list[tuple[str, BreakpointCondition]]:
+        """Return every active ``(handle, condition)`` pair."""
+        with self._lock:
+            return list(self._conditions.items())
+
+    def forget_circuit(self, circuit_id: str) -> None:
+        """Drop tracked transpile-depth state for an evicted/cleared circuit."""
+        with self._lock:
+            self._prev_transpile_depth.pop(circuit_id, None)
+
+    def clear_circuit_state(self) -> None:
+        """Drop all tracked transpile-depth state (see :meth:`forget_circuit`).
+
+        Called by :meth:`TelemetryStore.clear`; leaves registered conditions
+        (and any live pause) untouched, since those are independent of which
+        timelines happen to be currently stored.
+        """
+        with self._lock:
+            self._prev_transpile_depth.clear()
+
+    @property
+    def is_paused(self) -> bool:
+        """True while some thread is blocked at a breakpoint hit."""
+        return self._pause.is_paused
+
+    @property
+    def last_hit(self) -> BreakpointHit | None:
+        """The most recent breakpoint hit, whether or not it's still paused."""
+        return self._pause.last_hit
+
+    def resume(self) -> None:
+        """Release a thread currently blocked at a breakpoint hit."""
+        self._pause.resume()
+
+    def wait_for_hit(self, timeout: float | None = None) -> BreakpointHit | None:
+        """See :meth:`_PauseGate.wait_for_hit`."""
+        return self._pause.wait_for_hit(timeout=timeout)
+
+    def stop(self) -> None:
+        """Best-effort cancellation: release a paused thread by raising there.
+
+        If no thread is currently paused, only arms a flag so the *next*
+        hit raises immediately instead of blocking -- Python threads can't be
+        forcibly killed, so a script that's actively running (not currently
+        blocked at a breakpoint) keeps running until it either finishes on
+        its own or reaches another breakpoint.
+        """
+        self._pause.stop()
+
+    def check(self, timeline: Timeline, event: TelemetryEvent) -> None:
+        """Evaluate every registered condition against a newly recorded event.
+
+        Called from :meth:`TelemetryStore.add_event` -- the one choke point
+        every hook already funnels through -- right after it releases its
+        own lock. The actual blocking wait (:meth:`_PauseGate.block`)
+        deliberately happens outside any lock: blocking while holding one
+        would stall any other thread needing it (eviction, concurrent
+        construction on another thread) for the entire pause, not just the
+        calling thread.
+        """
+        with self._lock:
+            prev_depth = self._prev_transpile_depth.get(timeline.circuit_id)
+            hit_handle: str | None = None
+            hit_condition: BreakpointCondition | None = None
+            for handle, condition in self._conditions.items():
+                if matches(condition, event, timeline, prev_depth=prev_depth):
+                    hit_handle, hit_condition = handle, condition
+                    break
+            depth = getattr(event, "depth", None)
+            if depth is not None:
+                self._prev_transpile_depth[timeline.circuit_id] = depth
+        if hit_handle is None or hit_condition is None:
+            return
+        self._pause.block(
+            BreakpointHit(
+                handle=hit_handle,
+                condition=hit_condition,
+                circuit_id=timeline.circuit_id,
+                seq=event.seq,
+                event_summary=event.describe(),
+            )
+        )
 
 
 class TelemetryStore:
@@ -49,6 +247,7 @@ class TelemetryStore:
             "qisdebug_suspend_depth", default=0
         )
         self._suspended_ids: dict[str, int] = {}
+        self.breakpoints = BreakpointRegistry()
 
     def next_sequence(self) -> int:
         """Return the next value of this store's monotonic event counter."""
@@ -147,7 +346,8 @@ class TelemetryStore:
             timeline.bind_store(self)
             self._timelines[circuit_id] = timeline
             while len(self._timelines) > max_circuits:
-                self._timelines.popitem(last=False)
+                evicted_id, _ = self._timelines.popitem(last=False)
+                self.breakpoints.forget_circuit(evicted_id)
             return timeline
 
     def _adopt_by_name(self, circuit: Any) -> Timeline | None:
@@ -172,6 +372,7 @@ class TelemetryStore:
         event = event_cls(seq=self.next_sequence(), **fields)
         with self._lock:
             timeline.events.append(event)
+        self.breakpoints.check(timeline, event)
         return event
 
     def get(self, circuit_or_id: Any) -> Timeline | None:
@@ -208,6 +409,7 @@ class TelemetryStore:
         """Drop all recorded telemetry."""
         with self._lock:
             self._timelines.clear()
+            self.breakpoints.clear_circuit_state()
 
 
 def _registers(circuit: Any, attribute: str) -> dict[str, list[int]]:

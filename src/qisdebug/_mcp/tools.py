@@ -22,15 +22,27 @@ from __future__ import annotations
 import json
 import runpy
 import sys
+import threading
+import uuid
+from dataclasses import dataclass, field
 from typing import Any, Literal, Mapping, Sequence
 
+from pydantic import TypeAdapter
+
 from .. import _analysis
+from .._breakpoints import BreakpointCondition
 from .._debug import QisDebug
 from .._errors import TimelineNotFoundError
 from .._events import EventType, StateSnapshotEvent, Timeline
 from .._frontends._render import WatchTarget, format_statevector, render_watch
+from .._store import BreakpointStopped
 
 WatchKind = Literal["qubit", "clbit", "register", "track"]
+RunStatus = Literal["running", "paused", "finished", "error", "stopped"]
+
+_breakpoint_condition_adapter: TypeAdapter[BreakpointCondition] = TypeAdapter(
+    BreakpointCondition
+)
 
 # One QisDebug instance scopes the whole MCP server process, matching the
 # documented agent workflow: run_script's auto_activate controls whether
@@ -38,6 +50,43 @@ WatchKind = Literal["qubit", "clbit", "register", "track"]
 # brackets itself.
 _debug = QisDebug()
 _watches: list[WatchTarget] = []
+
+
+@dataclass
+class _RunHandle:
+    """Bookkeeping for one ``background=True`` :func:`run_script` call.
+
+    Only one may be in flight at a time (see :func:`run_script`) since the
+    module holds a single process-scoped ``_debug`` -- two scripts running
+    concurrently would share one store's breakpoints and telemetry, making a
+    hit impossible to attribute to a run.
+    """
+
+    thread: threading.Thread | None
+    before: set[str] = field(default_factory=set)
+    error: str | None = None
+    stopped: bool = False
+    done: bool = False
+
+
+_runs: dict[str, _RunHandle] = {}
+
+
+def _touched_timelines(before: set[str]) -> list[dict[str, Any]]:
+    touched = [t for t in _debug.timelines() if t.circuit_id not in before]
+    return [
+        {
+            "circuit_id": t.circuit_id,
+            "name": t.name,
+            "num_qubits": t.num_qubits,
+            "num_clbits": t.num_clbits,
+            "qregs": t.qregs,
+            "cregs": t.cregs,
+            "event_count": len(t.events),
+            "anomalies": [a.model_dump() for a in _analysis.find_anomalies(t)],
+        }
+        for t in touched
+    ]
 
 
 def _require_timeline(circuit_id: str) -> Timeline:
@@ -49,7 +98,10 @@ def _require_timeline(circuit_id: str) -> Timeline:
 
 
 def run_script(
-    path: str, argv: list[str] | None = None, auto_activate: bool = True
+    path: str,
+    argv: list[str] | None = None,
+    auto_activate: bool = True,
+    background: bool = False,
 ) -> dict[str, Any]:
     """Run a Python script under QisDebug instrumentation and report what was captured.
 
@@ -61,7 +113,51 @@ def run_script(
     responsible for its own scoped ``qisdebug.QisDebug()`` instance (its
     timelines won't appear in this call's return value; have the script
     export or print what it captured).
+
+    With ``background=True`` the script runs on a worker thread and this
+    returns immediately with ``{"run_id": ...}`` instead of waiting for it to
+    finish -- needed for a script that might hit a conditional breakpoint
+    (see :func:`add_breakpoint`), since a live pause blocks the thread that
+    hit it and this call would otherwise never return. Poll with
+    :func:`poll_run`, unblock a pause with :func:`resume_run`, and cancel
+    with :func:`stop_run`. Only one background run may be in flight at a
+    time -- start a new one only after the previous one's status is
+    ``"finished"``/``"error"``/``"stopped"``.
     """
+    if background:
+        active = next((handle for handle in _runs.values() if not handle.done), None)
+        if active is not None:
+            raise ValueError(
+                "a background run is already in flight; poll_run/stop_run it first"
+            )
+        before = {t.circuit_id for t in _debug.timelines()}
+        run_id = uuid.uuid4().hex[:12]
+        handle = _RunHandle(thread=None, before=before)
+
+        def _worker() -> None:
+            if auto_activate:
+                _debug.start()
+            saved_argv = sys.argv
+            sys.argv = [path, *(argv or [])]
+            try:
+                runpy.run_path(path, run_name="__main__")
+            except BreakpointStopped as exc:
+                handle.stopped = True
+                handle.error = str(exc)
+            except Exception as exc:  # noqa: BLE001 - reported, not swallowed
+                handle.error = f"{type(exc).__name__}: {exc}"
+            finally:
+                sys.argv = saved_argv
+                if auto_activate:
+                    _debug.end()
+                handle.done = True
+
+        thread = threading.Thread(target=_worker, daemon=True)
+        handle.thread = thread
+        _runs[run_id] = handle
+        thread.start()
+        return {"run_id": run_id}
+
     before = {t.circuit_id for t in _debug.timelines()}
     if auto_activate:
         _debug.start()
@@ -76,23 +172,101 @@ def run_script(
         sys.argv = saved_argv
         if auto_activate:
             _debug.end()
-    touched = [t for t in _debug.timelines() if t.circuit_id not in before]
-    return {
-        "error": error,
-        "timelines": [
-            {
-                "circuit_id": t.circuit_id,
-                "name": t.name,
-                "num_qubits": t.num_qubits,
-                "num_clbits": t.num_clbits,
-                "qregs": t.qregs,
-                "cregs": t.cregs,
-                "event_count": len(t.events),
-                "anomalies": [a.model_dump() for a in _analysis.find_anomalies(t)],
+    return {"error": error, "timelines": _touched_timelines(before)}
+
+
+def poll_run(run_id: str) -> dict[str, Any]:
+    """Report a background run's status: running, paused, finished, error, or stopped.
+
+    When paused (blocked at a conditional breakpoint hit), includes the
+    triggering :class:`~qisdebug._breakpoints.BreakpointHit`. When finished,
+    includes the same ``timelines``/``anomalies`` payload the synchronous
+    form of :func:`run_script` returns.
+    """
+    handle = _runs.get(run_id)
+    if handle is None:
+        raise ValueError(f"no background run {run_id!r}")
+    if not handle.done:
+        if _debug.store.breakpoints.is_paused:
+            hit = _debug.store.breakpoints.last_hit
+            return {
+                "status": "paused",
+                "hit": hit.model_dump() if hit is not None else None,
             }
-            for t in touched
-        ],
-    }
+        return {"status": "running"}
+    status: RunStatus = "finished"
+    if handle.stopped:
+        status = "stopped"
+    elif handle.error:
+        status = "error"
+    result: dict[str, Any] = {"status": status, "error": handle.error}
+    if status == "finished":
+        result["timelines"] = _touched_timelines(handle.before)
+    return result
+
+
+def resume_run(run_id: str) -> dict[str, Any]:
+    """Unblock a background run currently paused at a breakpoint hit."""
+    if run_id not in _runs:
+        raise ValueError(f"no background run {run_id!r}")
+    _debug.resume()
+    return {"status": "resumed"}
+
+
+def stop_run(run_id: str) -> dict[str, Any]:
+    """Best-effort cancellation of a background run.
+
+    If the run is currently paused at a breakpoint, it's cancelled cleanly
+    right there -- ``poll_run`` will report status ``"stopped"``. Python
+    threads can't be forcibly killed, so if the run is actively executing
+    (not paused), this only arms cancellation for the *next* breakpoint hit;
+    a script with no more breakpoints ahead of it runs to completion
+    unaffected. Check ``poll_run`` afterward rather than assuming the run
+    actually stopped.
+    """
+    if run_id not in _runs:
+        raise ValueError(f"no background run {run_id!r}")
+    _debug.store.breakpoints.stop()
+    return {"status": "stop requested"}
+
+
+def add_breakpoint(condition: dict[str, Any]) -> dict[str, str]:
+    """Register a conditional breakpoint, active for any subsequent capture.
+
+    ``condition`` is one of a closed set of predicate kinds, given as a plain
+    dict with a ``"kind"`` key selecting which:
+    ``{"kind": "gate", "gate": "cx", "qubits": [0, 1], "circuit_id": null}``
+    (``qubits``/``circuit_id`` optional, meaning "any"),
+    ``{"kind": "seq", "seq": 12, "circuit_id": null}``,
+    ``{"kind": "watch", "circuit_id": "...", "watch_kind": "qubit", "ref": "0",
+    "comparator": "gt", "threshold": 0.9}`` (``watch_kind`` one of
+    ``"qubit"``/``"clbit"``/``"register"``, ``comparator`` one of
+    ``"gt"``/``"lt"``/``"ge"``/``"le"``/``"eq"``/``"ne"``), or
+    ``{"kind": "anomaly", "circuit_id": null, "min_severity": "warning"}``.
+    Never arbitrary code -- invalid shapes raise a pydantic validation error.
+    Once registered, any thread that records a matching event blocks there
+    until :func:`resume_run` (for a ``run_script(background=True)`` run) or
+    :meth:`~qisdebug.QisDebug.resume` releases it.
+    """
+    parsed: BreakpointCondition = _breakpoint_condition_adapter.validate_python(
+        condition
+    )
+    handle = _debug.add_breakpoint(parsed)
+    return {"handle": handle}
+
+
+def remove_breakpoint(handle: str) -> str:
+    """Remove one previously added breakpoint."""
+    _debug.remove_breakpoint(handle)
+    return f"removed breakpoint {handle}"
+
+
+def list_breakpoints() -> list[dict[str, Any]]:
+    """List every active breakpoint's handle and condition."""
+    return [
+        {"handle": handle, "condition": condition.model_dump()}
+        for handle, condition in _debug.list_breakpoints()
+    ]
 
 
 def list_timelines() -> list[dict[str, Any]]:
@@ -471,7 +645,10 @@ def set_configuration(overrides: dict[str, Any]) -> dict[str, Any]:
 
 
 def clear() -> str:
-    """Drop all recorded telemetry and watches, without touching active patches."""
+    """Drop all recorded telemetry, watches and breakpoints, without touching active patches."""
     _debug.clear()
     _watches.clear()
+    for handle, _condition in list(_debug.list_breakpoints()):
+        _debug.remove_breakpoint(handle)
+    _runs.clear()
     return "cleared"

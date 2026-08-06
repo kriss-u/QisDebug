@@ -45,7 +45,9 @@ def test_user_callback_still_runs(debug):
     debug.start()
     seen = []
 
-    def callback(pass_, dag, time, property_set, count):  # pylint: disable=unused-argument
+    def callback(
+        pass_, dag, time, property_set, count
+    ):  # pylint: disable=unused-argument
         seen.append(pass_.name())
 
     transpile(_bell(), basis_gates=["cx", "u"], callback=callback)

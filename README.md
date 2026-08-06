@@ -14,7 +14,8 @@ interactively in a notebook.
 ```python
 import qisdebug
 
-qisdebug.activate()
+debug = qisdebug.QisDebug()
+debug.start()
 
 # --- your existing Qiskit code, completely unchanged -----------------
 from qiskit import QuantumCircuit, transpile
@@ -29,7 +30,8 @@ backend = AerSimulator()
 counts = backend.run(transpile(qc, backend), shots=1000).result().get_counts()
 # ----------------------------------------------------------------------
 
-print(qisdebug.timeline(qc).summary())
+print(debug.get(qc).summary())
+debug.end()
 ```
 
 ```text
@@ -76,25 +78,31 @@ recorded against the circuit you actually wrote.
 
 ## Public API
 
-The entire surface is intentionally small:
+`QisDebug` is a class, not a module-level singleton: each instance is an
+independently scoped instrumentation session with its own telemetry and its
+own configuration, so more than one can be started at once (e.g. one scoped
+to a suspect region, another covering a whole script) without either seeing
+the other's timelines. The surface on it is intentionally small:
 
-| Function                  | Purpose                                                                                                   |
+| Method                    | Purpose                                                                                                   |
 | ------------------------- | --------------------------------------------------------------------------------------------------------- |
-| `qisdebug.activate()`     | Attach all instrumentation layers. Idempotent. Returns an `ActivationReport` saying which layers attached |
-| `qisdebug.deactivate()`   | Restore every original Qiskit method                                                                      |
-| `qisdebug.is_active()`    | Whether patches are currently applied                                                                     |
-| `qisdebug.timeline(qc)`   | The `Timeline` for a circuit (or id string); `qisdebug.timeline()` returns the most recent                |
-| `qisdebug.timelines()`    | All tracked timelines, most recent first                                                                  |
-| `qisdebug.clear()`        | Drop all recorded telemetry                                                                               |
-| `qisdebug.configure(...)` | Adjust limits and switches (validated; see below)                                                         |
+| `debug.start()`           | Attach all instrumentation layers. Idempotent. Returns an `ActivationReport` saying which layers attached |
+| `debug.end()`             | Restore every original Qiskit method this instance was using                                              |
+| `debug.active`            | Whether this instance's patches are currently applied                                                     |
+| `debug.get(qc)`           | The `Timeline` for a circuit, name, or `Timeline`; raises `TimelineNotFoundError` on a miss               |
+| `debug.timelines()`       | Every timeline this instance has recorded, most recently touched first                                    |
+| `debug.circuits()`        | The names of tracked circuits, most recently touched first                                                |
+| `debug.clear()`           | Drop all recorded telemetry without touching active patches                                               |
+| `debug.configure(...)`    | Adjust limits and switches (validated; see below)                                                         |
 
 Importing `qisdebug` has **no side effects** — nothing is patched until
-`activate()` is called.
+`start()` is called, and `with QisDebug() as debug:` is an optional shorthand
+for `start()`/`end()` around a scoped block.
 
 ### Timeline
 
 ```python
-tl = qisdebug.timeline(qc)
+tl = debug.get(qc)
 tl.events                 # every event, in true order (monotonic seq numbers)
 tl.gate_events            # construction events
 tl.transpile_events       # transpilation events
@@ -162,9 +170,9 @@ and does the arithmetic:
 
 - **Run under instrumentation** — `run_script` executes a script with QisDebug
   active and reports every circuit's id, registers, and an anomaly scan in one
-  shot. To focus on a suspect region, the agent inserts
-  `qisdebug.activate()`/`qisdebug.deactivate()` around it and passes
-  `auto_activate=false`, scoping capture to exactly that window.
+  shot. To focus on a suspect region, the agent has the script build its own
+  scoped `qisdebug.QisDebug()` and call `start()`/`end()` around it, passing
+  `auto_activate=false` so this server's own instance stays untouched.
 - **Extract mid-execution state** — `get_events` (filtered, paged),
   `get_state_snapshot` (raw amplitudes and probabilities at any captured step),
   and `get_circuit_text` (the circuit as it looked after any gate).
@@ -183,6 +191,33 @@ and does the arithmetic:
 
 The server is a thin protocol wrapper: every tool delegates to the same store,
 rendering, and comparison code the GUI and CLI use.
+
+## Roadmap
+
+Planned next, on top of what's above — see `CLAUDE.md` for the full design
+of each, including which internal modules they touch:
+
+- **Property-set diffing** — Qiskit's transpiler passes write into a shared
+  `property_set` (layout, routing decisions, anything a custom pass adds);
+  each `transpile_pass` event will gain a `property_changes` diff against
+  the previous pass, the one thing [Trebugger](#prior-art) does that QisDebug
+  doesn't yet.
+- **Conditional breakpoints** — pause a _live_ run when a gate, watch
+  threshold, or anomaly condition is hit, not just inspect after the fact.
+  `debug.add_breakpoint(...)`/`debug.wait_for_breakpoint()` for the Python
+  API; a backgrounded `run_script` plus `poll_run`/`resume_run`/`stop_run`
+  for MCP, so an agent can step a script instead of only replaying it; and a
+  "jump to next hit" command in both the GUI and CLI over already-captured
+  timelines.
+- **Timeline diff** — compare two timelines against each other (not just a
+  timeline against a hand-supplied expectation): aligned gate-by-gate diff,
+  plus statevector fidelity and counts TVD when both have a final state.
+  `debug.diff(a, b)`, an MCP `diff_timelines` tool, and a
+  `debug.show([a, b], diff=True)` view that highlights the differing lines
+  in the same merged multi-timeline window `show()` already supports.
+- **Visual polish** — a proper stylesheet for the GUI (buttons, spacing,
+  type scale) and consistent prompt/column formatting for the CLI; both are
+  currently unstyled toolkit defaults.
 
 ## Version compatibility
 

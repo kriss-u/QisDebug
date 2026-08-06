@@ -193,6 +193,22 @@ class _TimelineShell(cmd.Cmd):
         self.print_frame()
         return False
 
+    def do_diff(self, _arg: str) -> bool:
+        """d, diff: print the diff between marks A and B on demand, without
+        stepping. Also shown automatically after every frame once both are
+        marked."""
+        diff_text = _render.render_marks_diff(
+            self.marks["a"], self.marks["b"], self.timelines_by_id
+        )
+        if diff_text:
+            print("-- Diff A vs B --")
+            print(diff_text)
+        else:
+            print("mark both a and b to compare (see: mark a, mark b)")
+        return False
+
+    do_d = do_diff
+
     def _parse_watch_arg(self, arg: str, command: str) -> _render.WatchTarget | None:
         """Parse ``"<kind> <ref>"`` into a watch target on the current circuit."""
         parts = arg.split(maxsplit=1)
@@ -246,7 +262,7 @@ class CLIFrontend(TimelineFrontend):
         print(
             "commands: n(ext)  p(rev)  f(irst)  l(ast)  g(oto) N  "
             "w(atch)/unwatch qubit|clbit|register ...  watches  "
-            "mark a|b  unmark a|b|all  h(elp)  q(uit)"
+            "mark a|b  unmark a|b|all  d(iff)  h(elp)  q(uit)"
         )
 
         timelines_by_id = {t.circuit_id: t for t in timelines}

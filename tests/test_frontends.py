@@ -156,16 +156,19 @@ def test_gui_frontend_mark_and_diff_panel(debug, monkeypatch):
     window = gui_module._TimelineWindow("viz", view)  # noqa: SLF001
 
     assert "(unmarked)" in window.mark_status.text()
-    assert window.diff_text.toPlainText() == "mark two states to compare"
+    assert window.tabs.indexOf(window._diff_panel) < 0  # noqa: SLF001
 
     window._mark_a()  # noqa: SLF001
+    assert window.tabs.indexOf(window._diff_panel) < 0  # noqa: SLF001
+
     window._goto(1)  # noqa: SLF001
     window._mark_b()  # noqa: SLF001
 
     assert "(unmarked)" not in window.mark_status.text()
+    assert window.tabs.indexOf(window._diff_panel) >= 0  # noqa: SLF001
     assert "gates:" in window.diff_text.toPlainText()
 
     window._clear_marks()  # noqa: SLF001
     assert window.marks == {"a": None, "b": None}
-    assert window.diff_text.toPlainText() == "mark two states to compare"
+    assert window.tabs.indexOf(window._diff_panel) < 0  # noqa: SLF001
     del app

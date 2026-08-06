@@ -36,7 +36,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSlider,
     QSpinBox,
-    QSplitter,
+    QTabWidget,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -247,8 +247,8 @@ class _TimelineWindow(
 
         self.window = _TimelineWidget(self._cleanup_key_filter)
         self.window.setWindowTitle(f"QisDebug timeline — {title}")
-        self.window.resize(900, 650)
-        self.window.setMinimumSize(600, 400)
+        self.window.resize(1280, 860)
+        self.window.setMinimumSize(800, 500)
 
         if not view.merged:
             layout = QVBoxLayout(self.window)
@@ -268,14 +268,14 @@ class _TimelineWindow(
         container = QWidget()
         layout = self._build_widgets(container)
         self._build_watch_widgets(layout)
-        diff_panel = self._build_diff_panel()
+        self._build_mark_widgets(layout)
+        self._diff_panel = self._build_diff_panel()
 
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.addWidget(container)
-        splitter.addWidget(diff_panel)
-        splitter.setSizes([600, 300])
+        self.tabs = QTabWidget()
+        self.tabs.addTab(container, "Timeline")
         window_layout = QHBoxLayout(self.window)
-        window_layout.addWidget(splitter)
+        window_layout.addWidget(self.tabs)
+        self._refresh_diff_panel()
 
         self._render()
 
@@ -404,25 +404,25 @@ class _TimelineWindow(
         layout.addWidget(self.watch_list)
         self._refresh_watch_ref_choices()
 
-    def _build_diff_panel(self) -> QWidget:
-        """Build the dedicated side panel for pinning and viewing a state diff."""
-        panel = QWidget()
-        layout = QVBoxLayout(panel)
-
-        title = QLabel("Diff")
-        title.setTextFormat(Qt.TextFormat.PlainText)
-        layout.addWidget(title)
-
-        self.mark_status = QLabel()
-        self.mark_status.setTextFormat(Qt.TextFormat.PlainText)
-        self.mark_status.setWordWrap(True)
-        layout.addWidget(self.mark_status)
-
+    def _build_mark_widgets(self, layout: QVBoxLayout) -> None:
+        """Lay out the mark A/B/clear buttons and status label, on the
+        Timeline tab -- marking is something you do while stepping through
+        the timeline, not on a separate tab.
+        """
         mark_row = QHBoxLayout()
         mark_row.addWidget(_button("Mark A", self._mark_a))
         mark_row.addWidget(_button("Mark B", self._mark_b))
         mark_row.addWidget(_button("Clear marks", self._clear_marks))
+        self.mark_status = QLabel()
+        self.mark_status.setTextFormat(Qt.TextFormat.PlainText)
+        mark_row.addWidget(self.mark_status)
+        mark_row.addStretch(1)
         layout.addLayout(mark_row)
+
+    def _build_diff_panel(self) -> QWidget:
+        """Build the "Diff" tab's contents, shown only once both marks are set."""
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
 
         self.diff_text = QTextEdit()
         self.diff_text.setReadOnly(True)
@@ -430,7 +430,6 @@ class _TimelineWindow(
         self.diff_text.setFont(_monospace_font())
         layout.addWidget(self.diff_text, stretch=1)
 
-        self._refresh_diff_panel()
         return panel
 
     def _mark_a(self) -> None:
@@ -456,14 +455,23 @@ class _TimelineWindow(
         self._refresh_diff_panel()
 
     def _refresh_diff_panel(self) -> None:
-        """Update the mark status label and diff text from the current marks."""
+        """Update the mark status label, and show or hide the Diff tab
+        depending on whether both marks are now set.
+        """
         self.mark_status.setText(
-            f"A: {self._mark_label('a')}\nB: {self._mark_label('b')}"
+            f"A: {self._mark_label('a')}   B: {self._mark_label('b')}"
         )
-        diff_text = _render.render_marks_diff(
-            self.marks["a"], self.marks["b"], self.timelines_by_id
-        )
-        self.diff_text.setPlainText(diff_text or "mark two states to compare")
+        diff_index = self.tabs.indexOf(self._diff_panel)
+        both_marked = self.marks["a"] is not None and self.marks["b"] is not None
+        if both_marked:
+            diff_text = _render.render_marks_diff(
+                self.marks["a"], self.marks["b"], self.timelines_by_id
+            )
+            self.diff_text.setPlainText(diff_text)
+            if diff_index < 0:
+                self.tabs.addTab(self._diff_panel, "Diff")
+        elif diff_index >= 0:
+            self.tabs.removeTab(diff_index)
 
     def _mark_label(self, slot: str) -> str:
         mark = self.marks[slot]

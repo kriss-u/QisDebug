@@ -12,7 +12,7 @@ available like the stdlib-only CLI frontend.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, ClassVar
+from typing import Callable, ClassVar, Literal
 
 from PySide6.QtCore import QEvent, QObject, QRectF, Qt, QTimer
 from PySide6.QtGui import (
@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSlider,
     QSpinBox,
+    QSplitter,
     QTabWidget,
     QTextEdit,
     QVBoxLayout,
@@ -44,7 +45,7 @@ from PySide6.QtWidgets import (
 )
 
 from .._events import TelemetryEvent, Timeline
-from . import _render
+from . import _circuit_diff, _render
 from ._display import gui_available
 from ._playback import PlaybackController, PlaybackHooks, Scheduler
 from .base import TimelineFrontend
@@ -55,6 +56,10 @@ ACTIVE_TRACK_BORDER_COLOR_DARK = "#60a5fa"
 ACTIVE_TRACK_BORDER_WIDTH = 1.5
 ACTIVE_TRACK_PADDING_X = 4
 ACTIVE_TRACK_PADDING_Y = 3
+DIFF_REMOVED_COLOR_LIGHT = "#fecaca"
+DIFF_REMOVED_COLOR_DARK = "#7f1d1d"
+DIFF_ADDED_COLOR_LIGHT = "#bbf7d0"
+DIFF_ADDED_COLOR_DARK = "#14532d"
 MAX_IMAGE_WIDTH = 480
 MAX_IMAGE_HEIGHT = 360
 _PLAY_LABEL = "⏵ Play  (Space)"
@@ -172,6 +177,18 @@ def _active_track_border_color(widget: QWidget) -> str:
     return (
         ACTIVE_TRACK_BORDER_COLOR_DARK if is_dark else ACTIVE_TRACK_BORDER_COLOR_LIGHT
     )
+
+
+def _diff_highlight_color(widget: QWidget, kind: Literal["removed", "added"]) -> str:
+    """Pick a red ("removed") or green ("added") background fill with
+    enough contrast for the widget's current palette, same approach as
+    :func:`_active_track_border_color`.
+    """
+    background = widget.palette().color(QPalette.ColorRole.Base)
+    is_dark = background.lightness() < 128
+    if kind == "removed":
+        return DIFF_REMOVED_COLOR_DARK if is_dark else DIFF_REMOVED_COLOR_LIGHT
+    return DIFF_ADDED_COLOR_DARK if is_dark else DIFF_ADDED_COLOR_LIGHT
 
 
 class _TimelineWidget(QWidget):
@@ -481,6 +498,11 @@ class _TimelineWindow(
         selector_row.addStretch(1)
         layout.addLayout(selector_row)
 
+        split = QSplitter(Qt.Orientation.Horizontal)
+        self.diff_label_a, self.diff_text_a = self._build_diff_pane(split)
+        self.diff_label_b, self.diff_text_b = self._build_diff_pane(split)
+        layout.addWidget(split, stretch=2)
+
         self.diff_text = QTextEdit()
         self.diff_text.setReadOnly(True)
         self.diff_text.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
@@ -488,6 +510,25 @@ class _TimelineWindow(
         layout.addWidget(self.diff_text, stretch=1)
 
         return panel
+
+    @staticmethod
+    def _build_diff_pane(split: QSplitter) -> tuple[QLabel, QTextEdit]:
+        """Build one side (label + read-only monospace text) of the split-view
+        circuit diagram diff and add it to ``split``.
+        """
+        pane = QWidget()
+        pane_layout = QVBoxLayout(pane)
+        pane_layout.setContentsMargins(0, 0, 0, 0)
+        label = QLabel()
+        label.setTextFormat(Qt.TextFormat.PlainText)
+        pane_layout.addWidget(label)
+        text = QTextEdit()
+        text.setReadOnly(True)
+        text.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
+        text.setFont(_monospace_font())
+        pane_layout.addWidget(text, stretch=1)
+        split.addWidget(pane)
+        return label, text
 
     def _mark_a(self) -> None:
         self._set_mark("a")
@@ -563,20 +604,79 @@ class _TimelineWindow(
         mark_a, mark_b = self.marks["a"], self.marks["b"]
         if mark_a is None or mark_b is None:
             self.diff_text.setPlainText("")
+            self._set_diff_pane(self.diff_label_a, self.diff_text_a, "", "")
+            self._set_diff_pane(self.diff_label_b, self.diff_text_b, "", "")
             return
         if self.diff_overall_checkbox.isChecked():
-            text = _render.render_stage_overall_diff(
-                mark_a, mark_b, self.timelines_by_id
+            self.diff_text.setPlainText(
+                _render.render_stage_overall_diff(mark_a, mark_b, self.timelines_by_id)
             )
-        else:
-            text = _render.render_stage_diff(
-                mark_a,
-                mark_b,
-                self.timelines_by_id,
-                element_a=self.diff_circuit_a.currentData(),
-                element_b=self.diff_circuit_b.currentData(),
+            self._set_diff_pane(self.diff_label_a, self.diff_text_a, "", "")
+            self._set_diff_pane(self.diff_label_b, self.diff_text_b, "", "")
+            return
+        element_a = self.diff_circuit_a.currentData()
+        element_b = self.diff_circuit_b.currentData()
+        split_diff = _circuit_diff.render_circuit_split_diff(
+            mark_a, mark_b, self.timelines_by_id,
+            element_a=element_a, element_b=element_b,
+        )
+        if isinstance(split_diff, str):
+            # Ambiguous/unresolved pick -- render_stage_diff below would
+            # hit the exact same element resolution and repeat this same
+            # message, so report it once instead of twice.
+            self.diff_text.setPlainText(split_diff)
+            self._set_diff_pane(self.diff_label_a, self.diff_text_a, "", "")
+            self._set_diff_pane(self.diff_label_b, self.diff_text_b, "", "")
+            return
+        self.diff_text.setPlainText(
+            _render.render_stage_diff(
+                mark_a, mark_b, self.timelines_by_id,
+                element_a=element_a, element_b=element_b,
             )
-        self.diff_text.setPlainText(text)
+        )
+        self._set_diff_pane(
+            self.diff_label_a, self.diff_text_a, split_diff.a.label, split_diff.a.text
+        )
+        self._set_diff_pane(
+            self.diff_label_b, self.diff_text_b, split_diff.b.label, split_diff.b.text
+        )
+        self._highlight_diff_spans(self.diff_text_a, split_diff.a.spans, "removed")
+        self._highlight_diff_spans(self.diff_text_b, split_diff.b.spans, "added")
+
+    @staticmethod
+    def _set_diff_pane(label: QLabel, text: QTextEdit, label_text: str, body: str) -> None:
+        label.setText(label_text)
+        text.setExtraSelections([])
+        text.setPlainText(body)
+
+    @staticmethod
+    def _highlight_diff_spans(
+        text: QTextEdit, spans: list[tuple[int, int]], kind: Literal["removed", "added"]
+    ) -> None:
+        """Background-highlight the character ranges where the two circuit
+        drawings differ -- red for ``"removed"`` (side A's own content, not
+        matched on side B), green for ``"added"`` (side B's own content,
+        not matched on side A). Unlike the active-event outline
+        (:class:`_TrackTextEdit`), these are many short, scattered ranges
+        rather than one contiguous block, which ``ExtraSelection`` handles
+        directly without a custom ``paintEvent``.
+        """
+        color = QColor(_diff_highlight_color(text, kind))
+        doc = text.document()
+        selections = []
+        for start, end in spans:
+            if end <= start:
+                continue
+            cursor = QTextCursor(doc)
+            cursor.setPosition(start)
+            cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
+            selection = QTextEdit.ExtraSelection()
+            selection.cursor = cursor
+            # pylint sees `.format` as the builtin function rather than the
+            # QTextCharFormat property PySide6 actually returns here.
+            selection.format.setBackground(color)  # pylint: disable=no-member
+            selections.append(selection)
+        text.setExtraSelections(selections)
 
     def _mark_label(self, slot: str) -> str:
         mark = self.marks[slot]

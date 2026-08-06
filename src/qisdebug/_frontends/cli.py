@@ -10,14 +10,65 @@ in any environment.
 from __future__ import annotations
 
 import cmd
+import sys
 from dataclasses import dataclass
 from typing import ClassVar
 
 from .._events import ExecutionFinishedEvent, TelemetryEvent, Timeline
-from . import _render
+from . import _circuit_diff, _render
 from .base import TimelineFrontend
 
 _MARK_SLOTS = ("a", "b")
+_DIFF_REMOVED_ON = "\x1b[41;97m"  # red background, bright white text
+_DIFF_ADDED_ON = "\x1b[42;30m"  # green background, black text
+_DIFF_HIGHLIGHT_OFF = "\x1b[0m"
+
+
+def _highlight_row(row: str, column_ranges: list[tuple[int, int]], color: str) -> str:
+    """Wrap the diffing column ranges of one drawing row in a terminal
+    background color, when stdout is a tty (plain text otherwise, since
+    ANSI codes would just show up as garbage in a redirected/piped output).
+    """
+    if not column_ranges or not sys.stdout.isatty():
+        return row
+    pieces = []
+    cursor = 0
+    for start, end in column_ranges:
+        if start >= len(row):
+            break
+        pieces.append(row[cursor:start])
+        pieces.append(color + row[start:min(end, len(row))] + _DIFF_HIGHLIGHT_OFF)
+        cursor = end
+    pieces.append(row[cursor:])
+    return "".join(pieces)
+
+
+def _render_diff_side_text(side: _circuit_diff.CircuitDiffSide, color: str) -> str:
+    """Render one side of a :class:`~._circuit_diff.CircuitSplitDiff` as its
+    own full-width block: a label line followed by the drawing, with the
+    columns unique to this side highlighted.
+    """
+    rows = [
+        _highlight_row(row, side.row_ranges, color) for row in side.text.split("\n")
+    ]
+    return "\n".join([side.label, *rows])
+
+
+def _render_circuit_split_diff_text(split_diff: _circuit_diff.CircuitSplitDiff) -> str:
+    """Render a :class:`~._circuit_diff.CircuitSplitDiff` as two stacked,
+    full-width panes -- circuit A on top (red for content only it has),
+    circuit B below (green for content only it has). Stacked rather than
+    side by side because a typical terminal is nowhere near twice a
+    circuit drawing's width, and a narrow terminal wrapping two
+    interleaved panes is far harder to read than scrolling past one full
+    circuit at a time.
+    """
+    return "\n\n".join(
+        [
+            _render_diff_side_text(split_diff.a, _DIFF_REMOVED_ON),
+            _render_diff_side_text(split_diff.b, _DIFF_ADDED_ON),
+        ]
+    )
 
 
 @dataclass
@@ -270,7 +321,10 @@ class _TimelineShell(cmd.Cmd):
     do_d = do_diff
 
     def _render_diff(self) -> str:
-        """Render the current A/B diff per ``self.diff_selection``."""
+        """Render the current A/B diff per ``self.diff_selection``: the
+        split-view circuit diagram diff (what the two circuits actually look
+        like, side by side) followed by the gate/state-level summary.
+        """
         mark_a, mark_b = self.marks["a"], self.marks["b"]
         if mark_a is None or mark_b is None:
             return ""
@@ -278,12 +332,25 @@ class _TimelineShell(cmd.Cmd):
             return _render.render_stage_overall_diff(
                 mark_a, mark_b, self.timelines_by_id
             )
-        return _render.render_stage_diff(
-            mark_a,
-            mark_b,
-            self.timelines_by_id,
-            element_a=self.diff_selection.element_a,
-            element_b=self.diff_selection.element_b,
+        element_a = self.diff_selection.element_a
+        element_b = self.diff_selection.element_b
+        split_diff = _circuit_diff.render_circuit_split_diff(
+            mark_a, mark_b, self.timelines_by_id,
+            element_a=element_a, element_b=element_b,
+        )
+        if isinstance(split_diff, str):
+            # Ambiguous/unresolved pick -- render_stage_diff below would
+            # hit the exact same element resolution and repeat this same
+            # message, so report it once instead of twice.
+            return split_diff
+        return "\n\n".join(
+            [
+                _render_circuit_split_diff_text(split_diff),
+                _render.render_stage_diff(
+                    mark_a, mark_b, self.timelines_by_id,
+                    element_a=element_a, element_b=element_b,
+                ),
+            ]
         )
 
     def _parse_watch_arg(self, arg: str, command: str) -> _render.WatchTarget | None:

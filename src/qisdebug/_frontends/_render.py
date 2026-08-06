@@ -568,15 +568,30 @@ def render_stage_diff(
             f"stage B has multiple elements ({options}) -- "
             "specify which one, e.g. diff <a> <b>"
         )
+    diff = diff_at_marks(stage_a, resolved_a, stage_b, resolved_b)
+    return render_state_diff(diff)
+
+
+def diff_at_marks(
+    stage_a: StageMark,
+    resolved_a: tuple[Timeline, str],
+    stage_b: StageMark,
+    resolved_b: tuple[Timeline, str],
+) -> TimelineDiff:
+    """Thin wrapper naming both sides' :class:`~.._analysis.DiffPoint` from
+    an already-resolved (stage, ``(timeline, track)``) pair, shared by
+    :func:`render_stage_diff` and the circuit split-view diff
+    (:mod:`._circuit_diff`) so the two never diverge on how a stage's
+    seq/track pair becomes a :class:`~.._analysis.TimelineDiff`.
+    """
     timeline_a, track_a = resolved_a
     timeline_b, track_b = resolved_b
-    diff = diff_timeline_points(
+    return diff_timeline_points(
         timeline_a,
         timeline_b,
         at_a=DiffPoint(stage_a.seq, track_a),
         at_b=DiffPoint(stage_b.seq, track_b),
     )
-    return render_state_diff(diff)
 
 
 def render_stage_overall_diff(

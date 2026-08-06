@@ -19,7 +19,7 @@ the exact same :func:`matches`:
 
 from __future__ import annotations
 
-from typing import Annotated, Literal, Union
+from typing import Annotated, Callable, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -27,6 +27,10 @@ from ._analysis import (
     Anomaly,
     anomaly_for_event,
     clbit_ones_total,
+    compare_counts,
+    outcome_frequency,
+    outcome_probability,
+    pauli_expectation,
     qubit_probability_one,
 )
 from ._events import (
@@ -57,17 +61,21 @@ class GateMatchCondition(BaseModel):
 
 
 class SeqThresholdCondition(BaseModel):
-    """Break once any event reaches this store-wide sequence number.
+    """Break once any event's sequence number satisfies ``comparator`` against
+    ``seq``.
 
     ``seq`` is a :class:`~qisdebug._events.TelemetryEvent.seq` (the store's
     monotonic counter, shared across every circuit it tracks), typically
     read off an earlier captured event to say "stop me right after this
-    point next time."
+    point next time." ``comparator`` defaults to ``"ge"`` (the original,
+    only, behavior before this field existed) so "stop at or after seq N" is
+    still the default without spelling it out.
     """
 
     kind: Literal["seq"] = "seq"
     circuit_id: str | None = None
     seq: int
+    comparator: Comparator = "ge"
 
 
 class WatchThresholdCondition(BaseModel):
@@ -109,12 +117,72 @@ class AnomalyCondition(BaseModel):
     min_severity: Severity = "warning"
 
 
+class ExpectationCondition(BaseModel):
+    """Break when a single-qubit Pauli expectation value crosses a threshold.
+
+    Computed from a live statevector snapshot via
+    :func:`~qisdebug._analysis.pauli_expectation`. Only single-qubit
+    operators are supported (``pauli`` applies to ``qubit`` alone); a
+    multi-qubit Pauli string is a possible future extension. Unlike
+    gate/seq/anomaly this always needs one specific circuit, same as
+    :class:`WatchThresholdCondition`, since an expectation value is
+    meaningless without knowing which circuit's state it's read from.
+    """
+
+    kind: Literal["expectation"] = "expectation"
+    circuit_id: str
+    pauli: Literal["X", "Y", "Z"]
+    qubit: int
+    comparator: Comparator
+    threshold: float
+
+
+class ProbabilityCondition(BaseModel):
+    """Break when the probability of one exact outcome crosses a threshold.
+
+    Matches whichever ground truth is available when checked: a state
+    snapshot gives the exact ``|amplitude|**2`` for ``outcome``
+    (:func:`~qisdebug._analysis.outcome_probability`); a finished execution
+    gives the observed shot frequency
+    (:func:`~qisdebug._analysis.outcome_frequency`). Same metric ("how
+    likely is this bitstring"), read from whichever event is currently being
+    recorded.
+    """
+
+    kind: Literal["probability"] = "probability"
+    circuit_id: str
+    outcome: str
+    comparator: Comparator
+    threshold: float
+
+
+class DistributionDistanceCondition(BaseModel):
+    """Break when measured counts drift from an expected distribution by more
+    than ``threshold``, measured as total variation distance.
+
+    Reuses :func:`~qisdebug._analysis.compare_counts` -- the same TVD math
+    already used for post-hoc counts comparison -- rather than duplicating
+    it, so a breakpoint and a manual ``debug.diff``/``compare_counts`` call
+    never disagree about what "close to expected" means. ``expected`` need
+    not cover every outcome; anything left out is treated as probability 0.
+    """
+
+    kind: Literal["distribution"] = "distribution"
+    circuit_id: str
+    expected: dict[str, float]
+    comparator: Comparator
+    threshold: float
+
+
 BreakpointCondition = Annotated[
     Union[
         GateMatchCondition,
         SeqThresholdCondition,
         WatchThresholdCondition,
         AnomalyCondition,
+        ExpectationCondition,
+        ProbabilityCondition,
+        DistributionDistanceCondition,
     ],
     Field(discriminator="kind"),
 ]
@@ -209,6 +277,44 @@ def _matches_watch_threshold(
     return _matches_clbit_threshold(condition, event, indices)
 
 
+def _matches_expectation(
+    condition: ExpectationCondition, event: TelemetryEvent
+) -> bool:
+    if not isinstance(event, StateSnapshotEvent):
+        return False
+    amplitudes = event.amplitudes()
+    if not amplitudes:
+        return False
+    value = pauli_expectation(amplitudes, condition.pauli, condition.qubit)
+    return _compare(value, condition.comparator, condition.threshold)
+
+
+def _matches_probability(
+    condition: ProbabilityCondition, event: TelemetryEvent
+) -> bool:
+    if isinstance(event, StateSnapshotEvent):
+        amplitudes = event.amplitudes()
+        if not amplitudes:
+            return False
+        value = outcome_probability(amplitudes, condition.outcome)
+        return _compare(value, condition.comparator, condition.threshold)
+    if isinstance(event, ExecutionFinishedEvent) and event.counts:
+        value = outcome_frequency(event.counts, condition.outcome)
+        if value is None:
+            return False
+        return _compare(value, condition.comparator, condition.threshold)
+    return False
+
+
+def _matches_distribution(
+    condition: DistributionDistanceCondition, event: TelemetryEvent
+) -> bool:
+    if not isinstance(event, ExecutionFinishedEvent) or not event.counts:
+        return False
+    tvd = compare_counts(event.counts, condition.expected).total_variation_distance
+    return _compare(tvd, condition.comparator, condition.threshold)
+
+
 def _matches_anomaly(
     condition: AnomalyCondition, event: TelemetryEvent, *, prev_depth: int | None
 ) -> Anomaly | None:
@@ -218,6 +324,31 @@ def _matches_anomaly(
     if _SEVERITY_RANK[anomaly.severity] < _SEVERITY_RANK[condition.min_severity]:
         return None
     return anomaly
+
+
+def _matches_gate(condition: GateMatchCondition, event: TelemetryEvent) -> bool:
+    if not isinstance(event, GateEvent) or event.gate != condition.gate:
+        return False
+    return condition.qubits is None or set(condition.qubits) == set(event.qubits)
+
+
+def _matches_seq(condition: SeqThresholdCondition, event: TelemetryEvent) -> bool:
+    return _compare(event.seq, condition.comparator, condition.seq)
+
+
+# Dispatched by exact condition type (see `matches`): each entry takes the
+# condition, the event, the event's timeline, and the running transpile-depth
+# context, mirroring the one signature every branch used to share inline.
+_MATCHERS: dict[type, Callable[..., bool]] = {
+    GateMatchCondition: lambda c, e, _t, _d: _matches_gate(c, e),
+    SeqThresholdCondition: lambda c, e, _t, _d: _matches_seq(c, e),
+    WatchThresholdCondition: lambda c, e, t, _d: _matches_watch_threshold(c, e, t),
+    ExpectationCondition: lambda c, e, _t, _d: _matches_expectation(c, e),
+    ProbabilityCondition: lambda c, e, _t, _d: _matches_probability(c, e),
+    DistributionDistanceCondition: lambda c, e, _t, _d: _matches_distribution(c, e),
+    AnomalyCondition: lambda c, e, _t, d: _matches_anomaly(c, e, prev_depth=d)
+    is not None,
+}
 
 
 def matches(
@@ -239,12 +370,4 @@ def matches(
     """
     if condition.circuit_id is not None and condition.circuit_id != timeline.circuit_id:
         return False
-    if isinstance(condition, GateMatchCondition):
-        if not isinstance(event, GateEvent) or event.gate != condition.gate:
-            return False
-        return condition.qubits is None or set(condition.qubits) == set(event.qubits)
-    if isinstance(condition, SeqThresholdCondition):
-        return event.seq >= condition.seq
-    if isinstance(condition, WatchThresholdCondition):
-        return _matches_watch_threshold(condition, event, timeline)
-    return _matches_anomaly(condition, event, prev_depth=prev_depth) is not None
+    return _MATCHERS[type(condition)](condition, event, timeline, prev_depth)

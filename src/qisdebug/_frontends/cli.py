@@ -106,13 +106,20 @@ class _DiffSelection:
     element_b: str | None = None
 
 
-class _TimelineShell(cmd.Cmd):  # pylint: disable=too-many-instance-attributes
+class _TimelineShell(
+    cmd.Cmd
+):  # pylint: disable=too-many-instance-attributes,too-many-public-methods
     """Line-oriented REPL for stepping through a merged timeline.
 
     One attribute per independent interactive feature (watches, marks/diff
     selection, breakpoints) plus the underlying merged-timeline state --
     the same shape as the GUI's ``_TimelineWindow``, which carries the same
-    disable for the same reason.
+    disable for the same reason. Public-method count is inflated by
+    :mod:`cmd`'s own dispatch convention -- every interactive command is a
+    ``do_<name>`` method, and short aliases (``do_n = do_next`` etc.) are
+    each their own class attribute -- rather than by too many independent
+    responsibilities; splitting commands across classes would fight
+    ``cmd.Cmd``'s single-dispatch-table design for no readability gain.
     """
 
     prompt = "qisdebug> "
@@ -405,11 +412,16 @@ class _TimelineShell(cmd.Cmd):  # pylint: disable=too-many-instance-attributes
         return "\n\n".join(sections)
 
     def do_break(self, arg: str) -> bool:
-        """b, break gate NAME [Q1 Q2 ...] | break seq N | break watch qubit|clbit|register
-        REF gt|lt|ge|le|eq|ne THRESHOLD | break anomaly [info|warning|error]
-        Add a conditional breakpoint, scoped to the circuit currently on
-        screen. "continue" jumps to the first later event matching any
-        breakpoint."""
+        """b, break gate NAME [Q1 Q2 ...] | break seq CMP N |
+        break watch qubit|clbit|register REF CMP THRESHOLD |
+        break expect X|Y|Z QUBIT CMP THRESHOLD | break prob OUTCOME CMP THRESHOLD |
+        break tvd OUTCOME=PROB [OUTCOME=PROB ...] CMP THRESHOLD |
+        break anomaly [info|warning|error]
+        CMP is one of >= <= == != > <. Every kind may end with 'on CIRCUIT'
+        (or 'on *' for gate/seq/anomaly) to scope elsewhere than the circuit
+        currently on screen, the default. Tab-completion is available after
+        'break '. hf/hp/c(ontinue)/hl jump to the first/previous/next/last
+        event matching any breakpoint."""
         condition = self._parse_break_arg(arg)
         if condition is None:
             return False
@@ -418,6 +430,24 @@ class _TimelineShell(cmd.Cmd):  # pylint: disable=too-many-instance-attributes
         return False
 
     do_b = do_break
+
+    def complete_break(
+        self, text: str, line: str, begidx: int, _endidx: int
+    ) -> list[str]:
+        """Tab-completion for ``break``/``b``, delegating to
+        :func:`~._breakpoints.suggest_tokens` so the CLI never offers
+        something the shared parser would go on to reject."""
+        parts = line[:begidx].split()[1:]
+        source, _event = self.merged[self.index]
+        timeline = self.timelines_by_id.get(source.circuit_id)
+        circuits = _bp.circuit_choices(self.timelines_by_id)
+        if not parts or parts[0] not in _bp.KINDS:
+            candidates = list(_bp.KINDS)
+        else:
+            candidates = _bp.suggest_tokens(parts[0], parts[1:], timeline, circuits)
+        return [c for c in candidates if c.startswith(text)]
+
+    complete_b = complete_break
 
     def do_breakpoints(self, _arg: str) -> bool:
         """bp, breakpoints: list active breakpoints."""
@@ -444,14 +474,14 @@ class _TimelineShell(cmd.Cmd):  # pylint: disable=too-many-instance-attributes
         print(f"removed breakpoint {target}")
         return False
 
-    def do_continue(self, _arg: str) -> bool:
-        """c, continue: jump to the next event matching any breakpoint."""
-        if not self.breakpoints:
-            print("no active breakpoints (see: break)")
-            return False
-        hit = _bp.find_next_hit(self.merged, self.breakpoints.as_dict(), self.index)
+    def _jump_to_hit(self, hit: tuple[int, str] | None, *, none_message: str) -> bool:
+        """Jump to a breakpoint hit found by one of the ``find_*_hit``
+        functions, or report why there wasn't one. Shared by
+        continue/hitfirst/hitprev/hitlast so the four only differ in which
+        finder they call.
+        """
         if hit is None:
-            print("no later event matches any breakpoint")
+            print(none_message)
             return False
         index, handle = hit
         self.index = index
@@ -461,7 +491,49 @@ class _TimelineShell(cmd.Cmd):  # pylint: disable=too-many-instance-attributes
         self.print_frame()
         return False
 
+    def do_continue(self, _arg: str) -> bool:
+        """c, continue: jump to the next event matching any breakpoint."""
+        if not self.breakpoints:
+            print("no active breakpoints (see: break)")
+            return False
+        hit = _bp.find_next_hit(self.merged, self.breakpoints.as_dict(), self.index)
+        return self._jump_to_hit(
+            hit, none_message="no later event matches any breakpoint"
+        )
+
     do_c = do_continue
+
+    def do_hitfirst(self, _arg: str) -> bool:
+        """hf, hitfirst: jump to the earliest event matching any breakpoint."""
+        if not self.breakpoints:
+            print("no active breakpoints (see: break)")
+            return False
+        hit = _bp.find_first_hit(self.merged, self.breakpoints.as_dict())
+        return self._jump_to_hit(hit, none_message="no event matches any breakpoint")
+
+    do_hf = do_hitfirst
+
+    def do_hitprev(self, _arg: str) -> bool:
+        """hp, hitprev: jump to the previous event matching any breakpoint."""
+        if not self.breakpoints:
+            print("no active breakpoints (see: break)")
+            return False
+        hit = _bp.find_prev_hit(self.merged, self.breakpoints.as_dict(), self.index)
+        return self._jump_to_hit(
+            hit, none_message="no earlier event matches any breakpoint"
+        )
+
+    do_hp = do_hitprev
+
+    def do_hitlast(self, _arg: str) -> bool:
+        """hl, hitlast: jump to the latest event matching any breakpoint."""
+        if not self.breakpoints:
+            print("no active breakpoints (see: break)")
+            return False
+        hit = _bp.find_last_hit(self.merged, self.breakpoints.as_dict())
+        return self._jump_to_hit(hit, none_message="no event matches any breakpoint")
+
+    do_hl = do_hitlast
 
     def _parse_break_arg(self, arg: str) -> BreakpointCondition | None:
         """Parse one ``break`` command's arguments into a condition, scoped
@@ -534,7 +606,8 @@ class CLIFrontend(TimelineFrontend):
             "w(atch)/unwatch qubit|clbit|register|track ...  watches  "
             "mark a|b  unmark a|b|all  elements a|b  "
             "d(iff) [overall | <element_a> <element_b>]  "
-            "b(reak) gate|seq|watch|anomaly ...  bp  unbreak HANDLE|all  c(ontinue)  "
+            "b(reak) gate|seq|watch|expect|prob|tvd|anomaly ... [Tab-completes]  bp  "
+            "unbreak HANDLE|all  hf(irst)  hp(rev)  c(ontinue)  hl(ast)  "
             "h(elp)  q(uit)"
         )
 

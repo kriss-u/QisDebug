@@ -360,6 +360,65 @@ def clbit_ones_total(counts: Mapping[str, int], clbit: int) -> tuple[int, int] |
     return ones, total
 
 
+def pauli_expectation(
+    amplitudes: Sequence[complex], pauli: Literal["X", "Y", "Z"], qubit: int
+) -> float:
+    """Return the single-qubit Pauli expectation value ``<psi|P_qubit|psi>``.
+
+    Shared by the watch panel and the conditional-breakpoint expectation
+    condition (:mod:`qisdebug._breakpoints`), mirroring
+    :func:`qubit_probability_one`. Only single-qubit Pauli operators are
+    supported -- multi-qubit Pauli strings are a possible future extension,
+    not needed for the common "is this qubit near |0>/|1> or a superposition
+    in this basis" checks the breakpoint condition targets.
+    """
+    total = 0.0
+    for basis, amp0 in enumerate(amplitudes):
+        if (basis >> qubit) & 1:
+            continue
+        paired = basis | (1 << qubit)
+        if paired >= len(amplitudes):
+            continue
+        amp1 = amplitudes[paired]
+        if pauli == "Z":
+            total += abs(amp0) ** 2 - abs(amp1) ** 2
+        elif pauli == "X":
+            total += 2 * (amp0.conjugate() * amp1).real
+        else:
+            total += 2 * (amp0.conjugate() * amp1).imag
+    return total
+
+
+def outcome_probability(amplitudes: Sequence[complex], outcome: str) -> float:
+    """Return ``|amplitude|**2`` for one basis state, named by its bitstring.
+
+    ``outcome`` follows the same convention as a Qiskit counts key (bit 0 is
+    the rightmost character; register-separating spaces are stripped), so it
+    lines up with :func:`clbit_value` and the basis index Qiskit itself uses.
+    """
+    index = int(outcome.replace(" ", ""), 2)
+    if index >= len(amplitudes):
+        return 0.0
+    return abs(amplitudes[index]) ** 2
+
+
+def outcome_frequency(counts: Mapping[str, int], outcome: str) -> float | None:
+    """Return the observed frequency of one exact outcome, or ``None`` if empty.
+
+    Mirrors :func:`clbit_ones_total`'s shape but for a whole outcome string
+    rather than one bit; used by the conditional-breakpoint probability
+    condition when checking measurement counts rather than a live statevector.
+    """
+    total = sum(counts.values())
+    if not total:
+        return None
+    target = outcome.replace(" ", "")
+    matched = sum(
+        n for bitstring, n in counts.items() if bitstring.replace(" ", "") == target
+    )
+    return matched / total
+
+
 def circuit_object_tracks(
     timeline: Timeline,
 ) -> tuple[list[dict[str, Any]], list[str | None]]:

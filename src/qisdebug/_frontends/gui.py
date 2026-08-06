@@ -21,7 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, ClassVar, Literal
 
-from PySide6.QtCore import QEvent, QObject, QRectF, Qt, QTimer
+from PySide6.QtCore import QEvent, QObject, QRectF, Qt, QStringListModel, QTimer
 from PySide6.QtGui import (
     QColor,
     QFont,
@@ -36,6 +36,8 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
+    QCompleter,
+    QDoubleSpinBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -45,6 +47,7 @@ from PySide6.QtWidgets import (
     QSlider,
     QSpinBox,
     QSplitter,
+    QStackedLayout,
     QTabWidget,
     QTextEdit,
     QVBoxLayout,
@@ -316,6 +319,7 @@ class _TimelineWindow(
         layout = self._build_widgets(container)
         self._build_watch_widgets(layout)
         self._build_mark_widgets(layout)
+        self._build_breakpoint_pages()
         self._build_breakpoint_widgets(layout)
         self._diff_panel = self._build_diff_panel()
 
@@ -509,35 +513,150 @@ class _TimelineWindow(
         mark_row.addStretch(1)
         layout.addLayout(mark_row)
 
+    def _build_breakpoint_pages(self) -> None:
+        """Build the per-kind breakpoint field groups (comparator dropdown
+        with symbols, qubit/ref dropdowns populated from the live circuit,
+        autocomplete on free-text fields) into ``self.breakpoint_pages``,
+        the same cascading-dropdown idea already used by the watch row's
+        kind->ref pickers (:meth:`_refresh_watch_ref_choices`), just one
+        page per kind instead of one dropdown swapping a single ref list.
+
+        Split out from :meth:`_build_breakpoint_widgets` (called directly
+        from ``__init__`` alongside it, both self-contained) purely to keep
+        each under the project's statement-count lint threshold -- there's
+        no ordering dependency between the two besides both running before
+        :meth:`_refresh_breakpoint_fields`.
+        """
+        self.breakpoint_pages = QStackedLayout()
+
+        self.bp_gate_name, self.bp_gate_name_choices = _completer_field(
+            "gate name, e.g. cx"
+        )
+        self.bp_gate_qubits = QLineEdit()
+        self.bp_gate_qubits.setPlaceholderText("qubits, e.g. 0 1 (optional)")
+        self.breakpoint_pages.addWidget(
+            self._page(self.bp_gate_name, self.bp_gate_qubits)
+        )
+
+        self.bp_seq_cmp = _comparator_combo()
+        self.bp_seq_value = QSpinBox()
+        self.bp_seq_value.setRange(0, 1_000_000)
+        self.breakpoint_pages.addWidget(self._page(self.bp_seq_cmp, self.bp_seq_value))
+
+        self.bp_watch_kind = QComboBox()
+        self.bp_watch_kind.addItems(list(_bp.WATCH_KINDS))
+        self.bp_watch_kind.currentTextChanged.connect(  # pylint: disable=no-member
+            self._refresh_breakpoint_fields
+        )
+        self.bp_watch_ref = QComboBox()
+        self.bp_watch_cmp = _comparator_combo()
+        self.bp_watch_threshold = _threshold_spinbox()
+        self.breakpoint_pages.addWidget(
+            self._page(
+                self.bp_watch_kind,
+                self.bp_watch_ref,
+                self.bp_watch_cmp,
+                self.bp_watch_threshold,
+            )
+        )
+
+        self.bp_expect_pauli = QComboBox()
+        self.bp_expect_pauli.addItems(list(_bp.PAULIS))
+        self.bp_expect_qubit = QComboBox()
+        self.bp_expect_cmp = _comparator_combo()
+        self.bp_expect_threshold = _threshold_spinbox()
+        self.breakpoint_pages.addWidget(
+            self._page(
+                self.bp_expect_pauli,
+                self.bp_expect_qubit,
+                self.bp_expect_cmp,
+                self.bp_expect_threshold,
+            )
+        )
+
+        self.bp_prob_outcome, self.bp_prob_outcome_choices = _completer_field(
+            "outcome, e.g. 01"
+        )
+        self.bp_prob_cmp = _comparator_combo()
+        self.bp_prob_threshold = _threshold_spinbox()
+        self.breakpoint_pages.addWidget(
+            self._page(self.bp_prob_outcome, self.bp_prob_cmp, self.bp_prob_threshold)
+        )
+
+        self.bp_tvd_expected = QLineEdit()
+        self.bp_tvd_expected.setPlaceholderText("expected, e.g. 00=0.5 11=0.5")
+        self.bp_tvd_cmp = _comparator_combo()
+        self.bp_tvd_threshold = _threshold_spinbox()
+        self.breakpoint_pages.addWidget(
+            self._page(self.bp_tvd_expected, self.bp_tvd_cmp, self.bp_tvd_threshold)
+        )
+
+        self.bp_anomaly_severity = QComboBox()
+        self.bp_anomaly_severity.addItems(list(_bp.SEVERITIES))
+        self.breakpoint_pages.addWidget(self._page(self.bp_anomaly_severity))
+
     def _build_breakpoint_widgets(self, layout: QVBoxLayout) -> None:
         """Lay out the breakpoint condition builder, active-breakpoint list,
-        and "run to next breakpoint" navigation, mirroring the watch row
-        above -- adding/removing entries on the left, what's active on the
-        right, one line each.
+        and hit navigation, mirroring the watch row above -- adding/removing
+        entries on the left, what's active on the right, one line each.
+
+        Assumes :meth:`_build_breakpoint_pages` (called first, directly from
+        ``__init__``) already populated ``self.breakpoint_pages``.
         """
         breakpoint_row = QHBoxLayout()
         breakpoint_row.addWidget(QLabel("Break:"))
         self.breakpoint_kind = QComboBox()
-        self.breakpoint_kind.addItems(["gate", "seq", "watch", "anomaly"])
-        breakpoint_row.addWidget(self.breakpoint_kind)
-        self.breakpoint_args = QLineEdit()
-        self.breakpoint_args.setPlaceholderText(_bp.CONDITION_USAGE)
-        self.breakpoint_args.setToolTip(
-            f"Arguments after the kind, e.g. {_bp.CONDITION_USAGE}"
+        self.breakpoint_kind.addItems(list(_bp.KINDS))
+        self.breakpoint_kind.currentTextChanged.connect(  # pylint: disable=no-member
+            self._on_breakpoint_kind_changed
         )
-        breakpoint_row.addWidget(self.breakpoint_args, stretch=1)
+        breakpoint_row.addWidget(self.breakpoint_kind)
+
+        pages_widget = QWidget()
+        pages_widget.setLayout(self.breakpoint_pages)
+        breakpoint_row.addWidget(pages_widget, stretch=1)
+
+        breakpoint_row.addWidget(QLabel("on"))
+        self.breakpoint_scope = QComboBox()
+        self.breakpoint_scope.setToolTip(
+            "Which circuit this breakpoint watches -- defaults to the one "
+            "currently on screen; '*' means any circuit (gate/seq/anomaly only)"
+        )
+        breakpoint_row.addWidget(self.breakpoint_scope)
+
         breakpoint_row.addWidget(_button("+ Add breakpoint", self._add_breakpoint))
         breakpoint_row.addWidget(
             _button("Remove selected", self._remove_selected_breakpoint)
-        )
-        breakpoint_row.addWidget(
-            _button("Run to next breakpoint →", self._run_to_next_breakpoint)
         )
         layout.addLayout(breakpoint_row)
 
         self.breakpoint_list = QListWidget()
         self.breakpoint_list.setMaximumHeight(60)
         layout.addWidget(self.breakpoint_list)
+
+        hit_row = QHBoxLayout()
+        hit_row.addWidget(QLabel("Breakpoint hits:"))
+        hit_row.addWidget(_button("⏮ First hit", self._goto_first_hit))
+        hit_row.addWidget(_button("◀ Prev hit", self._goto_prev_hit))
+        hit_row.addWidget(_button("Next hit ▶", self._goto_next_hit))
+        hit_row.addWidget(_button("Last hit ⏭", self._goto_last_hit))
+        hit_row.addStretch(1)
+        layout.addLayout(hit_row)
+
+        self._refresh_breakpoint_fields()
+
+    @staticmethod
+    def _page(*widgets: QWidget) -> QWidget:
+        page = QWidget()
+        row = QHBoxLayout(page)
+        row.setContentsMargins(0, 0, 0, 0)
+        for widget in widgets:
+            row.addWidget(widget)
+        return page
+
+    def _on_breakpoint_kind_changed(self, kind: str) -> None:
+        self.breakpoint_pages.setCurrentIndex(_bp.KINDS.index(kind))
+        self._refresh_breakpoint_fields()
 
     def _build_diff_panel(self) -> QWidget:
         """Build the "Diff" tab's contents, shown only once both marks are set.
@@ -865,6 +984,7 @@ class _TimelineWindow(
         self._highlight_and_scroll(active_span)
         self._update_control_state()
         self._refresh_watch_ref_choices()
+        self._refresh_breakpoint_fields()
 
         self._syncing_slider = True
         try:
@@ -934,9 +1054,105 @@ class _TimelineWindow(
         self._render()
         self._update_diff_text()
 
+    _BREAKPOINT_SCOPE_CURRENT = "(current)"
+
+    def _refresh_breakpoint_fields(self, _value: object = None) -> None:
+        """Repopulate every dynamic breakpoint field (watch ref, expect
+        qubit, gate-name/outcome autocomplete, circuit scope) for the
+        circuit currently on screen, mirroring :meth:`_refresh_watch_ref_choices`.
+        """
+        if self.controller is None:
+            raise RuntimeError(
+                "internal error: controller accessed before it was built"
+            )
+        source, _event = self.controller.current
+
+        self.bp_gate_name_choices.setStringList(_bp.known_gate_names(source))
+        self.bp_prob_outcome_choices.setStringList(_bp.small_outcome_space(source))
+
+        previous_ref = self.bp_watch_ref.currentText()
+        self.bp_watch_ref.blockSignals(True)
+        self.bp_watch_ref.clear()
+        watch_kind = self.bp_watch_kind.currentText()
+        if watch_kind == "qubit":
+            self.bp_watch_ref.addItems(_bp.qubit_range(source))
+        elif watch_kind == "clbit":
+            self.bp_watch_ref.addItems(_bp.clbit_range(source))
+        else:
+            self.bp_watch_ref.addItems(_bp.register_names(source))
+        index = self.bp_watch_ref.findText(previous_ref)
+        if index >= 0:
+            self.bp_watch_ref.setCurrentIndex(index)
+        self.bp_watch_ref.blockSignals(False)
+
+        previous_qubit = self.bp_expect_qubit.currentText()
+        self.bp_expect_qubit.clear()
+        self.bp_expect_qubit.addItems(_bp.qubit_range(source))
+        index = self.bp_expect_qubit.findText(previous_qubit)
+        if index >= 0:
+            self.bp_expect_qubit.setCurrentIndex(index)
+
+        previous_scope = self.breakpoint_scope.currentText()
+        self.breakpoint_scope.blockSignals(True)
+        self.breakpoint_scope.clear()
+        self.breakpoint_scope.addItems(
+            [
+                self._BREAKPOINT_SCOPE_CURRENT,
+                "*",
+                *_bp.circuit_choices(self.timelines_by_id),
+            ]
+        )
+        index = self.breakpoint_scope.findText(previous_scope)
+        self.breakpoint_scope.setCurrentIndex(index if index >= 0 else 0)
+        self.breakpoint_scope.blockSignals(False)
+
+    def _breakpoint_tokens(self, kind: str) -> list[str]:
+        """Read the currently visible field group's widgets into the token
+        list :func:`~._breakpoints.parse_condition_args` expects, so parsing
+        and validation still live in exactly one place.
+        """
+        if kind == "gate":
+            tokens = [self.bp_gate_name.text(), *self.bp_gate_qubits.text().split()]
+        elif kind == "seq":
+            tokens = [self.bp_seq_cmp.currentText(), str(self.bp_seq_value.value())]
+        elif kind == "watch":
+            tokens = [
+                self.bp_watch_kind.currentText(),
+                self.bp_watch_ref.currentText(),
+                self.bp_watch_cmp.currentText(),
+                str(self.bp_watch_threshold.value()),
+            ]
+        elif kind == "expect":
+            tokens = [
+                self.bp_expect_pauli.currentText(),
+                self.bp_expect_qubit.currentText(),
+                self.bp_expect_cmp.currentText(),
+                str(self.bp_expect_threshold.value()),
+            ]
+        elif kind == "prob":
+            tokens = [
+                self.bp_prob_outcome.text(),
+                self.bp_prob_cmp.currentText(),
+                str(self.bp_prob_threshold.value()),
+            ]
+        elif kind == "tvd":
+            tokens = [
+                *self.bp_tvd_expected.text().split(),
+                self.bp_tvd_cmp.currentText(),
+                str(self.bp_tvd_threshold.value()),
+            ]
+        else:
+            severity = self.bp_anomaly_severity.currentText()
+            tokens = [severity] if severity else []
+        scope = self.breakpoint_scope.currentText()
+        if scope and scope != self._BREAKPOINT_SCOPE_CURRENT:
+            tokens += ["on", scope]
+        return tokens
+
     def _add_breakpoint(self) -> None:
-        """Parse the condition-builder row and register a breakpoint,
-        scoped to the circuit currently on screen.
+        """Parse the active condition-builder page and register a
+        breakpoint, scoped to the circuit currently on screen unless the
+        "on" dropdown overrides it.
         """
         if self.controller is None:
             raise RuntimeError(
@@ -944,17 +1160,17 @@ class _TimelineWindow(
             )
         source, _event = self.controller.current
         kind = self.breakpoint_kind.currentText()
-        args = self.breakpoint_args.text().split()
+        args = self._breakpoint_tokens(kind)
         try:
             condition = _bp.parse_condition_args(kind, args, source.circuit_id)
         except ValueError as exc:
-            self.breakpoint_args.setToolTip(str(exc))
+            self.breakpoint_kind.setToolTip(str(exc))
             return
+        self.breakpoint_kind.setToolTip("")
         handle = self.breakpoints.add(condition)
         item = QListWidgetItem(f"[{handle}] {_bp.describe_condition(condition)}")
         item.setData(Qt.ItemDataRole.UserRole, handle)
         self.breakpoint_list.addItem(item)
-        self.breakpoint_args.clear()
 
     def _remove_selected_breakpoint(self) -> None:
         """Remove whichever breakpoint-list rows are currently selected."""
@@ -963,21 +1179,51 @@ class _TimelineWindow(
             self.breakpoints.remove(handle)
             self.breakpoint_list.takeItem(self.breakpoint_list.row(item))
 
-    def _run_to_next_breakpoint(self) -> None:
-        """Jump forward to the next event matching any active breakpoint."""
-        if self.controller is None:
-            raise RuntimeError(
-                "internal error: controller accessed before it was built"
-            )
-        if not self.breakpoints:
-            return
-        hit = _bp.find_next_hit(
-            self.controller.merged, self.breakpoints.as_dict(), self.controller.index
-        )
+    def _goto_hit(self, hit: tuple[int, str] | None) -> None:
         if hit is None:
             return
         index, _handle = hit
         self._goto(index)
+
+    def _goto_first_hit(self) -> None:
+        """Jump to the earliest event matching any active breakpoint."""
+        if self.controller is None or not self.breakpoints:
+            return
+        self._goto_hit(
+            _bp.find_first_hit(self.controller.merged, self.breakpoints.as_dict())
+        )
+
+    def _goto_prev_hit(self) -> None:
+        """Jump to the previous event matching any active breakpoint."""
+        if self.controller is None or not self.breakpoints:
+            return
+        self._goto_hit(
+            _bp.find_prev_hit(
+                self.controller.merged,
+                self.breakpoints.as_dict(),
+                self.controller.index,
+            )
+        )
+
+    def _goto_next_hit(self) -> None:
+        """Jump forward to the next event matching any active breakpoint."""
+        if self.controller is None or not self.breakpoints:
+            return
+        self._goto_hit(
+            _bp.find_next_hit(
+                self.controller.merged,
+                self.breakpoints.as_dict(),
+                self.controller.index,
+            )
+        )
+
+    def _goto_last_hit(self) -> None:
+        """Jump to the latest event matching any active breakpoint."""
+        if self.controller is None or not self.breakpoints:
+            return
+        self._goto_hit(
+            _bp.find_last_hit(self.controller.merged, self.breakpoints.as_dict())
+        )
 
     def _update_control_state(self) -> None:
         """Disable controls that can't do anything at the current position."""
@@ -1054,6 +1300,35 @@ def _button(text: str, on_click: Callable[[], None]) -> QPushButton:
     button = QPushButton(text)
     button.clicked.connect(on_click)  # pylint: disable=no-member
     return button
+
+
+def _comparator_combo() -> QComboBox:
+    """A dropdown of the six symbol comparators (``>=``, ``<=``, ...),
+    shared by every numeric breakpoint field group."""
+    combo = QComboBox()
+    combo.addItems(list(_bp.COMPARATOR_SYMBOLS))
+    return combo
+
+
+def _threshold_spinbox() -> QDoubleSpinBox:
+    box = QDoubleSpinBox()
+    box.setRange(-1_000_000.0, 1_000_000.0)
+    box.setDecimals(6)
+    box.setValue(0.5)
+    return box
+
+
+def _completer_field(placeholder: str) -> tuple[QLineEdit, QStringListModel]:
+    """A free-text field with an initially-empty, updatable autocomplete
+    list -- the model is returned separately so callers can repopulate it
+    later (:meth:`_TimelineWindow._refresh_breakpoint_fields`) without
+    reaching back through ``QCompleter``'s generic model type.
+    """
+    field = QLineEdit()
+    field.setPlaceholderText(placeholder)
+    model = QStringListModel([])
+    field.setCompleter(QCompleter(model))
+    return field, model
 
 
 def _monospace_font() -> QFont:

@@ -11,7 +11,10 @@ from qiskit.circuit import QuantumCircuit
 
 from qisdebug._breakpoints import (
     AnomalyCondition,
+    DistributionDistanceCondition,
+    ExpectationCondition,
     GateMatchCondition,
+    ProbabilityCondition,
     SeqThresholdCondition,
     WatchThresholdCondition,
     matches,
@@ -110,6 +113,74 @@ def test_anomaly_condition_severity_filter():
     event = ExecutionFinishedEvent(seq=1, backend="aer", success=True, counts={})
     assert matches(AnomalyCondition(min_severity="warning"), event, timeline)
     assert not matches(AnomalyCondition(min_severity="error"), event, timeline)
+
+
+def test_expectation_condition_matches_z_on_zero_state():
+    timeline = Timeline(circuit_id="c1", num_qubits=1)
+    event = StateSnapshotEvent(seq=1, step=0, num_qubits=1, statevector=[1.0, 0.0])
+    condition = ExpectationCondition(
+        circuit_id="c1", pauli="Z", qubit=0, comparator="ge", threshold=0.9
+    )
+    assert matches(condition, event, timeline)
+
+
+def test_expectation_condition_matches_z_on_one_state():
+    timeline = Timeline(circuit_id="c1", num_qubits=1)
+    event = StateSnapshotEvent(seq=1, step=0, num_qubits=1, statevector=[0.0, 1.0])
+    condition = ExpectationCondition(
+        circuit_id="c1", pauli="Z", qubit=0, comparator="le", threshold=-0.9
+    )
+    assert matches(condition, event, timeline)
+
+
+def test_expectation_condition_ignores_non_snapshot_events():
+    timeline = Timeline(circuit_id="c1")
+    condition = ExpectationCondition(
+        circuit_id="c1", pauli="Z", qubit=0, comparator="ge", threshold=0.0
+    )
+    assert not matches(condition, GateEvent(seq=1, gate="h", qubits=(0,)), timeline)
+
+
+def test_probability_condition_matches_statevector_outcome():
+    timeline = Timeline(circuit_id="c1", num_qubits=2)
+    event = StateSnapshotEvent(seq=1, step=0, num_qubits=2, statevector=[0, 0, 0, 1])
+    condition = ProbabilityCondition(
+        circuit_id="c1", outcome="11", comparator="gt", threshold=0.9
+    )
+    assert matches(condition, event, timeline)
+    other = ProbabilityCondition(
+        circuit_id="c1", outcome="01", comparator="gt", threshold=0.1
+    )
+    assert not matches(other, event, timeline)
+
+
+def test_probability_condition_matches_counts_outcome():
+    timeline = Timeline(circuit_id="c1")
+    event = ExecutionFinishedEvent(seq=1, backend="aer", counts={"01": 8, "00": 2})
+    condition = ProbabilityCondition(
+        circuit_id="c1", outcome="01", comparator="ge", threshold=0.5
+    )
+    assert matches(condition, event, timeline)
+
+
+def test_distribution_distance_condition_matches_tvd():
+    timeline = Timeline(circuit_id="c1")
+    event = ExecutionFinishedEvent(seq=1, backend="aer", counts={"11": 10})
+    close = DistributionDistanceCondition(
+        circuit_id="c1", expected={"11": 1.0}, comparator="le", threshold=0.01
+    )
+    far = DistributionDistanceCondition(
+        circuit_id="c1", expected={"00": 1.0}, comparator="le", threshold=0.01
+    )
+    assert matches(close, event, timeline)
+    assert not matches(far, event, timeline)
+
+
+def test_seq_threshold_condition_comparator_defaults_to_ge_but_is_overridable():
+    timeline = Timeline(circuit_id="c1")
+    lt_condition = SeqThresholdCondition(seq=5, comparator="lt")
+    assert matches(lt_condition, GateEvent(seq=4, gate="h", qubits=(0,)), timeline)
+    assert not matches(lt_condition, GateEvent(seq=5, gate="h", qubits=(0,)), timeline)
 
 
 # -- Live pause/resume across threads ------------------------------------
@@ -211,12 +282,62 @@ def test_find_next_hit_returns_none_when_nothing_matches(debug):
     assert frontend_bp.find_next_hit(merged, conditions, start_index=0) is None
 
 
+def test_find_first_hit_locates_the_earliest_matching_event(debug):
+    timeline = traced_bell(debug, shots=5)
+    merged, _tracks, _labels = _render.merge_timelines([timeline])
+    conditions = {"1": GateMatchCondition(gate="h")}
+    hit = frontend_bp.find_first_hit(merged, conditions)
+    assert hit is not None
+    index, handle = hit
+    assert handle == "1"
+    assert merged[index][1].describe().startswith("h")
+
+
+def test_find_last_hit_locates_the_latest_matching_event(debug):
+    timeline = traced_bell(debug, shots=5)
+    merged, _tracks, _labels = _render.merge_timelines([timeline])
+    conditions = {"1": GateMatchCondition(gate="h")}
+    first_hit = frontend_bp.find_first_hit(merged, conditions)
+    last_hit = frontend_bp.find_last_hit(merged, conditions)
+    assert first_hit is not None
+    assert last_hit is not None
+    assert last_hit[0] == first_hit[0]  # bell circuit has exactly one "h"
+
+
+def test_find_prev_hit_locates_the_event_before_the_current_one(debug):
+    timeline = traced_bell(debug, shots=5)
+    merged, _tracks, _labels = _render.merge_timelines([timeline])
+    conditions = {"1": GateMatchCondition(gate="h")}
+    hit = frontend_bp.find_first_hit(merged, conditions)
+    assert hit is not None
+    hit_index, _handle = hit
+    assert frontend_bp.find_prev_hit(merged, conditions, hit_index) is None
+    assert frontend_bp.find_prev_hit(merged, conditions, hit_index + 1) == hit
+
+
+def test_find_prev_hit_returns_none_at_the_start(debug):
+    timeline = traced_bell(debug, shots=5)
+    merged, _tracks, _labels = _render.merge_timelines([timeline])
+    conditions = {"1": GateMatchCondition(gate="h")}
+    assert frontend_bp.find_prev_hit(merged, conditions, 0) is None
+
+
 def test_describe_condition_renders_each_kind():
     assert "gate cx" in frontend_bp.describe_condition(GateMatchCondition(gate="cx"))
     assert "seq >= 5" in frontend_bp.describe_condition(SeqThresholdCondition(seq=5))
-    assert "gt 0.9" in frontend_bp.describe_condition(
+    assert "> 0.9" in frontend_bp.describe_condition(
         WatchThresholdCondition(
             circuit_id="c1", watch_kind="qubit", ref="0", comparator="gt", threshold=0.9
+        )
+    )
+    assert "expect Z0 >= 0.5" in frontend_bp.describe_condition(
+        ExpectationCondition(
+            circuit_id="c1", pauli="Z", qubit=0, comparator="ge", threshold=0.5
+        )
+    )
+    assert "prob 01 > 0.2" in frontend_bp.describe_condition(
+        ProbabilityCondition(
+            circuit_id="c1", outcome="01", comparator="gt", threshold=0.2
         )
     )
     assert "anomaly >= error" in frontend_bp.describe_condition(
@@ -235,6 +356,92 @@ def test_parse_condition_args_builds_gate_condition():
     assert condition.gate == "cx"
     assert condition.qubits == (0, 1)
     assert condition.circuit_id == "c1"
+
+
+def test_parse_condition_args_gate_on_clause_overrides_circuit():
+    condition = frontend_bp.parse_condition_args("gate", ["cx", "on", "other"], "c1")
+    assert condition.circuit_id == "other"
+
+
+def test_parse_condition_args_gate_on_star_means_any_circuit():
+    condition = frontend_bp.parse_condition_args("gate", ["cx", "on", "*"], "c1")
+    assert condition.circuit_id is None
+
+
+def test_parse_condition_args_seq_uses_symbol_comparator():
+    condition = frontend_bp.parse_condition_args("seq", [">=", "5"], "c1")
+    assert isinstance(condition, SeqThresholdCondition)
+    assert condition.comparator == "ge"
+    assert condition.seq == 5
+
+
+def test_parse_condition_args_watch_needs_a_specific_circuit():
+    with pytest.raises(ValueError, match="specific circuit"):
+        frontend_bp.parse_condition_args(
+            "watch", ["qubit", "0", ">", "0.5", "on", "*"], "c1"
+        )
+
+
+def test_parse_condition_args_builds_expectation_condition():
+    condition = frontend_bp.parse_condition_args(
+        "expect", ["Z", "0", ">=", "0.5"], "c1"
+    )
+    assert isinstance(condition, ExpectationCondition)
+    assert condition.pauli == "Z"
+    assert condition.qubit == 0
+    assert condition.comparator == "ge"
+    assert condition.threshold == 0.5
+
+
+def test_parse_condition_args_builds_probability_condition():
+    condition = frontend_bp.parse_condition_args(
+        "prob", ["01", ">", "0.2", "on", "c2"], "c1"
+    )
+    assert isinstance(condition, ProbabilityCondition)
+    assert condition.outcome == "01"
+    assert condition.circuit_id == "c2"
+
+
+def test_parse_condition_args_builds_distribution_condition():
+    condition = frontend_bp.parse_condition_args(
+        "tvd", ["00=0.5", "11=0.5", "<=", "0.1"], "c1"
+    )
+    assert isinstance(condition, DistributionDistanceCondition)
+    assert condition.expected == {"00": 0.5, "11": 0.5}
+    assert condition.comparator == "le"
+    assert condition.threshold == 0.1
+
+
+def test_parse_condition_args_tvd_rejects_malformed_pair():
+    with pytest.raises(ValueError, match="usage: tvd"):
+        frontend_bp.parse_condition_args("tvd", ["nonsense", "<=", "0.1"], "c1")
+
+
+def test_suggest_tokens_gate_offers_known_gate_names(debug):
+    timeline = traced_bell(debug, shots=5)
+    assert "h" in frontend_bp.suggest_tokens("gate", [], timeline, [])
+    assert "cx" in frontend_bp.suggest_tokens("gate", [], timeline, [])
+
+
+def test_suggest_tokens_seq_offers_comparators_first():
+    assert set(frontend_bp.suggest_tokens("seq", [], None, [])) == set(
+        frontend_bp.COMPARATOR_SYMBOLS
+    )
+
+
+def test_suggest_tokens_watch_cascades_by_kind(debug):
+    timeline = traced_bell(debug, shots=5)
+    assert frontend_bp.suggest_tokens("watch", [], timeline, []) == list(
+        frontend_bp.WATCH_KINDS
+    )
+    assert frontend_bp.suggest_tokens("watch", ["qubit"], timeline, []) == ["0", "1"]
+
+
+def test_suggest_tokens_on_clause_offers_known_circuits(debug):
+    timeline = traced_bell(debug, shots=5)
+    circuits = [timeline.circuit_id]
+    suggestions = frontend_bp.suggest_tokens("anomaly", ["on"], timeline, circuits)
+    assert suggestions == circuits
 
 
 # -- CLI integration -------------------------------------------------------
@@ -268,25 +475,62 @@ def test_cli_break_reports_usage_on_bad_input(debug, monkeypatch, capsys):
     assert "unknown breakpoint kind" in out
 
 
+def test_cli_hit_navigation_commands(debug, monkeypatch, capsys):
+    timeline = traced_bell(debug, shots=5)
+    responses = iter(["break gate h", "hl", "hf", "next", "hp", "q"])
+    monkeypatch.setattr(builtins, "input", lambda prompt="": next(responses))
+
+    CLIFrontend().show([timeline])
+
+    out = capsys.readouterr().out
+    # The bell circuit has exactly one "h" gate, so first/last/prev-from-after
+    # all land on the same event.
+    assert out.count("hit breakpoint 1: gate h") == 3
+
+
+def test_cli_complete_break_suggests_kinds_and_gate_names(debug):
+    timeline = traced_bell(debug, shots=5)
+    merged, tracks, _labels = _render.merge_timelines([timeline])
+    # pylint: disable-next=import-outside-toplevel,protected-access
+    from qisdebug._frontends.cli import _TimelineShell
+
+    shell = _TimelineShell(merged, tracks, {timeline.circuit_id: timeline})
+
+    assert set(shell.complete_break("", "break ", 6, 6)) == set(frontend_bp.KINDS)
+    assert shell.complete_break("h", "break gate h", 11, 12) == ["h"]
+
+
 # -- GUI integration --------------------------------------------------------
 
 
 @pytest.mark.skipif(
     not QtFrontend().is_available(), reason="no display available for Qt"
 )
-def test_gui_frontend_add_breakpoint_and_run_to_next(debug, monkeypatch):
+def test_gui_frontend_add_breakpoint_and_hit_navigation(debug, monkeypatch):
     timeline = traced_bell(debug, shots=5)
     app, window = build_gui_window(monkeypatch, timeline)
 
     window.breakpoint_kind.setCurrentText("gate")
-    window.breakpoint_args.setText("cx")
+    window.bp_gate_name.setText("cx")
     window._add_breakpoint()  # pylint: disable=protected-access
     assert len(window.breakpoints) == 1
     assert window.breakpoint_list.count() == 1
 
-    window._run_to_next_breakpoint()  # pylint: disable=protected-access
+    window._goto_next_hit()  # pylint: disable=protected-access
     _source, event = window.controller.current
     assert event.describe().startswith("cx")
+
+    window._goto_first_hit()  # pylint: disable=protected-access
+    _source, first_event = window.controller.current
+    assert first_event.describe().startswith("cx")
+
+    window._goto_last_hit()  # pylint: disable=protected-access
+    _source, last_event = window.controller.current
+    assert last_event.describe().startswith("cx")
+
+    window._goto(0)  # pylint: disable=protected-access
+    window._goto_prev_hit()  # pylint: disable=protected-access
+    assert window.controller.index == 0  # nothing matches before index 0
 
     window.breakpoint_list.setCurrentRow(0)
     window._remove_selected_breakpoint()  # pylint: disable=protected-access
@@ -297,12 +541,53 @@ def test_gui_frontend_add_breakpoint_and_run_to_next(debug, monkeypatch):
 @pytest.mark.skipif(
     not QtFrontend().is_available(), reason="no display available for Qt"
 )
+def test_gui_frontend_expectation_breakpoint(debug, monkeypatch):
+    timeline = traced_bell(debug, shots=5)
+    app, window = build_gui_window(monkeypatch, timeline)
+
+    window.breakpoint_kind.setCurrentText("expect")
+    window.bp_expect_pauli.setCurrentText("Z")
+    window.bp_expect_qubit.setCurrentText("0")
+    window.bp_expect_cmp.setCurrentText(">=")
+    window.bp_expect_threshold.setValue(0.9)
+    window._add_breakpoint()  # pylint: disable=protected-access
+    assert len(window.breakpoints) == 1
+    _handle, condition = window.breakpoints.items()[0]
+    assert condition.kind == "expectation"
+    assert condition.circuit_id == timeline.circuit_id
+    del app
+
+
+@pytest.mark.skipif(
+    not QtFrontend().is_available(), reason="no display available for Qt"
+)
 def test_gui_frontend_add_breakpoint_rejects_bad_args(debug, monkeypatch):
     timeline = traced_bell(debug, shots=5)
     app, window = build_gui_window(monkeypatch, timeline)
 
-    window.breakpoint_kind.setCurrentText("seq")
-    window.breakpoint_args.setText("not-a-number")
+    window.breakpoint_kind.setCurrentText("gate")
+    window.bp_gate_name.setText("cx")
+    window.bp_gate_qubits.setText("not-a-number")
     window._add_breakpoint()  # pylint: disable=protected-access
     assert not window.breakpoints
+    del app
+
+
+@pytest.mark.skipif(
+    not QtFrontend().is_available(), reason="no display available for Qt"
+)
+def test_gui_frontend_breakpoint_fields_refresh_for_current_circuit(debug, monkeypatch):
+    timeline = traced_bell(debug, shots=5)
+    app, window = build_gui_window(monkeypatch, timeline)
+
+    window.breakpoint_kind.setCurrentText("watch")
+    assert [
+        window.bp_watch_ref.itemText(i) for i in range(window.bp_watch_ref.count())
+    ] == ["0", "1"]
+
+    window.breakpoint_kind.setCurrentText("watch")  # kept on watch, ref stays cascaded
+    window.bp_watch_kind.setCurrentText("clbit")
+    assert [
+        window.bp_watch_ref.itemText(i) for i in range(window.bp_watch_ref.count())
+    ] == ["0", "1"]
     del app

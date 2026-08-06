@@ -8,6 +8,7 @@ frontend then presents in its own way.
 from __future__ import annotations
 
 import base64
+import difflib
 import io
 from dataclasses import dataclass
 from typing import Any, Iterable, Literal
@@ -737,6 +738,55 @@ def render_track_watch(target: WatchTarget, timeline: Timeline, upto_seq: int) -
     if latest.property_changes:
         lines.append(f"  {_render_property_changes(latest.property_changes)}")
     return "\n".join(lines)
+
+
+def render_watch_diff(
+    targets: list[WatchTarget],
+    timelines_by_id: dict[str, Timeline],
+    seq_a: int,
+    seq_b: int,
+) -> str:
+    """Render every active watch's value at stage A vs stage B as a
+    unified diff of lines, using the same ``  - ``/``  + `` convention
+    :func:`render_state_diff` uses for gates -- so a caller (both
+    frontends' diff panels) can colorize it with the exact same
+    highlighter (``gui._highlight_diff_lines``/``cli._highlight_gate_diff_lines``)
+    instead of a bespoke one. Each watch is diffed independently by
+    re-rendering :func:`render_watch`/:func:`render_track_watch` at each
+    seq and line-diffing the two -- watch output is already the
+    human-readable summary of a qubit/clbit/register/track's state, so
+    diffing it directly avoids inventing a second, narrower notion of
+    "value" just for this. A watch whose circuit isn't loaded on a stage
+    is skipped rather than erroring, the same way :func:`render_watches`
+    already treats a missing timeline as nothing to show.
+    """
+    blocks = []
+    for target in targets:
+        timeline = timelines_by_id.get(target.circuit_id)
+        if timeline is None:
+            continue
+        text_a = render_watch(target, timeline, seq_a)
+        text_b = render_watch(target, timeline, seq_b)
+        blocks.append(_diff_watch_lines(text_a, text_b))
+    return "\n\n".join(blocks)
+
+
+def _diff_watch_lines(text_a: str, text_b: str) -> str:
+    """Line-diff two renderings of the same watch, unchanged lines plain,
+    changed lines as a ``  - `` (A) / ``  + `` (B) pair -- mirrors
+    :func:`render_state_diff`'s gate listing so the two read the same way.
+    """
+    lines_a = text_a.split("\n")
+    lines_b = text_b.split("\n")
+    matcher = difflib.SequenceMatcher(a=lines_a, b=lines_b, autojunk=False)
+    out = []
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            out.extend(f"    {line}" for line in lines_a[i1:i2])
+        else:
+            out.extend(f"  - {line}" for line in lines_a[i1:i2])
+            out.extend(f"  + {line}" for line in lines_b[j1:j2])
+    return "\n".join(out)
 
 
 def _latest_snapshot(timeline: Timeline, upto_seq: int) -> StateSnapshotEvent | None:

@@ -156,6 +156,49 @@ def test_render_watches_skips_unknown_circuit_ids(debug):
     assert _render.render_watches([target], {timeline.circuit_id: timeline}, 0) == ""
 
 
+def test_render_watch_diff_marks_changed_lines(debug):
+    """A watch whose value differs between the two seqs shows up as a
+    -/+ pair; a watch whose gates-touched count hasn't changed yet between
+    the two seqs stays unmarked plain text.
+    """
+    timeline = _traced_bell_with_registers(debug)
+    target = _render.WatchTarget(circuit_id=timeline.circuit_id, kind="qubit", ref="0")
+    before_anything = timeline.events[0].seq - 1
+    last_seq = timeline.events[-1].seq
+
+    text = _render.render_watch_diff(
+        [target], {timeline.circuit_id: timeline}, before_anything, last_seq
+    )
+
+    assert "    * viz — qubit 0" in text
+    assert "  + " in text and "P(1)=0.5000" in text
+
+
+def test_render_watch_diff_unchanged_watch_has_no_diff_markers(debug):
+    """Diffing a watch against the same seq twice reports it as unchanged."""
+    timeline = _traced_bell_with_registers(debug)
+    target = _render.WatchTarget(circuit_id=timeline.circuit_id, kind="qubit", ref="0")
+    last_seq = timeline.events[-1].seq
+
+    text = _render.render_watch_diff(
+        [target], {timeline.circuit_id: timeline}, last_seq, last_seq
+    )
+
+    assert "  - " not in text
+    assert "  + " not in text
+    assert "P(1)=0.5000" in text
+
+
+def test_render_watch_diff_skips_unknown_circuit_ids(debug):
+    """Mirrors :func:`render_watches`: a stale watch is dropped, not an error."""
+    timeline = _traced_bell_with_registers(debug)
+    target = _render.WatchTarget(circuit_id="does-not-exist", kind="qubit", ref="0")
+    assert (
+        _render.render_watch_diff([target], {timeline.circuit_id: timeline}, 0, 0)
+        == ""
+    )
+
+
 def test_cli_watch_and_unwatch_commands(debug, monkeypatch, capsys):
     """watch/unwatch/watches drive the tracked-value panel from the REPL."""
     timeline = _traced_bell_with_registers(debug)

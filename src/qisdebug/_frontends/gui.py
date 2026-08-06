@@ -540,11 +540,28 @@ class _TimelineWindow(
         self.diff_label_b, self.diff_text_b = self._build_diff_pane(split)
         layout.addWidget(split, stretch=2)
 
+        bottom_split = QSplitter(Qt.Orientation.Horizontal)
+
+        watch_diff_pane = QWidget()
+        watch_diff_layout = QVBoxLayout(watch_diff_pane)
+        watch_diff_layout.setContentsMargins(0, 0, 0, 0)
+        watch_diff_layout.addWidget(QLabel("Watch diff"))
+        self.watch_diff_text = QTextEdit()
+        self.watch_diff_text.setReadOnly(True)
+        self.watch_diff_text.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
+        self.watch_diff_text.setFont(_monospace_font())
+        watch_diff_layout.addWidget(self.watch_diff_text, stretch=1)
+        bottom_split.addWidget(watch_diff_pane)
+
         self.diff_text = QTextEdit()
         self.diff_text.setReadOnly(True)
         self.diff_text.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
         self.diff_text.setFont(_monospace_font())
-        layout.addWidget(self.diff_text, stretch=1)
+        bottom_split.addWidget(self.diff_text)
+        bottom_split.setStretchFactor(0, 1)
+        bottom_split.setStretchFactor(1, 2)
+
+        layout.addWidget(bottom_split, stretch=1)
 
         return panel
 
@@ -642,6 +659,8 @@ class _TimelineWindow(
         if mark_a is None or mark_b is None:
             self.diff_text.setPlainText("")
             self.diff_text.setExtraSelections([])
+            self.watch_diff_text.setPlainText("")
+            self.watch_diff_text.setExtraSelections([])
             self._set_diff_pane(self.diff_label_a, self.diff_text_a, "", "")
             self._set_diff_pane(self.diff_label_b, self.diff_text_b, "", "")
             return
@@ -657,6 +676,8 @@ class _TimelineWindow(
             # message, so report it once instead of twice.
             self.diff_text.setPlainText(split_diff)
             self.diff_text.setExtraSelections([])
+            self.watch_diff_text.setPlainText("")
+            self.watch_diff_text.setExtraSelections([])
             self._set_diff_pane(self.diff_label_a, self.diff_text_a, "", "")
             self._set_diff_pane(self.diff_label_b, self.diff_text_b, "", "")
             return
@@ -666,6 +687,11 @@ class _TimelineWindow(
         )
         self.diff_text.setPlainText(stage_diff_text)
         self._highlight_diff_lines(self.diff_text, stage_diff_text)
+        watch_diff_text = _render.render_watch_diff(
+            self.watches, self.timelines_by_id, mark_a.seq, mark_b.seq
+        )
+        self.watch_diff_text.setPlainText(watch_diff_text)
+        self._highlight_diff_lines(self.watch_diff_text, watch_diff_text)
         self._set_diff_pane(
             self.diff_label_a, self.diff_text_a, split_diff.a.label, split_diff.a.text
         )
@@ -853,6 +879,7 @@ class _TimelineWindow(
             item.setData(Qt.ItemDataRole.UserRole, target)
             self.watch_list.addItem(item)
             self._render()
+            self._update_diff_text()
 
     def _remove_selected_watch(self) -> None:
         """Remove whichever watch-list rows are currently selected."""
@@ -862,6 +889,7 @@ class _TimelineWindow(
                 self.watches.remove(target)
             self.watch_list.takeItem(self.watch_list.row(item))
         self._render()
+        self._update_diff_text()
 
     def _update_control_state(self) -> None:
         """Disable controls that can't do anything at the current position."""

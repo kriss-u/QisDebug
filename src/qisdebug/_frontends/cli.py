@@ -349,17 +349,29 @@ class _TimelineShell(cmd.Cmd):
     do_d = do_diff
 
     def _render_diff(self) -> str:
-        """Render the current A/B diff per ``self.diff_selection``: the
-        split-view circuit diagram diff (what the two circuits actually look
-        like, side by side) followed by the gate/state-level summary.
+        """Render the current A/B diff per ``self.diff_selection``: any
+        active watches' values at A vs B first (so a change in watched
+        state is the first thing seen, not buried below the full circuit
+        diagram), then the split-view circuit diagram diff (what the two
+        circuits actually look like, side by side), then the gate/state-level
+        summary.
         """
         mark_a, mark_b = self.marks["a"], self.marks["b"]
         if mark_a is None or mark_b is None:
             return ""
-        if self.diff_selection.overall:
-            return _render.render_stage_overall_diff(
-                mark_a, mark_b, self.timelines_by_id
+        sections = []
+        watch_diff_text = _render.render_watch_diff(
+            self.watches, self.timelines_by_id, mark_a.seq, mark_b.seq
+        )
+        if watch_diff_text:
+            sections.append(
+                "-- Watch diff --\n" + _highlight_gate_diff_lines(watch_diff_text)
             )
+        if self.diff_selection.overall:
+            sections.append(
+                _render.render_stage_overall_diff(mark_a, mark_b, self.timelines_by_id)
+            )
+            return "\n\n".join(sections)
         element_a = self.diff_selection.element_a
         element_b = self.diff_selection.element_b
         split_diff = _circuit_diff.render_circuit_split_diff(
@@ -370,18 +382,18 @@ class _TimelineShell(cmd.Cmd):
             # Ambiguous/unresolved pick -- render_stage_diff below would
             # hit the exact same element resolution and repeat this same
             # message, so report it once instead of twice.
-            return split_diff
-        return "\n\n".join(
-            [
-                _render_circuit_split_diff_text(split_diff),
-                _highlight_gate_diff_lines(
-                    _render.render_stage_diff(
-                        mark_a, mark_b, self.timelines_by_id,
-                        element_a=element_a, element_b=element_b,
-                    )
-                ),
-            ]
+            sections.append(split_diff)
+            return "\n\n".join(sections)
+        sections.append(_render_circuit_split_diff_text(split_diff))
+        sections.append(
+            _highlight_gate_diff_lines(
+                _render.render_stage_diff(
+                    mark_a, mark_b, self.timelines_by_id,
+                    element_a=element_a, element_b=element_b,
+                )
+            )
         )
+        return "\n\n".join(sections)
 
     def _parse_watch_arg(self, arg: str, command: str) -> _render.WatchTarget | None:
         """Parse ``"<kind> <ref>"`` into a watch target on the current circuit."""

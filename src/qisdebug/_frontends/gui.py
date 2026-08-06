@@ -440,28 +440,40 @@ class _TimelineWindow(
         """Build the "Diff" tab's contents, shown only once both marks are set.
 
         A mark pins a *stage* (a point in time), which can hold more than
-        one circuit -- construction and transpile can both be mid-flight at
-        once -- so the A/B pickers let the user choose which circuit on
-        each side to diff in detail; "Overall" instead summarizes every
-        circuit common to both stages in one line each.
+        one circuit, and each circuit more than one track -- its
+        construction, plus one per transpile run -- since transpilation
+        doesn't emit its own construction-style events. The A/B pickers
+        therefore choose an *element* (circuit + track, e.g.
+        "bell [transpiled]") to diff in detail, not just a circuit, so a
+        transpiled circuit is never silently diffed as its pre-transpile
+        construction gates. "Overall" instead summarizes every element
+        common to both stages in one line each.
         """
         panel = QWidget()
         layout = QVBoxLayout(panel)
 
         selector_row = QHBoxLayout()
-        selector_row.addWidget(QLabel("Circuit A:"))
+        selector_row.addWidget(QLabel("Element A:"))
         self.diff_circuit_a = QComboBox()
+        self.diff_circuit_a.setToolTip(
+            "Which circuit and track (construction or a specific "
+            "transpile run) to diff on side A"
+        )
         self.diff_circuit_a.currentIndexChanged.connect(  # pylint: disable=no-member
             self._update_diff_text
         )
         selector_row.addWidget(self.diff_circuit_a)
-        selector_row.addWidget(QLabel("Circuit B:"))
+        selector_row.addWidget(QLabel("Element B:"))
         self.diff_circuit_b = QComboBox()
+        self.diff_circuit_b.setToolTip(
+            "Which circuit and track (construction or a specific "
+            "transpile run) to diff on side B"
+        )
         self.diff_circuit_b.currentIndexChanged.connect(  # pylint: disable=no-member
             self._update_diff_text
         )
         selector_row.addWidget(self.diff_circuit_b)
-        self.diff_overall_checkbox = QCheckBox("Overall (every common circuit)")
+        self.diff_overall_checkbox = QCheckBox("Overall (every common element)")
         self.diff_overall_checkbox.toggled.connect(  # pylint: disable=no-member
             self._update_diff_text
         )
@@ -504,7 +516,7 @@ class _TimelineWindow(
         self.tabs.setCurrentWidget(self._diff_panel)
 
     def _refresh_diff_panel(self) -> None:
-        """Update the mark status label, the per-stage circuit pickers, and
+        """Update the mark status label, the per-stage element pickers, and
         show or hide the Diff tab and its "Show diff" shortcut depending on
         whether both marks are now set.
         """
@@ -514,7 +526,7 @@ class _TimelineWindow(
         diff_index = self.tabs.indexOf(self._diff_panel)
         both_marked = self.marks["a"] is not None and self.marks["b"] is not None
         self.show_diff_button.setVisible(both_marked)
-        self._populate_diff_circuit_choices()
+        self._populate_diff_element_choices()
         if both_marked:
             self._update_diff_text()
             if diff_index < 0:
@@ -522,28 +534,31 @@ class _TimelineWindow(
         elif diff_index >= 0:
             self.tabs.removeTab(diff_index)
 
-    def _populate_diff_circuit_choices(self) -> None:
-        """Refill the circuit A/B pickers from each stage's available circuits,
-        keeping the previous selection when it is still one of the options.
+    def _populate_diff_element_choices(self) -> None:
+        """Refill the circuit/track A/B pickers from each stage's available
+        elements -- a circuit's construction track plus one per transpile
+        run (see :meth:`~._render.StageMark.elements_at`) -- keeping the
+        previous selection when it is still one of the options. Each combo
+        entry shows the friendly track label (:func:`_render.track_label`)
+        but carries the raw ``"circuit:track"`` element as its data, which
+        is what actually gets passed to :func:`_render.render_stage_diff`.
         """
         for slot, combo in (("a", self.diff_circuit_a), ("b", self.diff_circuit_b)):
             mark = self.marks[slot]
-            previous = combo.currentText()
+            previous = combo.currentData()
             combo.blockSignals(True)
             combo.clear()
             if mark is not None:
-                names = [
-                    timeline.name or timeline.circuit_id
-                    for timeline in mark.circuits_at(self.timelines_by_id)
-                ]
-                combo.addItems(names)
-                if previous in names:
-                    combo.setCurrentText(previous)
+                elements = mark.elements_at(self.timelines_by_id)
+                for element in elements:
+                    combo.addItem(_render.track_label(element), element)
+                if previous in elements:
+                    combo.setCurrentIndex(combo.findData(previous))
             combo.blockSignals(False)
 
     def _update_diff_text(self) -> None:
         """Recompute the diff panel's text from the current marks/picks, without
-        touching the circuit picker contents (see :meth:`_populate_diff_circuit_choices`).
+        touching the element picker contents (see :meth:`_populate_diff_element_choices`).
         """
         mark_a, mark_b = self.marks["a"], self.marks["b"]
         if mark_a is None or mark_b is None:
@@ -558,8 +573,8 @@ class _TimelineWindow(
                 mark_a,
                 mark_b,
                 self.timelines_by_id,
-                circuit_a=self.diff_circuit_a.currentText() or None,
-                circuit_b=self.diff_circuit_b.currentText() or None,
+                element_a=self.diff_circuit_a.currentData(),
+                element_b=self.diff_circuit_b.currentData(),
             )
         self.diff_text.setPlainText(text)
 

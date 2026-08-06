@@ -22,12 +22,13 @@ _MARK_SLOTS = ("a", "b")
 
 @dataclass
 class _DiffSelection:
-    """Which circuits (by name/id) to diff on each side, and whether to show
-    the full per-pair diff or the "overall" one-line-per-circuit summary."""
+    """Which element (``"<circuit>:<track>"``, e.g. ``"bell:transpiled"``) to
+    diff on each side, and whether to show the full per-pair diff or the
+    "overall" one-line-per-element summary."""
 
     overall: bool = False
-    circuit_a: str | None = None
-    circuit_b: str | None = None
+    element_a: str | None = None
+    element_b: str | None = None
 
 
 class _TimelineShell(cmd.Cmd):
@@ -175,11 +176,12 @@ class _TimelineShell(cmd.Cmd):
 
     def do_mark(self, arg: str) -> bool:
         """mark a | mark b: pin the current event's point in time as that
-        side of a diff. A stage can hold more than one circuit (e.g.
-        construction and transpile can both be mid-flight at once); use
-        "diff <circuit_a> <circuit_b>" to pick which one on each side if a
-        stage is ambiguous. Once both are pinned, the diff between them
-        appears automatically."""
+        side of a diff. A stage can hold more than one circuit, and each
+        circuit more than one track -- its construction, plus one per
+        transpile run (see "elements a"/"elements b" to list what a pinned
+        stage actually has). Use "diff <element_a> <element_b>" to pick
+        which one on each side if a stage is ambiguous. Once both are
+        pinned, the diff between them appears automatically."""
         slot = arg.strip()
         if slot not in _MARK_SLOTS:
             print("usage: mark a | mark b")
@@ -188,7 +190,29 @@ class _TimelineShell(cmd.Cmd):
         mark = _render.StageMark(seq=event.seq)
         self.marks[slot] = mark
         print(f"marked {slot}: {mark.label(self.timelines_by_id)}")
+        elements = mark.elements_at(self.timelines_by_id)
+        if len(elements) > 1:
+            print(f"  elements available: {', '.join(elements)}")
         self.print_frame()
+        return False
+
+    def do_elements(self, arg: str) -> bool:
+        """elements a | elements b: list the "<circuit>:<track>" elements
+        available at that mark's stage -- each circuit's construction track
+        plus one per transpile run -- for use with "diff <a> <b>"."""
+        slot = arg.strip()
+        if slot not in _MARK_SLOTS:
+            print("usage: elements a | elements b")
+            return False
+        mark = self.marks[slot]
+        if mark is None:
+            print(f"{slot} is not marked (see: mark {slot})")
+            return False
+        elements = mark.elements_at(self.timelines_by_id)
+        if not elements:
+            print("(no elements)")
+        for element in elements:
+            print(f"  {element}")
         return False
 
     def do_unmark(self, arg: str) -> bool:
@@ -205,9 +229,9 @@ class _TimelineShell(cmd.Cmd):
             return False
         self.marks[target] = None
         if target == "a":
-            self.diff_selection.circuit_a = None
+            self.diff_selection.element_a = None
         else:
-            self.diff_selection.circuit_b = None
+            self.diff_selection.element_b = None
         print(f"unmarked {target}")
         self.print_frame()
         return False
@@ -215,20 +239,23 @@ class _TimelineShell(cmd.Cmd):
     def do_diff(self, arg: str) -> bool:
         """d, diff: print the diff between marks A and B on demand, without
         stepping. Also shown automatically after every frame once both are
-        marked.
-        diff overall: one summary line per circuit common to both stages,
+        marked. The header always names the track each side came from
+        (e.g. "[transpiled]"), so it's never ambiguous whether a diff used
+        the raw construction gates or a transpiled circuit.
+        diff overall: one summary line per element common to both stages,
         instead of the full detail for a single chosen pair.
-        diff <circuit_a> <circuit_b>: pick which circuit to compare on each
-        side (by name) when a stage holds more than one; remembered for
-        later frames until changed or unmarked."""
+        diff <element_a> <element_b>: pick which element to compare on each
+        side (see "elements a"/"elements b" for the options) when a stage
+        holds more than one; remembered for later frames until changed or
+        unmarked."""
         parts = arg.split()
         if parts == ["overall"]:
             self.diff_selection.overall = True
         elif len(parts) == 2:
-            self.diff_selection.circuit_a, self.diff_selection.circuit_b = parts
+            self.diff_selection.element_a, self.diff_selection.element_b = parts
             self.diff_selection.overall = False
         elif parts:
-            print("usage: diff | diff overall | diff <circuit_a> <circuit_b>")
+            print("usage: diff | diff overall | diff <element_a> <element_b>")
             return False
         else:
             self.diff_selection.overall = False
@@ -255,8 +282,8 @@ class _TimelineShell(cmd.Cmd):
             mark_a,
             mark_b,
             self.timelines_by_id,
-            circuit_a=self.diff_selection.circuit_a,
-            circuit_b=self.diff_selection.circuit_b,
+            element_a=self.diff_selection.element_a,
+            element_b=self.diff_selection.element_b,
         )
 
     def _parse_watch_arg(self, arg: str, command: str) -> _render.WatchTarget | None:
@@ -312,8 +339,8 @@ class CLIFrontend(TimelineFrontend):
         print(
             "commands: n(ext)  p(rev)  f(irst)  l(ast)  g(oto) N  "
             "w(atch)/unwatch qubit|clbit|register ...  watches  "
-            "mark a|b  unmark a|b|all  "
-            "d(iff) [overall | <circuit_a> <circuit_b>]  h(elp)  q(uit)"
+            "mark a|b  unmark a|b|all  elements a|b  "
+            "d(iff) [overall | <element_a> <element_b>]  h(elp)  q(uit)"
         )
 
         timelines_by_id = {t.circuit_id: t for t in timelines}

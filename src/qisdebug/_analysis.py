@@ -20,12 +20,20 @@ from __future__ import annotations
 
 import difflib
 import itertools
-from typing import Literal, Mapping, Sequence
+from typing import Any, Literal, Mapping, NamedTuple, Sequence
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
 
-from ._events import EventType, GateEvent, StateSnapshotEvent, Timeline
+from ._events import (
+    EventType,
+    GateEvent,
+    StateSnapshotEvent,
+    Timeline,
+    TranspileFinishedEvent,
+    TranspilePassEvent,
+    TranspileStartedEvent,
+)
 
 Severity = str  # "info" | "warning" | "error"
 
@@ -273,6 +281,121 @@ def find_anomalies(timeline: Timeline) -> list[Anomaly]:
     return sorted(anomalies, key=lambda a: a.seq)
 
 
+def circuit_object_tracks(
+    timeline: Timeline,
+) -> tuple[list[dict[str, Any]], list[str | None]]:
+    """Return, per event, the latest known circuit object for each track.
+
+    A "track" is a distinct circuit lineage: the circuit as constructed
+    (key ``"circuit"``), and one key per transpile *run* (``"transpiled"``,
+    then ``"transpiled#2"`` for a second call to ``transpile()`` on the same
+    circuit, and so on for ``"backend"``/``"backend#2"`` runs a primitive
+    performs internally) -- a new :class:`~qisdebug._events.TranspileStartedEvent`
+    for a phase starts a fresh run rather than overwriting the previous
+    one's final state. Once a track has a value it is carried forward to
+    every later event until a newer snapshot replaces it.
+
+    This is the single source of truth both :func:`diff_timelines` (to
+    resolve which circuit a track means, via :func:`resolve_track_circuit`)
+    and the frontends' circuit panel (``_frontends._render.circuit_tracks``,
+    which just draws these objects to text) build on, so the two never
+    disagree about what a track key refers to.
+
+    Also returns, per event, which track was most recently touched (carried
+    forward the same way), so callers can highlight/scroll to the circuit
+    that is actually relevant to a given event.
+    """
+    current: dict[str, Any] = {}
+    series: list[dict[str, Any]] = []
+    active_series: list[str | None] = []
+    active_key: str | None = None
+    gate_count = 0
+    run_counters: dict[str, int] = {"transpiled": 0, "backend": 0}
+    for event in timeline.events:
+        if isinstance(event, GateEvent):
+            gate_count += 1
+            circuit = timeline.circuit_at(gate_count)
+            if circuit is not None:
+                current["circuit"] = circuit
+                active_key = "circuit"
+        elif isinstance(event, TranspileStartedEvent):
+            base = "backend" if event.phase == "backend" else "transpiled"
+            run_counters[base] += 1
+        elif (
+            isinstance(event, (TranspilePassEvent, TranspileFinishedEvent))
+            and event.circuit is not None
+        ):
+            base = (
+                "backend"
+                if getattr(event, "phase", "user") == "backend"
+                else "transpiled"
+            )
+            run = max(run_counters.get(base, 0), 1)
+            key = base if run == 1 else f"{base}#{run}"
+            current[key] = event.circuit
+            active_key = key
+        series.append(dict(current))
+        active_series.append(active_key)
+    return series, active_series
+
+
+def track_keys_upto(timeline: Timeline, upto_seq: int | None) -> list[str]:
+    """Return the track keys (see :func:`circuit_object_tracks`) known to
+    exist by ``upto_seq``, in the order they first appeared. ``None`` means
+    every track the timeline ever had.
+    """
+    series, _ = circuit_object_tracks(timeline)
+    last: dict[str, Any] = {}
+    for event, snapshot in zip(timeline.events, series):
+        if upto_seq is not None and event.seq > upto_seq:
+            break
+        last = snapshot
+    return list(last.keys())
+
+
+def resolve_track_circuit(
+    timeline: Timeline, track_key: str, upto_seq: int | None
+) -> Any | None:
+    """Return one track's circuit object as of ``upto_seq`` (or the latest
+    known if ``None``), or ``None`` if that track had nothing by then.
+    """
+    series, _ = circuit_object_tracks(timeline)
+    result = None
+    for event, snapshot in zip(timeline.events, series):
+        if upto_seq is not None and event.seq > upto_seq:
+            break
+        if track_key in snapshot:
+            result = snapshot[track_key]
+    return result
+
+
+def _gate_events_from_circuit(circuit: Any) -> list[GateEvent]:
+    """Synthesize gate_added-shaped events from a circuit's instructions.
+
+    Transpilation doesn't emit its own ``gate_added`` events -- only
+    construction does -- so diffing a transpiled/backend-compiled track
+    needs its gate sequence read directly off the circuit object instead.
+    """
+    qubit_index = {qubit: i for i, qubit in enumerate(circuit.qubits)}
+    clbit_index = {clbit: i for i, clbit in enumerate(circuit.clbits)}
+    events = []
+    for seq, instruction in enumerate(circuit.data):
+        operation = instruction.operation
+        events.append(
+            GateEvent(
+                seq=seq,
+                gate=operation.name,
+                qubits=tuple(qubit_index[q] for q in instruction.qubits),
+                clbits=tuple(clbit_index[c] for c in instruction.clbits),
+                params=tuple(
+                    p if isinstance(p, (int, float, str)) else str(p)
+                    for p in operation.params
+                ),
+            )
+        )
+    return events
+
+
 class GateDiffEntry(BaseModel):
     """One aligned step in a gate-sequence diff between two timelines.
 
@@ -305,6 +428,8 @@ class TimelineDiff(BaseModel):
     name_b: str | None = None
     seq_a: int | None = None
     seq_b: int | None = None
+    track_a: str = "circuit"
+    track_b: str = "circuit"
     gate_diff: list[GateDiffEntry] = Field(default_factory=list)
     statevector_diff: StatevectorDiff | None = None
     counts_diff: CountsDiff | None = None
@@ -335,16 +460,24 @@ class TimelineDiff(BaseModel):
             f"{counts['delete']} deleted, {counts['replace']} replaced"
         )
 
-    def side_label(self, name: str | None, circuit_id: str, seq: int | None) -> str:
-        """Return e.g. ``"'bell' @ seq 12"`` or ``"'bell' (final)"`` for one side."""
+    def side_label(
+        self, name: str | None, circuit_id: str, seq: int | None, track: str = "circuit"
+    ) -> str:
+        """Return e.g. ``"'bell' [transpiled] @ seq 12"`` or ``"'bell' (final)"``.
+
+        The track is only shown when it isn't the plain construction
+        track, so a diff against a transpiled or backend-compiled circuit
+        is never mistaken for the pre-transpile construction gates.
+        """
         bound = f"@ seq {seq}" if seq is not None else "(final)"
-        return f"'{name or circuit_id}' {bound}"
+        track_suffix = f" [{track}]" if track != "circuit" else ""
+        return f"'{name or circuit_id}'{track_suffix} {bound}"
 
     def describe(self) -> str:
         """Return a multi-paragraph human-readable summary."""
         lines = [
-            f"diff {self.side_label(self.name_a, self.circuit_id_a, self.seq_a)} vs "
-            f"{self.side_label(self.name_b, self.circuit_id_b, self.seq_b)}",
+            f"diff {self.side_label(self.name_a, self.circuit_id_a, self.seq_a, self.track_a)} vs "
+            f"{self.side_label(self.name_b, self.circuit_id_b, self.seq_b, self.track_b)}",
             self._op_counts_text(),
         ]
         if self.statevector_diff is not None:
@@ -368,6 +501,25 @@ def _gate_events_upto(timeline: Timeline, upto_seq: int | None) -> list[GateEven
     if upto_seq is None:
         return timeline.gate_events
     return [e for e in timeline.gate_events if e.seq <= upto_seq]
+
+
+def _gate_events_for_track(
+    timeline: Timeline, track_key: str, upto_seq: int | None
+) -> list[GateEvent]:
+    """Gate list for one track as of ``upto_seq``.
+
+    The ``"circuit"`` track uses construction-time ``gate_added`` events
+    directly; any other track (a transpile or backend-compile run) has no
+    ``gate_added`` history of its own, so its gates are read off the
+    resolved circuit object instead (see :func:`resolve_track_circuit` and
+    :func:`_gate_events_from_circuit`).
+    """
+    if track_key == "circuit":
+        return _gate_events_upto(timeline, upto_seq)
+    circuit = resolve_track_circuit(timeline, track_key, upto_seq)
+    if circuit is None:
+        return []
+    return _gate_events_from_circuit(circuit)
 
 
 def _diff_gate_events(
@@ -443,17 +595,37 @@ def _diff_counts(
     return compare_counts(b_counts, a_probs, atol=atol)
 
 
-def diff_timelines(
+class DiffPoint(NamedTuple):
+    """One side of a timeline diff: how far to bound it, and which circuit
+    lineage (track) to read there.
+
+    Bundled into one parameter per side rather than two flat keywords
+    because they always travel together -- a seq bound is meaningless
+    without knowing which track (construction, or a specific transpile
+    run) it's being applied to; see :func:`circuit_object_tracks`.
+    """
+
+    seq: int | None = None
+    track: str = "circuit"
+
+
+def diff_timeline_points(
     a: Timeline,
     b: Timeline,
     *,
-    seq_a: int | None = None,
-    seq_b: int | None = None,
+    at_a: DiffPoint = DiffPoint(),
+    at_b: DiffPoint = DiffPoint(),
     atol: float = 1e-6,
 ) -> TimelineDiff:
-    """Compare two points in time: gate-sequence alignment plus state deltas.
+    """Compare one point from each timeline: gate alignment plus state deltas.
 
-    ``seq_a``/``seq_b`` bound each side to "as of that event's seq" (a
+    The general form of :func:`diff_timelines`, for when a side needs to
+    name which track to read (see :class:`DiffPoint`) -- e.g. diffing a
+    transpiled circuit instead of the plain construction gates.
+    :func:`diff_timelines` is a convenience wrapper for the common case of
+    both sides on the default construction track.
+
+    ``at_a.seq``/``at_b.seq`` bound each side to "as of that event's seq" (a
     ``TelemetryEvent.seq``, e.g. from a currently-displayed event during
     playback, or from :func:`~qisdebug._mcp.tools.get_events`); ``None``
     (the default) means that side's whole timeline / final state. Passing
@@ -462,7 +634,16 @@ def diff_timelines(
     timelines (with matching, differing, or unbounded seqs) diffs two
     circuits at a chosen or final point.
 
-    Aligns each side's ``gate_added`` events up to its bound with a standard
+    ``at_a.track``/``at_b.track`` pick which circuit lineage to diff on each
+    side: the default ``"circuit"`` is the construction-time gate sequence,
+    while ``"transpiled"``, ``"transpiled#2"``, ``"backend"``, etc. diff the
+    *transpiled* circuit as it stood at or before the bound instead --
+    transpilation doesn't emit its own ``gate_added`` events, so without
+    naming a track explicitly a diff would silently fall back to the
+    pre-transpile construction gates even when the point being compared is
+    well past a transpile run.
+
+    Aligns each side's gate sequence up to its bound with a standard
     sequence diff (insert/delete/replace, keyed on gate name + qubits), so a
     construction-code refactor that reordered equivalent gates reads clearly
     instead of as a wall of mismatches. Separately reuses
@@ -473,6 +654,8 @@ def diff_timelines(
     plus a depth/size delta pulled from the last transpile event at or
     before each bound that recorded one.
     """
+    seq_a, track_a = at_a
+    seq_b, track_b = at_b
     depth_a, size_a = _last_transpile_shape(a, seq_a)
     depth_b, size_b = _last_transpile_shape(b, seq_b)
     return TimelineDiff(
@@ -482,8 +665,11 @@ def diff_timelines(
         name_b=b.name,
         seq_a=seq_a,
         seq_b=seq_b,
+        track_a=track_a,
+        track_b=track_b,
         gate_diff=_diff_gate_events(
-            _gate_events_upto(a, seq_a), _gate_events_upto(b, seq_b)
+            _gate_events_for_track(a, track_a, seq_a),
+            _gate_events_for_track(b, track_b, seq_b),
         ),
         statevector_diff=_diff_statevectors(a, b, seq_a, seq_b, atol),
         counts_diff=_diff_counts(a, b, seq_a, seq_b),
@@ -491,4 +677,26 @@ def diff_timelines(
         depth_b=depth_b,
         size_a=size_a,
         size_b=size_b,
+    )
+
+
+def diff_timelines(
+    a: Timeline,
+    b: Timeline,
+    *,
+    seq_a: int | None = None,
+    seq_b: int | None = None,
+    atol: float = 1e-6,
+) -> TimelineDiff:
+    """Compare two points in time on the default construction track.
+
+    Convenience wrapper around :func:`diff_timeline_points` for the common
+    case where neither side needs to name a non-default track; see that
+    function's docstring for the full behavior of ``seq_a``/``seq_b``/
+    ``atol``. To diff a transpiled or backend-compiled circuit instead of
+    the plain construction gates, call :func:`diff_timeline_points` directly
+    with a :class:`DiffPoint` naming the track on the relevant side(s).
+    """
+    return diff_timeline_points(
+        a, b, at_a=DiffPoint(seq_a), at_b=DiffPoint(seq_b), atol=atol
     )

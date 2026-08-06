@@ -21,7 +21,7 @@ def _traced_bell(debug):
     qc.h(0)
     qc.cx(0, 1)
     qc.measure([0, 1], [0, 1])
-    AerSimulator().run(qc, shots=1000).result()
+    AerSimulator().run(qc, shots=20000, seed_simulator=1234).result()
     return debug.get(qc)
 
 

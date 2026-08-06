@@ -28,7 +28,10 @@ from .._analysis import (
     TimelineDiff,
     circuit_object_tracks,
     diff_timeline_points,
+    gate_events_for_track,
+    resolve_track_circuit,
     track_keys_upto,
+    transpile_pass_events_for_track,
 )
 
 _MAX_PROPERTY_VALUE_LENGTH = 120
@@ -380,16 +383,29 @@ def render_extra_visual_bytes(event: TelemetryEvent) -> tuple[str, bytes | None]
 
 @dataclass(frozen=True)
 class WatchTarget:
-    """One qubit, clbit, or register a user pinned to watch during playback.
+    """One qubit, clbit, register, or circuit track a user pinned to watch
+    during playback.
 
     Set interactively (watch/unwatch) while stepping through a timeline in
     any frontend; not persisted on the :class:`~qisdebug._events.Timeline`
-    itself. ``ref`` is a qubit/clbit index as text for those two kinds, or a
-    register name for ``"register"``.
+    itself. ``ref`` is a qubit/clbit index as text for those two kinds, a
+    register name for ``"register"``, or a track key (see
+    :func:`~qisdebug._analysis.circuit_object_tracks`, e.g. ``"transpiled"``,
+    ``"transpiled#2"``, ``"backend"``) for ``"track"``.
+
+    A ``"qubit"``/``"clbit"``/``"register"`` watch is not scoped to one
+    circuit lineage: :func:`render_watch` reports its gates-touched list on
+    *every* track the circuit has by ``upto_seq`` (construction, and each
+    transpile/backend-compile run), since a transpiled circuit's gates
+    aren't recorded as their own ``gate_added`` events and must be read off
+    the resolved track circuit instead (see
+    :func:`~qisdebug._analysis.gate_events_for_track`). ``"track"`` watches
+    are the one place a caller does pick a single lineage explicitly, since
+    the point of that kind is inspecting one transpile run's pass stats.
     """
 
     circuit_id: str
-    kind: Literal["qubit", "clbit", "register"]
+    kind: Literal["qubit", "clbit", "register", "track"]
     ref: str
 
     def label(self, timeline: Timeline | None) -> str:
@@ -399,6 +415,8 @@ class WatchTarget:
             if timeline is not None
             else self.circuit_id
         )
+        if self.kind == "track":
+            return f"{name} — track {self.ref}"
         return f"{name} — {self.kind} {self.ref}"
 
 
@@ -659,22 +677,26 @@ def render_watches(
 
 
 def render_watch(target: WatchTarget, timeline: Timeline, upto_seq: int) -> str:
-    """Render one watch: gates that touched it so far, plus its latest known value."""
+    """Render one watch: gates that touched it so far on every known circuit
+    lineage, plus its latest known value."""
+    if target.kind == "track":
+        return render_track_watch(target, timeline, upto_seq)
     bit_kind, indices = _watch_bits(target, timeline)
     lines = [f"* {target.label(timeline)}"]
     if not indices:
         lines.append("  (not found on this circuit)")
         return "\n".join(lines)
     index_set = set(indices)
-    touches = [
-        event
-        for event in timeline.gate_events
-        if event.seq <= upto_seq
-        and index_set & set(event.qubits if bit_kind == "qubit" else event.clbits)
-    ]
-    lines.append(f"  gates touched: {len(touches)}")
-    for event in touches[-5:]:
-        lines.append(f"    seq {event.seq}: {event.describe()}")
+    for track_key in track_keys_upto(timeline, upto_seq):
+        track_gates = gate_events_for_track(timeline, track_key, upto_seq)
+        touches = [
+            event
+            for event in track_gates
+            if index_set & set(event.qubits if bit_kind == "qubit" else event.clbits)
+        ]
+        lines.append(f"  [{track_label(f':{track_key}')}] gates touched: {len(touches)}")
+        for event in touches[-5:]:
+            lines.append(f"    seq {event.seq}: {event.describe()}")
     if bit_kind == "qubit":
         snapshot = _latest_snapshot(timeline, upto_seq)
         if snapshot is not None:
@@ -683,6 +705,37 @@ def render_watch(target: WatchTarget, timeline: Timeline, upto_seq: int) -> str:
         finished = _latest_execution_finished(timeline, upto_seq)
         if finished is not None and finished.counts:
             lines.append(f"  {_render_clbit_watch(finished, indices)}")
+    return "\n".join(lines)
+
+
+def render_track_watch(target: WatchTarget, timeline: Timeline, upto_seq: int) -> str:
+    """Render a ``"track"`` watch: pass stats for the latest pass on that
+    circuit lineage (see :func:`~qisdebug._analysis.circuit_object_tracks`)
+    at or before ``upto_seq``, mirroring what :func:`render_pass` shows for
+    a single :class:`~qisdebug._events.TranspilePassEvent`.
+    """
+    lines = [f"* {target.label(timeline)}"]
+    passes = [
+        event
+        for event in transpile_pass_events_for_track(timeline, target.ref)
+        if event.seq <= upto_seq
+    ]
+    if not passes:
+        if resolve_track_circuit(timeline, target.ref, upto_seq) is None:
+            lines.append("  (not found on this circuit)")
+        else:
+            lines.append("  (no transpile passes recorded yet)")
+        return "\n".join(lines)
+    latest = passes[-1]
+    suffix = "   (backend-internal)" if latest.phase == "backend" else ""
+    lines.append(f"  passes so far: {len(passes)}")
+    lines.append(f"  latest pass: {latest.pass_name}{suffix}")
+    lines.append(
+        f"  depth: {latest.depth}   size: {latest.size}   changed: {latest.changed}"
+    )
+    lines.append(f"  ops: {latest.ops}")
+    if latest.property_changes:
+        lines.append(f"  {_render_property_changes(latest.property_changes)}")
     return "\n".join(lines)
 
 

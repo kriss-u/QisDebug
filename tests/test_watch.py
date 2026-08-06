@@ -3,7 +3,8 @@
 import builtins
 
 import pytest
-from _helpers import build_gui_window
+from _helpers import bell_circuit, build_gui_window
+from qiskit import transpile
 from qiskit.circuit.quantumcircuit import QuantumCircuit
 from qiskit.circuit import ClassicalRegister, QuantumRegister
 from qiskit_aer import AerSimulator
@@ -61,9 +62,7 @@ def test_watch_qubit_bloch_vector_for_ground_state(debug):
     text = _render.render_watch(target, timeline, snapshot.seq)
     assert "bloch=(+0.000, +0.000, +1.000)" in text
     before_anything = timeline.events[0].seq - 1
-    assert _render.render_watch(target, timeline, before_anything) == (
-        "* viz — qubit 1\n  gates touched: 0"
-    )
+    assert _render.render_watch(target, timeline, before_anything) == "* viz — qubit 1"
 
 
 def test_watch_register_aggregates_its_qubits(debug):
@@ -87,6 +86,57 @@ def test_watch_clbit_reports_measured_distribution(debug):
     text = _render.render_watch(target, timeline, last_seq)
     assert "measure q[0] -> c[0]" in text
     assert "clbit 0: P(1)=" in text
+
+
+def test_watch_qubit_reports_touches_on_every_transpile_track(debug):
+    """A qubit watch reports gates touched on construction *and* transpiled
+    lineages, not just construction -- a transpiled circuit's gates aren't
+    their own gate_added events, so they must show up here too."""
+    debug.start()
+    qc = bell_circuit("viz")
+    transpile(qc, basis_gates=["cx", "u"], optimization_level=1)
+    timeline = debug.get(qc)
+
+    target = _render.WatchTarget(circuit_id=timeline.circuit_id, kind="qubit", ref="0")
+    last_seq = timeline.events[-1].seq
+    text = _render.render_watch(target, timeline, last_seq)
+
+    assert "[Circuit (construction)] gates touched:" in text
+    assert "[Circuit (transpiled)] gates touched:" in text
+
+
+def test_watch_track_reports_latest_pass_stats(debug):
+    """A ``kind="track"`` watch shows the latest transpile pass's stats for
+    that circuit lineage, not any bit-level state."""
+    debug.start()
+    qc = bell_circuit("viz")
+    transpile(qc, basis_gates=["cx", "u"], optimization_level=1)
+    timeline = debug.get(qc)
+
+    target = _render.WatchTarget(
+        circuit_id=timeline.circuit_id, kind="track", ref="transpiled"
+    )
+    last_seq = timeline.events[-1].seq
+    text = _render.render_watch(target, timeline, last_seq)
+
+    assert "viz — track transpiled" in text
+    assert "latest pass:" in text
+    assert "depth:" in text and "size:" in text and "ops:" in text
+
+
+def test_watch_track_before_transpile_started_reports_not_found(debug):
+    """A track watch on a lineage that doesn't exist yet at ``upto_seq``
+    says so instead of showing stale or empty stats."""
+    debug.start()
+    qc = bell_circuit("viz")
+    timeline = debug.get(qc)
+
+    target = _render.WatchTarget(
+        circuit_id=timeline.circuit_id, kind="track", ref="transpiled"
+    )
+    before_anything = timeline.events[0].seq - 1
+    text = _render.render_watch(target, timeline, before_anything)
+    assert "not found on this circuit" in text
 
 
 def test_watch_unresolved_register_reports_not_found(debug):

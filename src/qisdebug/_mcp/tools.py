@@ -30,7 +30,7 @@ from .._errors import TimelineNotFoundError
 from .._events import EventType, StateSnapshotEvent, Timeline
 from .._frontends._render import WatchTarget, format_statevector, render_watch
 
-WatchKind = Literal["qubit", "clbit", "register"]
+WatchKind = Literal["qubit", "clbit", "register", "track"]
 
 # One QisDebug instance scopes the whole MCP server process, matching the
 # documented agent workflow: run_script's auto_activate controls whether
@@ -251,14 +251,21 @@ def get_state_snapshot(
 
 
 def add_watch(circuit_id: str, kind: WatchKind, ref: int | str) -> str:
-    """Pin a qubit, clbit, or register to watch across the timeline.
+    """Pin a qubit, clbit, register, or circuit track to watch across the
+    timeline.
 
-    ``ref`` is a bit index for ``"qubit"``/``"clbit"`` or a register name
-    for ``"register"`` (register layouts appear in :func:`list_timelines`).
-    Watched targets report, at any point in the timeline, which gates have
-    touched them and their latest known value -- marginal P(1) and Bloch
-    vector for qubits, measured P(1) for clbits. Read them with
-    :func:`read_watches`.
+    ``ref`` is a bit index for ``"qubit"``/``"clbit"``, a register name for
+    ``"register"`` (register layouts appear in :func:`list_timelines`), or a
+    track key for ``"track"`` (e.g. ``"transpiled"``, ``"backend"`` --
+    available tracks appear in :func:`get_timeline`/:func:`get_events` via
+    the transpile events, or can be discovered with
+    :func:`~qisdebug._analysis.track_keys_upto`). A qubit/clbit/register
+    watch reports, at any point in the timeline, which gates have touched it
+    on *every* circuit lineage (construction, transpiled, backend-compiled)
+    and its latest known value -- marginal P(1) and Bloch vector for qubits,
+    measured P(1) for clbits. A track watch instead reports that lineage's
+    latest transpile pass stats (depth/size/ops/property changes). Read them
+    with :func:`read_watches`.
     """
     timeline = _require_timeline(circuit_id)
     ref_text = str(ref)
@@ -271,12 +278,19 @@ def add_watch(circuit_id: str, kind: WatchKind, ref: int | str) -> str:
                 f"{kind} {ref_text} out of range for circuit {circuit_id!r} "
                 f"({width} {kind}s)"
             )
-    else:
+    elif kind == "register":
         known = set(timeline.qregs) | set(timeline.cregs)
         if ref_text not in known:
             raise ValueError(
                 f"no register {ref_text!r} on circuit {circuit_id!r}; "
                 f"available: {sorted(known)}"
+            )
+    else:
+        known_tracks = set(_analysis.track_keys_upto(timeline, None))
+        if ref_text not in known_tracks:
+            raise ValueError(
+                f"no track {ref_text!r} on circuit {circuit_id!r}; "
+                f"available: {sorted(known_tracks)}"
             )
     target = WatchTarget(circuit_id=circuit_id, kind=kind, ref=ref_text)
     if target not in _watches:

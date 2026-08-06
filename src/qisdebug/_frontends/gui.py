@@ -430,12 +430,18 @@ class _TimelineWindow(
         watch_row = QHBoxLayout()
         watch_row.addWidget(QLabel("Watch:"))
         self.watch_kind = QComboBox()
-        self.watch_kind.addItems(["qubit", "clbit", "register"])
+        self.watch_kind.addItems(["qubit", "clbit", "register", "track"])
         self.watch_kind.currentTextChanged.connect(  # pylint: disable=no-member
             self._refresh_watch_ref_choices
         )
         watch_row.addWidget(self.watch_kind)
         self.watch_ref = QComboBox()
+        self.watch_ref.setToolTip(
+            "For qubit/clbit/register, gates-touched is reported for every "
+            "circuit lineage (construction, transpiled, backend-compiled) "
+            "automatically. Pick \"track\" instead to watch one lineage's "
+            "transpile pass stats directly."
+        )
         watch_row.addWidget(self.watch_ref)
         watch_row.addWidget(_button("+ Add watch", self._add_watch))
         watch_row.addWidget(_button("Remove selected", self._remove_selected_watch))
@@ -809,7 +815,7 @@ class _TimelineWindow(
             raise RuntimeError(
                 "internal error: controller accessed before it was built"
             )
-        source, _event = self.controller.current
+        source, event = self.controller.current
         kind = self.watch_kind.currentText()
         previous = self.watch_ref.currentText()
         self.watch_ref.blockSignals(True)
@@ -818,15 +824,17 @@ class _TimelineWindow(
             self.watch_ref.addItems([str(i) for i in range(source.num_qubits)])
         elif kind == "clbit":
             self.watch_ref.addItems([str(i) for i in range(source.num_clbits)])
-        else:
+        elif kind == "register":
             self.watch_ref.addItems([*source.qregs, *source.cregs])
+        else:
+            self.watch_ref.addItems(_render.track_keys_upto(source, event.seq))
         index = self.watch_ref.findText(previous)
         if index >= 0:
             self.watch_ref.setCurrentIndex(index)
         self.watch_ref.blockSignals(False)
 
     def _add_watch(self) -> None:
-        """Add the currently selected qubit/clbit/register to the watch list."""
+        """Add the currently selected qubit/clbit/register/track to the watch list."""
         if self.controller is None:
             raise RuntimeError(
                 "internal error: controller accessed before it was built"
@@ -836,7 +844,7 @@ class _TimelineWindow(
             return
         source, _event = self.controller.current
         kind = self.watch_kind.currentText()
-        if kind not in ("qubit", "clbit", "register"):
+        if kind not in ("qubit", "clbit", "register", "track"):
             raise ValueError(f"unknown watch kind {kind!r}")
         target = _render.WatchTarget(circuit_id=source.circuit_id, kind=kind, ref=ref)
         if target not in self.watches:

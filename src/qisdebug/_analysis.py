@@ -369,6 +369,35 @@ def resolve_track_circuit(
     return result
 
 
+def transpile_pass_events_for_track(
+    timeline: Timeline, track_key: str
+) -> list[TranspilePassEvent]:
+    """Return the ``TranspilePassEvent``\\ s that produced one
+    :func:`circuit_object_tracks` key, in the order they ran.
+
+    Mirrors that function's own base+run bookkeeping (``"transpiled"`` vs.
+    ``"backend"``, ``#2`` for a second call on the same circuit) so a
+    track-level watch (see :mod:`qisdebug._frontends._render`) shows passes
+    from exactly the run its circuit snapshot came from, not a different
+    ``transpile()`` call that happens to share the same base name.
+    """
+    base, _, run_suffix = track_key.partition("#")
+    run_wanted = int(run_suffix) if run_suffix else 1
+    run_counters: dict[str, int] = {"transpiled": 0, "backend": 0}
+    matches: list[TranspilePassEvent] = []
+    for event in timeline.events:
+        if isinstance(event, TranspileStartedEvent):
+            phase_base = "backend" if event.phase == "backend" else "transpiled"
+            run_counters[phase_base] += 1
+        elif isinstance(event, TranspilePassEvent):
+            phase_base = "backend" if event.phase == "backend" else "transpiled"
+            if phase_base != base:
+                continue
+            if max(run_counters.get(phase_base, 0), 1) == run_wanted:
+                matches.append(event)
+    return matches
+
+
 def _gate_events_from_circuit(circuit: Any) -> list[GateEvent]:
     """Synthesize gate_added-shaped events from a circuit's instructions.
 
@@ -503,7 +532,7 @@ def _gate_events_upto(timeline: Timeline, upto_seq: int | None) -> list[GateEven
     return [e for e in timeline.gate_events if e.seq <= upto_seq]
 
 
-def _gate_events_for_track(
+def gate_events_for_track(
     timeline: Timeline, track_key: str, upto_seq: int | None
 ) -> list[GateEvent]:
     """Gate list for one track as of ``upto_seq``.
@@ -512,7 +541,9 @@ def _gate_events_for_track(
     directly; any other track (a transpile or backend-compile run) has no
     ``gate_added`` history of its own, so its gates are read off the
     resolved circuit object instead (see :func:`resolve_track_circuit` and
-    :func:`_gate_events_from_circuit`).
+    :func:`_gate_events_from_circuit`). Public because
+    :mod:`qisdebug._frontends._render` also needs one track's gate list to
+    scope a qubit/clbit watch to something other than construction.
     """
     if track_key == "circuit":
         return _gate_events_upto(timeline, upto_seq)
@@ -668,8 +699,8 @@ def diff_timeline_points(
         track_a=track_a,
         track_b=track_b,
         gate_diff=_diff_gate_events(
-            _gate_events_for_track(a, track_a, seq_a),
-            _gate_events_for_track(b, track_b, seq_b),
+            gate_events_for_track(a, track_a, seq_a),
+            gate_events_for_track(b, track_b, seq_b),
         ),
         statevector_diff=_diff_statevectors(a, b, seq_a, seq_b, atol),
         counts_diff=_diff_counts(a, b, seq_a, seq_b),

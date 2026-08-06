@@ -206,8 +206,13 @@ class _TimelineShell(cmd.Cmd):
     do_q = do_quit
 
     def do_watch(self, arg: str) -> bool:
-        """w, watch qubit N | watch clbit N | watch register NAME: track it from
-        the current circuit at every later step, until unwatched."""
+        """w, watch qubit N | watch clbit N | watch register NAME |
+        watch track TRACK: track it from the current circuit at every later
+        step, until unwatched. A qubit/clbit/register watch reports
+        gates-touched on every circuit lineage (construction, transpiled,
+        backend-compiled) automatically; ``watch track TRACK`` instead
+        watches one lineage's transpile pass stats directly (see
+        ``elements`` for the available track names)."""
         target = self._parse_watch_arg(arg, "watch")
         if target is None:
             return False
@@ -221,7 +226,8 @@ class _TimelineShell(cmd.Cmd):
     do_w = do_watch
 
     def do_unwatch(self, arg: str) -> bool:
-        """unwatch qubit N | unwatch clbit N | unwatch register NAME | unwatch all"""
+        """unwatch qubit N | unwatch clbit N | unwatch register NAME |
+        unwatch track TRACK | unwatch all"""
         if arg.strip() == "all":
             self.watches.clear()
             print("cleared all watches")
@@ -381,17 +387,16 @@ class _TimelineShell(cmd.Cmd):
         """Parse ``"<kind> <ref>"`` into a watch target on the current circuit."""
         parts = arg.split(maxsplit=1)
         usage = (
-            f"usage: {command} qubit N | {command} clbit N | {command} register NAME"
+            f"usage: {command} qubit N | {command} clbit N | "
+            f"{command} register NAME | {command} track TRACK"
         )
-        if len(parts) != 2 or parts[0] not in ("qubit", "clbit", "register"):
+        if len(parts) != 2 or parts[0] not in ("qubit", "clbit", "register", "track"):
             print(usage)
             return None
         kind, ref = parts[0], parts[1].strip()
         if kind in ("qubit", "clbit") and not ref.isdigit():
             print(f"{kind} must be a bit index, got {ref!r}")
             return None
-        if kind not in ("qubit", "clbit", "register"):
-            raise ValueError(f"unknown watch kind {kind!r}")
         source, _event = self.merged[self.index]
         return _render.WatchTarget(circuit_id=source.circuit_id, kind=kind, ref=ref)
 
@@ -429,7 +434,7 @@ class CLIFrontend(TimelineFrontend):
         print(f"QisDebug timeline — {names} ({len(merged)} events)")
         print(
             "commands: n(ext)  p(rev)  f(irst)  l(ast)  g(oto) N  "
-            "w(atch)/unwatch qubit|clbit|register ...  watches  "
+            "w(atch)/unwatch qubit|clbit|register|track ...  watches  "
             "mark a|b  unmark a|b|all  elements a|b  "
             "d(iff) [overall | <element_a> <element_b>]  h(elp)  q(uit)"
         )

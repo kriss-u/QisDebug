@@ -84,16 +84,17 @@ configuration, so more than one can be started at once (e.g. one scoped to a
 suspect region, another covering a whole script) without either seeing the
 other's timelines. The surface on it is intentionally small:
 
-| Method                 | Purpose                                                                                                   |
-| ---------------------- | --------------------------------------------------------------------------------------------------------- |
-| `debug.start()`        | Attach all instrumentation layers. Idempotent. Returns an `ActivationReport` saying which layers attached |
-| `debug.end()`          | Restore every original Qiskit method this instance was using                                              |
-| `debug.active`         | Whether this instance's patches are currently applied                                                     |
-| `debug.get(qc)`        | The `Timeline` for a circuit, name, or `Timeline`; raises `TimelineNotFoundError` on a miss               |
-| `debug.timelines()`    | Every timeline this instance has recorded, most recently touched first                                    |
-| `debug.circuits()`     | The names of tracked circuits, most recently touched first                                                |
-| `debug.clear()`        | Drop all recorded telemetry without touching active patches                                               |
-| `debug.configure(...)` | Adjust limits and switches (validated; see below)                                                         |
+| Method                  | Purpose                                                                                                   |
+| ----------------------- | --------------------------------------------------------------------------------------------------------- |
+| `debug.start()`         | Attach all instrumentation layers. Idempotent. Returns an `ActivationReport` saying which layers attached |
+| `debug.end()`           | Restore every original Qiskit method this instance was using                                              |
+| `debug.active`          | Whether this instance's patches are currently applied                                                     |
+| `debug.get(qc)`         | The `Timeline` for a circuit, name, or `Timeline`; raises `TimelineNotFoundError` on a miss               |
+| `debug.timelines()`     | Every timeline this instance has recorded, most recently touched first                                    |
+| `debug.circuits()`      | The names of tracked circuits, most recently touched first                                                |
+| `debug.clear()`         | Drop all recorded telemetry without touching active patches                                               |
+| `debug.configure(...)`  | Adjust limits and switches (validated; see below)                                                         |
+| `debug.diff(a, b, ...)` | Gate-alignment diff plus statevector/counts/depth deltas between two points in time; see below            |
 
 Importing `qisdebug` has **no side effects** — nothing is patched until
 `start()` is called, and `with QisDebug() as debug:` is an optional shorthand
@@ -122,6 +123,21 @@ debug.export()              # every timeline this instance has recorded, as a li
 debug.export(qc)             # just this circuit's timeline, as a one-item list
 debug.export([qc1, qc2])     # several circuits, as a list of dicts
 ```
+
+### Diffing two points in time
+
+```python
+diff = debug.diff(qc_a, qc_b)          # or debug.diff(qc, qc, seq_a=10, seq_b=40)
+diff.gate_diff                          # aligned insert/delete/replace over gate_added events
+diff.statevector_diff, diff.counts_diff # fidelity / total variation distance, when both sides have one
+diff.depth_a, diff.depth_b              # depth/size deltas from each side's last transpile event
+```
+
+`a`/`b` take the same circuit/name/`Timeline` shapes as `debug.get()`;
+`seq_a`/`seq_b` bound either side to "as of that event's `seq`" instead of
+the whole timeline, so the same circuit can be diffed against an earlier
+moment of its own replay. The interactive frontends (below) expose the same
+comparison as "Mark A"/"Mark B" over the live timeline view.
 
 ### Configuration
 
@@ -152,6 +168,13 @@ position shows the circuit as it existed at that moment (drawn with Qiskit's own
 drawer), the statevector with amplitudes and probabilities, or per-pass
 transpiler statistics. Both frontends read only the public `Timeline` fields, so
 the instrumentation and the visualizer can evolve independently.
+
+Pin the event currently on screen as one side of a diff — "Mark A"/"Mark B" in
+the GUI, `mark a`/`mark b` in the CLI — and once both are pinned, the diff
+between them (the same comparison `debug.diff()` returns) renders
+automatically: a per-gate diff, a side-by-side circuit-drawing split view, a
+summary across every element common to both marked points, and a diff of any
+currently active watch.
 
 ## Debugging with an AI agent (MCP)
 
@@ -184,6 +207,10 @@ and does the arithmetic:
   `read_watches` reports their gate history, marginal P(1), and Bloch vector as
   of any point in the sequence — the same watch feature the GUI and CLI expose
   interactively.
+- **Compare two points in time** — `diff_timelines(circuit_id_a, circuit_id_b,
+  seq_a=..., seq_b=...)` reports the same gate-alignment plus
+  statevector/counts/depth diff as `debug.diff()`, for two different circuits
+  or two moments of the same circuit's replay.
 - **Check an expectation** — the agent supplies the state or distribution it
   believes the program should produce; `compare_statevector` and
   `compare_counts` report fidelity, total variation distance, and exactly which
@@ -207,12 +234,6 @@ each, including which internal modules they touch:
   a backgrounded `run_script` plus `poll_run`/`resume_run`/`stop_run` for MCP,
   so an agent can step a script instead of only replaying it; and a "jump to
   next hit" command in both the GUI and CLI over already-captured timelines.
-- **Timeline diff** — compare two timelines against each other (not just a
-  timeline against a hand-supplied expectation): aligned gate-by-gate diff, plus
-  statevector fidelity and counts TVD when both have a final state.
-  `debug.diff(a, b)`, an MCP `diff_timelines` tool, and a
-  `debug.show([a, b], diff=True)` view that highlights the differing lines in
-  the same merged multi-timeline window `show()` already supports.
 - **Visual polish** — a proper stylesheet for the GUI (buttons, spacing, type
   scale) and consistent prompt/column formatting for the CLI; both are currently
   unstyled toolkit defaults.

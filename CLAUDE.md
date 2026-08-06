@@ -146,6 +146,19 @@ circuit at that point. Since this uses Qiskit's own extension system rather than
 raw monkey patching, this layer is the most stable and least likely to break
 across versions.
 
+Each pass's callback also receives Qiskit's `property_set`; `_hooks/transpile.py`
+snapshots it into a plain `{key: repr}` dict (falling back to `repr()` for
+non-JSON-native values like a `Layout`), diffs it against the previous pass's
+snapshot the same way `_fingerprint` detects a changed circuit, and attaches
+the added/removed/changed keys to `TranspilePassEvent` as `property_changes`.
+This is governed by `QisDebugConfig.capture_property_set`
+(`"all"`/`"changed"`/`"none"`, default `"changed"`), which mirrors
+`transpile_snapshots` so the two knobs read the same way.
+`_mcp/tools.py::get_property_set(circuit_id, seq)` returns the full snapshot
+for one pass; `_frontends/_render.py::render_event` appends a "Property
+changes" section built from the same diff, so both frontends and the MCP
+layer agree on it without either recomputing it.
+
 ### Telemetry store
 
 Each `QisDebug` instance owns one `TelemetryStore` -- there is no process-wide
@@ -243,35 +256,39 @@ frontends (e.g. watches) must reuse the same `_render.py` logic, not
 reimplement it. The server ships as the `qisdebug-mcp` console script behind
 the `mcp` extra.
 
+### Timeline diff
+
+`_analysis.py::diff_timeline_points` (with `diff_timelines` as the common-case
+convenience wrapper) compares two points in time -- two different circuits,
+or the same circuit at two different `seq`s, or a transpiled/compiled track
+on either side -- via a standard sequence diff over `gate_added` events
+(insert/delete/replace, keyed on gate name + qubits), plus
+`compare_statevector`/`compare_counts` on each side's final state and a
+depth/size delta pulled from each side's last transpile event, returned as a
+`TimelineDiff`. `QisDebug.diff(a, b, seq_a=None, seq_b=None, atol=...)` is a
+thin wrapper around it, matching the MCP `diff_timelines(circuit_id_a,
+circuit_id_b, seq_a=None, seq_b=None, atol=...)` tool.
+
+Rather than a `show(diff=True)` boolean, both frontends expose diffing as an
+interactive extension of the existing merged-timeline view: "Mark A"/"Mark B"
+pin the event currently on screen (CLI: `mark a`/`mark b`; GUI: the Mark
+A/Mark B buttons), and once both are pinned the diff renders automatically --
+a per-gate diff (`render_state_diff`), a one-line summary per element common
+to both marked stages (`render_stage_overall_diff`), a chosen pair drilled
+into in detail (`render_stage_diff`, e.g. diffing a transpiled circuit
+against its pre-transpile source rather than guessing which lineage to
+compare), a side-by-side circuit-drawing split view
+(`_frontends/_circuit_diff.py`), and a diff of any currently active watch's
+rendering (`render_watch_diff`) -- all sharing `_render.py` so the two
+frontends never diverge on what a diff actually contains.
+
 ## Planned Features
 
 The next round of work, on top of the three-layer instrumentation, watches,
-and comparison/anomaly helpers already built. Each item lists its Python,
-MCP, and frontend surface together, since the project's rule is that a new
-capability isn't done until all three exist.
-
-### Property-set diffing
-
-Qiskit's pass manager callback already hands `_hooks/transpile.py::_record_pass`
-a `property_set` alongside `pass_`, `dag`, and `time`; today only the latter
-three are used. Snapshot `property_set` into a plain `{key: repr}` dict after
-each pass (values like a `Layout` or `TranspileLayout` aren't JSON-native, so
-this needs a small best-effort serializer that falls back to `repr()` and
-never raises), diff it against the previous pass's snapshot the same way
-`_fingerprint` already detects a changed circuit, and attach the added/
-removed/changed keys to `TranspilePassEvent` as `property_changes`. Governed
-by a new `QisDebugConfig.capture_property_set: Literal["all", "changed",
-"none"]` (default `"changed"`), mirroring `transpile_snapshots` so the two
-knobs read the same way.
-
-- **Python**: no new method needed -- `property_changes` rides along on the
-  existing `Timeline`/event export.
-- **MCP**: a new `get_property_set(circuit_id, seq)` in `_mcp/tools.py` for
-  the full snapshot at one pass; `get_events`/`get_timeline` pick up
-  `property_changes` automatically.
-- **Frontends**: append a "Property changes" section to the per-pass event
-  detail text in `_frontends/_render.py::render_event`, the same place
-  watches and extra visuals are already appended in `gui.py`/`cli.py`.
+comparison/anomaly helpers, property-set diffing, and timeline diff already
+built (see above). Each item lists its Python, MCP, and frontend surface
+together, since the project's rule is that a new capability isn't done until
+all three exist.
 
 ### Conditional breakpoints
 
@@ -310,46 +327,19 @@ regardless of which of the three hooks recorded the event.
   jump-to-event are different operations, but there is exactly one
   definition of a breakpoint condition shared between them.
 
-### Timeline diff
-
-`_analysis.py` gets a pure `diff_timelines(a: Timeline, b: Timeline) ->
-TimelineDiff`, following the same "computation lives here, presentation
-lives in the caller" split as `compare_statevector`/`compare_counts`. It
-aligns the two timelines' `gate_added` events with a standard sequence diff
-(insert/delete/replace, keyed on gate name + qubits) so a construction-code
-refactor that reordered equivalent gates reads clearly instead of as a wall
-of mismatches, and separately reuses `compare_statevector`/`compare_counts`
-on each timeline's final snapshot/counts when both have one, plus a
-depth/size delta pulled from each timeline's last transpile event.
-
-- **Python**: `debug.diff(a, b)`, a thin wrapper with no logic of its own.
-- **MCP**: `diff_timelines(circuit_id_a, circuit_id_b, atol=...)` in
-  `_mcp/tools.py`, same thin-wrapper pattern every other MCP tool follows.
-- **Frontends**: a diff is a variant of the existing merged multi-timeline
-  view, not a separate window -- `debug.show([a, b], diff=True)` runs the two
-  timelines through `_render.merge_timelines` exactly as
-  `debug.show([qc1, qc2])` already does for side-by-side tracks, then uses
-  `diff_timelines`'s gate alignment to highlight the differing lines with the
-  same span-highlight mechanism `_TrackTextEdit`/CLI rendering already use
-  for the active-event outline, plus a one-line fidelity/TVD/depth-delta
-  summary header. One window, one merged view; diff mode is an extra
-  highlight layer and header line on top of what already exists, not a
-  second code path to maintain in parallel.
-
 ### Visual polish
 
 Both the GUI's buttons/labels and the CLI's prompt/output are currently
 unstyled defaults (`QPushButton`/`QLabel` with no stylesheet in `gui.py`; the
-CLI leans on raw `print()`). Before shipping the three features above: a
-small QSS stylesheet in `gui.py` (spacing, button hover/pressed states, a
-consistent type scale between the header and the monospace timeline body)
-that respects the light/dark palette rather than hardcoding colors, the way
-`_active_track_border_color` already does correctly for the highlight
-border; and for the CLI, consistent prompt styling and column alignment for
-tabular output (event lists, watch reports) using `shutil.get_terminal_size()`
-rather than fixed-width formatting. This is presentation-only -- no
-`_render.py` changes -- so it can land independently of the three features
-above.
+CLI leans on raw `print()`). A small QSS stylesheet in `gui.py` (spacing,
+button hover/pressed states, a consistent type scale between the header and
+the monospace timeline body) that respects the light/dark palette rather than
+hardcoding colors, the way `_active_track_border_color` already does
+correctly for the highlight border; and for the CLI, consistent prompt
+styling and column alignment for tabular output (event lists, watch reports)
+using `shutil.get_terminal_size()` rather than fixed-width formatting. This is
+presentation-only -- no `_render.py` changes -- so it can land independently
+of conditional breakpoints above.
 
 ## Build Order
 
@@ -364,10 +354,11 @@ above.
 7. Agent interface: comparison/anomaly helpers in `_analysis.py` and the
    MCP server exposing telemetry extraction, watches, and scoped runs
 8. Documentation, example notebooks, and README
-9. Property-set diffing, conditional breakpoints, and timeline diff (see
-   Planned Features above), each landed across the Python API, MCP, and
-   both frontends together, plus the GUI/CLI visual polish pass
-10. Tool paper draft describing the design and comparing it against existing
+9. Property-set diffing and timeline diff, each landed across the Python API,
+   MCP, and both frontends together
+10. Conditional breakpoints (see Planned Features above), plus the GUI/CLI
+    visual polish pass
+11. Tool paper draft describing the design and comparing it against existing
     tools like Trebugger and CircInspect
 
 ## Engineering Conventions

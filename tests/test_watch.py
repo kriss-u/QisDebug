@@ -123,7 +123,7 @@ def test_cli_watch_and_unwatch_commands(debug, monkeypatch, capsys):
     not QtFrontend().is_available(), reason="no display available for Qt"
 )
 def test_gui_frontend_add_and_remove_watch(debug, monkeypatch):
-    """Adding a watch through the combo boxes updates the text panel; removing clears it."""
+    """Adding a watch through the combo boxes updates the watch table; removing clears it."""
     from PySide6.QtWidgets import QApplication
 
     from qisdebug._frontends import gui as gui_module
@@ -132,21 +132,29 @@ def test_gui_frontend_add_and_remove_watch(debug, monkeypatch):
     monkeypatch.setattr(QApplication, "exec", lambda self: None)
     app = QApplication.instance() or QApplication([])
     merged, tracks, active_labels = _render.merge_timelines([timeline])
-    view = gui_module._TimelineView(  # noqa: SLF001 (internal, but this is the frontend's own test)
+    # protected-access: this is the frontend module's own test, exercising
+    # internals it has no public constructor or API for.
+    view = gui_module._TimelineView(  # pylint: disable=protected-access
         merged=merged,
         tracks=tracks,
         active_labels=active_labels,
         timelines_by_id={timeline.circuit_id: timeline},
     )
-    window = gui_module._TimelineWindow("viz", view)  # noqa: SLF001
+    window = gui_module._TimelineWindow("viz", view)  # pylint: disable=protected-access
 
     window.watch_kind.setCurrentText("qubit")
     window.watch_ref.setCurrentText("0")
-    window._add_watch()  # noqa: SLF001
+    window._add_watch()  # pylint: disable=protected-access
     assert len(window.watches) == 1
-    assert "viz — qubit 0" in window.text.toPlainText()
+    table_keys = []
+    for row in range(window.watch_table.rowCount()):
+        item = window.watch_table.item(row, 0)
+        assert item is not None
+        table_keys.append(item.text())
+    assert any("viz — qubit 0" in key for key in table_keys)
 
     window.watch_list.setCurrentRow(0)
-    window._remove_selected_watch()  # noqa: SLF001
-    assert window.watches == []
+    window._remove_selected_watch()  # pylint: disable=protected-access
+    assert not window.watches
+    assert window.watch_table.rowCount() == 0
     del app

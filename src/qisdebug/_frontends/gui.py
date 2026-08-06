@@ -32,12 +32,16 @@ from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
     QLabel,
+    QAbstractItemView,
+    QHeaderView,
     QListWidget,
     QListWidgetItem,
     QPushButton,
     QSlider,
     QSpinBox,
     QSplitter,
+    QTableWidget,
+    QTableWidgetItem,
     QTabWidget,
     QTextEdit,
     QVBoxLayout,
@@ -438,6 +442,24 @@ class _TimelineWindow(
         self.watch_list = QListWidget()
         self.watch_list.setMaximumHeight(70)
         layout.addWidget(self.watch_list)
+
+        values_row = QHBoxLayout()
+        self.watch_table = QTableWidget(0, 2)
+        self.watch_table.setHorizontalHeaderLabels(["Watch", "Value"])
+        self.watch_table.verticalHeader().setVisible(False)
+        self.watch_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.watch_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self.watch_table.setMaximumHeight(140)
+        self.watch_table.setMaximumWidth(420)
+        self.watch_table.horizontalHeader().setStretchLastSection(True)
+        self.watch_table.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeMode.Interactive
+        )
+        self.watch_table.setColumnWidth(0, 150)
+        values_row.addWidget(self.watch_table)
+        values_row.addStretch(1)
+        layout.addLayout(values_row)
+
         self._refresh_watch_ref_choices()
 
     def _build_mark_widgets(self, layout: QVBoxLayout) -> None:
@@ -780,14 +802,7 @@ class _TimelineWindow(
             cursor.insertText(f"-- {label} --\n")
             cursor.insertImage(image)
 
-        watch_text = _render.render_watches(
-            self.watches, self.timelines_by_id, event.seq
-        )
-        if watch_text:
-            cursor = QTextCursor(self.text.document())
-            cursor.movePosition(QTextCursor.MoveOperation.End)
-            cursor.insertBlock()
-            cursor.insertText("-- Watches --\n" + watch_text)
+        self._refresh_watch_table(event.seq)
 
         self._highlight_and_scroll(active_span)
         self._update_control_state()
@@ -798,6 +813,14 @@ class _TimelineWindow(
             self.slider.setValue(index + 1)
         finally:
             self._syncing_slider = False
+
+    def _refresh_watch_table(self, upto_seq: int) -> None:
+        """Repopulate the compact watch value table for the event at ``upto_seq``."""
+        rows = _render.render_watch_table(self.watches, self.timelines_by_id, upto_seq)
+        self.watch_table.setRowCount(len(rows))
+        for row, (key, value) in enumerate(rows):
+            self.watch_table.setItem(row, 0, QTableWidgetItem(key))
+            self.watch_table.setItem(row, 1, QTableWidgetItem(value))
 
     def _refresh_watch_ref_choices(self, _kind: str | None = None) -> None:
         """Repopulate the watch-ref dropdown for the currently selected circuit."""

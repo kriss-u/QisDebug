@@ -686,6 +686,77 @@ def render_watch(target: WatchTarget, timeline: Timeline, upto_seq: int) -> str:
     return "\n".join(lines)
 
 
+def render_watch_table(
+    targets: list[WatchTarget], timelines_by_id: dict[str, Timeline], upto_seq: int
+) -> list[tuple[str, str]]:
+    """Render every active watch as ``(key, value)`` rows for a compact
+    key/value table, the structured counterpart to :func:`render_watches`
+    -- same underlying data, laid out for a narrow table widget instead of
+    a wide freeform text pane.
+    """
+    rows: list[tuple[str, str]] = []
+    for target in targets:
+        timeline = timelines_by_id.get(target.circuit_id)
+        if timeline is not None:
+            rows.extend(render_watch_rows(target, timeline, upto_seq))
+    return rows
+
+
+def render_watch_rows(
+    target: WatchTarget, timeline: Timeline, upto_seq: int
+) -> list[tuple[str, str]]:
+    """Render one watch as ``(key, value)`` rows: a header row naming the
+    watch and how many gates have touched it so far, then one row per
+    watched qubit/clbit with its latest known value.
+    """
+    bit_kind, indices = _watch_bits(target, timeline)
+    label = target.label(timeline)
+    if not indices:
+        return [(label, "not found on this circuit")]
+    index_set = set(indices)
+    touches = [
+        event
+        for event in timeline.gate_events
+        if event.seq <= upto_seq
+        and index_set & set(event.qubits if bit_kind == "qubit" else event.clbits)
+    ]
+    rows = [(label, f"{len(touches)} gates touched")]
+    if bit_kind == "qubit":
+        rows.extend(_qubit_watch_table_rows(timeline, indices, upto_seq))
+    else:
+        rows.extend(_clbit_watch_table_rows(timeline, indices, upto_seq))
+    return rows
+
+
+def _qubit_watch_table_rows(
+    timeline: Timeline, qubits: tuple[int, ...], upto_seq: int
+) -> list[tuple[str, str]]:
+    """``(key, value)`` rows for each watched qubit's latest P(1)/Bloch vector."""
+    snapshot = _latest_snapshot(timeline, upto_seq)
+    qubit_rows = _qubit_watch_rows(snapshot, qubits) if snapshot else None
+    if qubit_rows is None:
+        return []
+    rows = []
+    for qubit, probability_one, (x, y, z) in qubit_rows:
+        rows.append((f"  q{qubit} P(1)", f"{probability_one:.4f}"))
+        rows.append((f"  q{qubit} bloch", f"({x:+.3f}, {y:+.3f}, {z:+.3f})"))
+    return rows
+
+
+def _clbit_watch_table_rows(
+    timeline: Timeline, clbits: tuple[int, ...], upto_seq: int
+) -> list[tuple[str, str]]:
+    """``(key, value)`` rows for each watched clbit's latest measured P(1)."""
+    finished = _latest_execution_finished(timeline, upto_seq)
+    clbit_rows = _clbit_watch_rows(finished, clbits) if finished else None
+    if clbit_rows is None:
+        return []
+    return [
+        (f"  c{clbit} P(1)", f"{ones / total:.4f} ({ones}/{total})")
+        for clbit, ones, total in clbit_rows
+    ]
+
+
 def _latest_snapshot(timeline: Timeline, upto_seq: int) -> StateSnapshotEvent | None:
     """Return the most recent state snapshot at or before ``upto_seq``, if any."""
     return timeline.snapshot_upto(upto_seq)
@@ -700,21 +771,38 @@ def _latest_execution_finished(
 
 def _render_qubit_watch(snapshot: StateSnapshotEvent, qubits: tuple[int, ...]) -> str:
     """Render P(1) and the reduced Bloch vector for each watched qubit."""
-    amplitudes = snapshot.amplitudes()
-    if not amplitudes:
+    rows = _qubit_watch_rows(snapshot, qubits)
+    if rows is None:
         return "(no state captured yet)"
-    num_qubits = snapshot.num_qubits or int(np.log2(len(amplitudes)))
     lines = [f"state {snapshot.describe()}:"]
-    for qubit in qubits:
-        probability_one = _qubit_probability_one(amplitudes, qubit)
-        x, y, z = (
-            _clean(v) for v in _reduced_bloch_vector(amplitudes, qubit, num_qubits)
-        )
+    for qubit, probability_one, bloch in rows:
+        x, y, z = bloch
         lines.append(
             f"    qubit {qubit}: P(1)={probability_one:.4f}   "
             f"bloch=({x:+.3f}, {y:+.3f}, {z:+.3f})"
         )
     return "\n".join(lines)
+
+
+def _qubit_watch_rows(
+    snapshot: StateSnapshotEvent, qubits: tuple[int, ...]
+) -> list[tuple[int, float, tuple[float, float, float]]] | None:
+    """Compute P(1) and the reduced Bloch vector for each watched qubit,
+    shared by the freeform text rendering above and the structured
+    key/value table rows below so the two never drift apart.
+    """
+    amplitudes = snapshot.amplitudes()
+    if not amplitudes:
+        return None
+    num_qubits = snapshot.num_qubits or int(np.log2(len(amplitudes)))
+    rows = []
+    for qubit in qubits:
+        probability_one = _qubit_probability_one(amplitudes, qubit)
+        bloch = tuple(
+            _clean(v) for v in _reduced_bloch_vector(amplitudes, qubit, num_qubits)
+        )
+        rows.append((qubit, probability_one, bloch))
+    return rows
 
 
 def _clean(value: float, epsilon: float = 1e-9) -> float:
@@ -745,21 +833,37 @@ def _reduced_bloch_vector(
 
 def _render_clbit_watch(event: ExecutionFinishedEvent, clbits: tuple[int, ...]) -> str:
     """Render the measured P(1) for each watched clbit from execution counts."""
+    rows = _clbit_watch_rows(event, clbits)
+    if rows is None:
+        return "(no counts yet)"
+    lines = [f"counts {event.describe()}:"]
+    for clbit, ones, total in rows:
+        lines.append(
+            f"    clbit {clbit}: P(1)={ones / total:.4f}  ({ones}/{total} shots)"
+        )
+    return "\n".join(lines)
+
+
+def _clbit_watch_rows(
+    event: ExecutionFinishedEvent, clbits: tuple[int, ...]
+) -> list[tuple[int, int, int]] | None:
+    """Compute the measured 1-count and shot total for each watched clbit,
+    shared by the freeform text rendering above and the structured
+    key/value table rows below so the two never drift apart.
+    """
     counts = event.counts or {}
     total = sum(counts.values())
     if not total:
-        return "(no counts yet)"
-    lines = [f"counts {event.describe()}:"]
+        return None
+    rows = []
     for clbit in clbits:
         ones = sum(
             n
             for bitstring, n in counts.items()
             if _clbit_value(bitstring, clbit) == "1"
         )
-        lines.append(
-            f"    clbit {clbit}: P(1)={ones / total:.4f}  ({ones}/{total} shots)"
-        )
-    return "\n".join(lines)
+        rows.append((clbit, ones, total))
+    return rows
 
 
 def _clbit_value(bitstring: str, clbit: int) -> str:

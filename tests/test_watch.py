@@ -124,7 +124,7 @@ def test_cli_watch_and_unwatch_commands(debug, monkeypatch, capsys):
     not QtFrontend().is_available(), reason="no display available for Qt"
 )
 def test_gui_frontend_add_and_remove_watch(debug, monkeypatch):
-    """Adding a watch through the combo boxes updates the watch table; removing clears it."""
+    """Adding a watch through the combo boxes updates the watch text; removing clears it."""
     timeline = _traced_bell_with_registers(debug)
     app, window = build_gui_window(monkeypatch, timeline)
 
@@ -132,15 +132,10 @@ def test_gui_frontend_add_and_remove_watch(debug, monkeypatch):
     window.watch_ref.setCurrentText("0")
     window._add_watch()  # pylint: disable=protected-access
     assert len(window.watches) == 1
-    table_keys = []
-    for row in range(window.watch_table.rowCount()):
-        item = window.watch_table.item(row, 0)
-        assert item is not None
-        table_keys.append(item.text())
-    assert any("viz — qubit 0" in key for key in table_keys)
+    assert "viz — qubit 0" in window.watch_text.toPlainText()
 
     window.watch_list.setCurrentRow(0)
     window._remove_selected_watch()  # pylint: disable=protected-access
     assert not window.watches
-    assert window.watch_table.rowCount() == 0
+    assert window.watch_text.toPlainText() == ""
     del app

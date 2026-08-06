@@ -28,20 +28,15 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QApplication,
-    QCheckBox,
     QComboBox,
     QHBoxLayout,
     QLabel,
-    QAbstractItemView,
-    QHeaderView,
     QListWidget,
     QListWidgetItem,
     QPushButton,
     QSlider,
     QSpinBox,
     QSplitter,
-    QTableWidget,
-    QTableWidgetItem,
     QTabWidget,
     QTextEdit,
     QVBoxLayout,
@@ -423,7 +418,15 @@ class _TimelineWindow(
         return layout
 
     def _build_watch_widgets(self, layout: QVBoxLayout) -> None:
-        """Lay out the watch kind/ref pickers, add/remove buttons, and watch list."""
+        """Lay out the watch kind/ref pickers and add/remove buttons on the
+        left, and the formatted watch value text on the right, side by side
+        on one line -- the input that adds a watch and the panel showing
+        what's currently watched belong together, not stacked below the
+        selection list.
+        """
+        watch_section = QHBoxLayout()
+
+        controls_column = QVBoxLayout()
         watch_row = QHBoxLayout()
         watch_row.addWidget(QLabel("Watch:"))
         self.watch_kind = QComboBox()
@@ -437,28 +440,21 @@ class _TimelineWindow(
         watch_row.addWidget(_button("+ Add watch", self._add_watch))
         watch_row.addWidget(_button("Remove selected", self._remove_selected_watch))
         watch_row.addStretch(1)
-        layout.addLayout(watch_row)
+        controls_column.addLayout(watch_row)
 
         self.watch_list = QListWidget()
         self.watch_list.setMaximumHeight(70)
-        layout.addWidget(self.watch_list)
+        controls_column.addWidget(self.watch_list)
+        watch_section.addLayout(controls_column, stretch=1)
 
-        values_row = QHBoxLayout()
-        self.watch_table = QTableWidget(0, 2)
-        self.watch_table.setHorizontalHeaderLabels(["Watch", "Value"])
-        self.watch_table.verticalHeader().setVisible(False)
-        self.watch_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.watch_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
-        self.watch_table.setMaximumHeight(140)
-        self.watch_table.setMaximumWidth(420)
-        self.watch_table.horizontalHeader().setStretchLastSection(True)
-        self.watch_table.horizontalHeader().setSectionResizeMode(
-            0, QHeaderView.ResizeMode.Interactive
-        )
-        self.watch_table.setColumnWidth(0, 150)
-        values_row.addWidget(self.watch_table)
-        values_row.addStretch(1)
-        layout.addLayout(values_row)
+        self.watch_text = QTextEdit()
+        self.watch_text.setReadOnly(True)
+        self.watch_text.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
+        self.watch_text.setFont(_monospace_font())
+        self.watch_text.setMaximumHeight(120)
+        watch_section.addWidget(self.watch_text, stretch=1)
+
+        layout.addLayout(watch_section)
 
         self._refresh_watch_ref_choices()
 
@@ -468,6 +464,7 @@ class _TimelineWindow(
         the timeline, not on a separate tab.
         """
         mark_row = QHBoxLayout()
+        mark_row.addWidget(QLabel("Diff:"))
         mark_a_button = _button("Mark A", self._mark_a)
         mark_a_button.setToolTip(
             "Pin the event currently shown below as point A of a diff"
@@ -503,14 +500,13 @@ class _TimelineWindow(
         therefore choose an *element* (circuit + track, e.g.
         "bell [transpiled]") to diff in detail, not just a circuit, so a
         transpiled circuit is never silently diffed as its pre-transpile
-        construction gates. "Overall" instead summarizes every element
-        common to both stages in one line each.
+        construction gates.
         """
         panel = QWidget()
         layout = QVBoxLayout(panel)
 
         selector_row = QHBoxLayout()
-        selector_row.addWidget(QLabel("Element A:"))
+        selector_row.addWidget(QLabel("Diff element A:"))
         self.diff_circuit_a = QComboBox()
         self.diff_circuit_a.setToolTip(
             "Which circuit and track (construction or a specific "
@@ -520,7 +516,7 @@ class _TimelineWindow(
             self._update_diff_text
         )
         selector_row.addWidget(self.diff_circuit_a)
-        selector_row.addWidget(QLabel("Element B:"))
+        selector_row.addWidget(QLabel("Diff element B:"))
         self.diff_circuit_b = QComboBox()
         self.diff_circuit_b.setToolTip(
             "Which circuit and track (construction or a specific "
@@ -530,11 +526,6 @@ class _TimelineWindow(
             self._update_diff_text
         )
         selector_row.addWidget(self.diff_circuit_b)
-        self.diff_overall_checkbox = QCheckBox("Overall (every common element)")
-        self.diff_overall_checkbox.toggled.connect(  # pylint: disable=no-member
-            self._update_diff_text
-        )
-        selector_row.addWidget(self.diff_overall_checkbox)
         selector_row.addStretch(1)
         layout.addLayout(selector_row)
 
@@ -644,14 +635,6 @@ class _TimelineWindow(
         mark_a, mark_b = self.marks["a"], self.marks["b"]
         if mark_a is None or mark_b is None:
             self.diff_text.setPlainText("")
-            self.diff_text.setExtraSelections([])
-            self._set_diff_pane(self.diff_label_a, self.diff_text_a, "", "")
-            self._set_diff_pane(self.diff_label_b, self.diff_text_b, "", "")
-            return
-        if self.diff_overall_checkbox.isChecked():
-            self.diff_text.setPlainText(
-                _render.render_stage_overall_diff(mark_a, mark_b, self.timelines_by_id)
-            )
             self.diff_text.setExtraSelections([])
             self._set_diff_pane(self.diff_label_a, self.diff_text_a, "", "")
             self._set_diff_pane(self.diff_label_b, self.diff_text_b, "", "")
@@ -802,7 +785,7 @@ class _TimelineWindow(
             cursor.insertText(f"-- {label} --\n")
             cursor.insertImage(image)
 
-        self._refresh_watch_table(event.seq)
+        self._refresh_watch_text(event.seq)
 
         self._highlight_and_scroll(active_span)
         self._update_control_state()
@@ -814,13 +797,11 @@ class _TimelineWindow(
         finally:
             self._syncing_slider = False
 
-    def _refresh_watch_table(self, upto_seq: int) -> None:
-        """Repopulate the compact watch value table for the event at ``upto_seq``."""
-        rows = _render.render_watch_table(self.watches, self.timelines_by_id, upto_seq)
-        self.watch_table.setRowCount(len(rows))
-        for row, (key, value) in enumerate(rows):
-            self.watch_table.setItem(row, 0, QTableWidgetItem(key))
-            self.watch_table.setItem(row, 1, QTableWidgetItem(value))
+    def _refresh_watch_text(self, upto_seq: int) -> None:
+        """Repopulate the formatted watch value text for the event at ``upto_seq``."""
+        self.watch_text.setPlainText(
+            _render.render_watches(self.watches, self.timelines_by_id, upto_seq)
+        )
 
     def _refresh_watch_ref_choices(self, _kind: str | None = None) -> None:
         """Repopulate the watch-ref dropdown for the currently selected circuit."""

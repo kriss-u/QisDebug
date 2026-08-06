@@ -22,6 +22,8 @@ _MARK_SLOTS = ("a", "b")
 _DIFF_REMOVED_ON = "\x1b[41;97m"  # red background, bright white text
 _DIFF_ADDED_ON = "\x1b[42;30m"  # green background, black text
 _DIFF_HIGHLIGHT_OFF = "\x1b[0m"
+_DIFF_REMOVED_TEXT = "\x1b[31m"  # red text
+_DIFF_ADDED_TEXT = "\x1b[32m"  # green text
 
 
 def _highlight_row(row: str, column_ranges: list[tuple[int, int]], color: str) -> str:
@@ -41,6 +43,26 @@ def _highlight_row(row: str, column_ranges: list[tuple[int, int]], color: str) -
         cursor = end
     pieces.append(row[cursor:])
     return "".join(pieces)
+
+
+def _highlight_gate_diff_lines(text: str) -> str:
+    """Color each :func:`~._render.render_state_diff` unified-diff line
+    red/green text (not the background fill used for the circuit drawing
+    panes above it, see :func:`_highlight_row` -- these lines are already
+    just one gate's description, so a background block reads as more
+    alarming than the same red/green shown as plain colored text).
+    """
+    if not sys.stdout.isatty():
+        return text
+    lines = []
+    for line in text.split("\n"):
+        if line.startswith("  - "):
+            lines.append(_DIFF_REMOVED_TEXT + line + _DIFF_HIGHLIGHT_OFF)
+        elif line.startswith("  + "):
+            lines.append(_DIFF_ADDED_TEXT + line + _DIFF_HIGHLIGHT_OFF)
+        else:
+            lines.append(line)
+    return "\n".join(lines)
 
 
 def _render_diff_side_text(side: _circuit_diff.CircuitDiffSide, color: str) -> str:
@@ -346,9 +368,11 @@ class _TimelineShell(cmd.Cmd):
         return "\n\n".join(
             [
                 _render_circuit_split_diff_text(split_diff),
-                _render.render_stage_diff(
-                    mark_a, mark_b, self.timelines_by_id,
-                    element_a=element_a, element_b=element_b,
+                _highlight_gate_diff_lines(
+                    _render.render_stage_diff(
+                        mark_a, mark_b, self.timelines_by_id,
+                        element_a=element_a, element_b=element_b,
+                    )
                 ),
             ]
         )

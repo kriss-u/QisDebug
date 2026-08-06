@@ -60,6 +60,10 @@ DIFF_REMOVED_COLOR_LIGHT = "#fecaca"
 DIFF_REMOVED_COLOR_DARK = "#7f1d1d"
 DIFF_ADDED_COLOR_LIGHT = "#bbf7d0"
 DIFF_ADDED_COLOR_DARK = "#14532d"
+DIFF_REMOVED_TEXT_COLOR_LIGHT = "#dc2626"
+DIFF_REMOVED_TEXT_COLOR_DARK = "#f87171"
+DIFF_ADDED_TEXT_COLOR_LIGHT = "#16a34a"
+DIFF_ADDED_TEXT_COLOR_DARK = "#4ade80"
 MAX_IMAGE_WIDTH = 480
 MAX_IMAGE_HEIGHT = 360
 _PLAY_LABEL = "⏵ Play  (Space)"
@@ -189,6 +193,20 @@ def _diff_highlight_color(widget: QWidget, kind: Literal["removed", "added"]) ->
     if kind == "removed":
         return DIFF_REMOVED_COLOR_DARK if is_dark else DIFF_REMOVED_COLOR_LIGHT
     return DIFF_ADDED_COLOR_DARK if is_dark else DIFF_ADDED_COLOR_LIGHT
+
+
+def _diff_text_color(widget: QWidget, kind: Literal["removed", "added"]) -> str:
+    """Pick a red ("removed") or green ("added") *text* color with enough
+    contrast for the widget's current palette -- used for the gate diff
+    summary's ``  - ``/``  + `` lines, which read as plain colored text
+    rather than the background fill :func:`_diff_highlight_color` gives the
+    circuit drawing panes.
+    """
+    background = widget.palette().color(QPalette.ColorRole.Base)
+    is_dark = background.lightness() < 128
+    if kind == "removed":
+        return DIFF_REMOVED_TEXT_COLOR_DARK if is_dark else DIFF_REMOVED_TEXT_COLOR_LIGHT
+    return DIFF_ADDED_TEXT_COLOR_DARK if is_dark else DIFF_ADDED_TEXT_COLOR_LIGHT
 
 
 class _TimelineWidget(QWidget):
@@ -604,6 +622,7 @@ class _TimelineWindow(
         mark_a, mark_b = self.marks["a"], self.marks["b"]
         if mark_a is None or mark_b is None:
             self.diff_text.setPlainText("")
+            self.diff_text.setExtraSelections([])
             self._set_diff_pane(self.diff_label_a, self.diff_text_a, "", "")
             self._set_diff_pane(self.diff_label_b, self.diff_text_b, "", "")
             return
@@ -611,6 +630,7 @@ class _TimelineWindow(
             self.diff_text.setPlainText(
                 _render.render_stage_overall_diff(mark_a, mark_b, self.timelines_by_id)
             )
+            self.diff_text.setExtraSelections([])
             self._set_diff_pane(self.diff_label_a, self.diff_text_a, "", "")
             self._set_diff_pane(self.diff_label_b, self.diff_text_b, "", "")
             return
@@ -625,15 +645,16 @@ class _TimelineWindow(
             # hit the exact same element resolution and repeat this same
             # message, so report it once instead of twice.
             self.diff_text.setPlainText(split_diff)
+            self.diff_text.setExtraSelections([])
             self._set_diff_pane(self.diff_label_a, self.diff_text_a, "", "")
             self._set_diff_pane(self.diff_label_b, self.diff_text_b, "", "")
             return
-        self.diff_text.setPlainText(
-            _render.render_stage_diff(
-                mark_a, mark_b, self.timelines_by_id,
-                element_a=element_a, element_b=element_b,
-            )
+        stage_diff_text = _render.render_stage_diff(
+            mark_a, mark_b, self.timelines_by_id,
+            element_a=element_a, element_b=element_b,
         )
+        self.diff_text.setPlainText(stage_diff_text)
+        self._highlight_diff_lines(self.diff_text, stage_diff_text)
         self._set_diff_pane(
             self.diff_label_a, self.diff_text_a, split_diff.a.label, split_diff.a.text
         )
@@ -677,6 +698,39 @@ class _TimelineWindow(
             selection.format.setBackground(color)  # pylint: disable=no-member
             selections.append(selection)
         text.setExtraSelections(selections)
+
+    @staticmethod
+    def _highlight_diff_lines(text_edit: QTextEdit, body: str) -> None:
+        """Color the unified-diff ``  - ``/``  + `` gate lines from
+        :func:`~._render.render_state_diff` red/green text (not the
+        background fill :meth:`_highlight_diff_spans` uses for the circuit
+        drawing panes -- these lines are already just one gate's
+        description, so plain colored text reads better than a background
+        block).
+        """
+        doc = text_edit.document()
+        selections = []
+        offset = 0
+        for line in body.split("\n"):
+            kind: Literal["removed", "added"] | None = None
+            if line.startswith("  - "):
+                kind = "removed"
+            elif line.startswith("  + "):
+                kind = "added"
+            if kind is not None:
+                cursor = QTextCursor(doc)
+                cursor.setPosition(offset)
+                cursor.setPosition(offset + len(line), QTextCursor.MoveMode.KeepAnchor)
+                selection = QTextEdit.ExtraSelection()
+                selection.cursor = cursor
+                # pylint sees `.format` as the builtin function rather than
+                # the QTextCharFormat property PySide6 actually returns here.
+                selection.format.setForeground(  # pylint: disable=no-member
+                    QColor(_diff_text_color(text_edit, kind))
+                )
+                selections.append(selection)
+            offset += len(line) + 1
+        text_edit.setExtraSelections(selections)
 
     def _mark_label(self, slot: str) -> str:
         mark = self.marks[slot]

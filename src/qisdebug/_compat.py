@@ -39,3 +39,24 @@ def resolve(module_path: str, attribute: str | None = None) -> Any | None:
     if attribute is None:
         return module
     return getattr(module, attribute, None)
+
+
+def normalize_circuits(circuits: Any) -> tuple[list[Any], bool] | None:
+    """Flatten a single circuit, or a list/tuple of circuits, into ``(items, single)``.
+
+    Returns None when ``circuits`` isn't QuantumCircuit-shaped at all, which
+    hooks treat as "not ours to instrument" and fall through to the original,
+    unpatched call untouched.
+    """
+    circuit_cls = resolve("qiskit.circuit.quantumcircuit", "QuantumCircuit")
+    if circuit_cls is None:
+        return None
+    if isinstance(circuits, circuit_cls):
+        return [circuits], True
+    if (
+        isinstance(circuits, (list, tuple))
+        and circuits
+        and all(isinstance(c, circuit_cls) for c in circuits)
+    ):
+        return list(circuits), False
+    return None

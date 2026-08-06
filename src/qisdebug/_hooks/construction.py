@@ -44,27 +44,21 @@ def install() -> InstallResult:
     applied = False
     for attribute in ("append", "_append"):
         if getattr(circuit_cls, attribute, None) is not None:
-            ok, warning = _dispatcher.ensure_patched(
-                circuit_cls, attribute, _recording_wrapper
+            applied = (
+                _dispatcher.patch_and_track(
+                    circuit_cls, attribute, _recording_wrapper, targets, warnings
+                )
+                or applied
             )
-            if ok:
-                targets.append((circuit_cls, attribute))
-            applied = applied or ok
-            if warning:
-                warnings.append(warning)
     if not applied:
         warnings.append(
             "no QuantumCircuit append method found; construction layer disabled"
         )
         return InstallResult(False, warnings, targets)
     if getattr(circuit_cls, "compose", None) is not None:
-        ok, warning = _dispatcher.ensure_patched(
-            circuit_cls, "compose", _compose_wrapper
+        _dispatcher.patch_and_track(
+            circuit_cls, "compose", _compose_wrapper, targets, warnings
         )
-        if ok:
-            targets.append((circuit_cls, "compose"))
-        if warning:
-            warnings.append(warning)
     else:
         warnings.append(
             "QuantumCircuit.compose not found; composed circuits not recorded"

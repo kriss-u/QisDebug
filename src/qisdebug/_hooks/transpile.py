@@ -28,10 +28,10 @@ from __future__ import annotations
 import functools
 import threading
 import time
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, NamedTuple
 
 from .. import _dispatcher
-from .._compat import logger, resolve
+from .._compat import logger, normalize_circuits, resolve
 from .._dispatcher import InstallResult, all_suspended
 from .._events import (
     NoteEvent,
@@ -97,82 +97,118 @@ def _run_wrapper(original: Callable) -> Callable:
         num_processes: Any = None,
         **kwargs: Any,
     ) -> Any:
+        fallback = _RunCall(
+            original, self, circuits, output_name, callback, num_processes, kwargs
+        )
         if getattr(_local, "depth", 0) > 0:
-            return original(
-                self, circuits, output_name, callback, num_processes, **kwargs
-            )
+            return fallback.invoke()
         listeners = [
             d for d in _dispatcher.active_instances() if not d.store.is_suspended()
         ]
         if not listeners:
-            return original(
-                self, circuits, output_name, callback, num_processes, **kwargs
-            )
-        circuit_cls = resolve("qiskit.circuit.quantumcircuit", "QuantumCircuit")
-        single = circuit_cls is not None and isinstance(circuits, circuit_cls)
-        if single:
-            items = [circuits]
-        elif (
-            circuit_cls is not None
-            and isinstance(circuits, (list, tuple))
-            and circuits
-            and all(isinstance(c, circuit_cls) for c in circuits)
-        ):
-            items = list(circuits)
-        else:
-            return original(
-                self, circuits, output_name, callback, num_processes, **kwargs
-            )
+            return fallback.invoke()
+        selection = normalize_circuits(circuits)
+        if selection is None:
+            return fallback.invoke()
+        items, single = selection
 
         resolved = [_resolve_triples(listeners, c) for c in items]
-        for circuit, triples in zip(items, resolved):
-            for debug, timeline, phase in triples:
-                debug.store.add_event(
-                    timeline,
-                    TranspileStartedEvent,
-                    pass_manager=type(self).__name__,
-                    depth=circuit.depth(),
-                    size=circuit.size(),
-                    phase=phase,
-                )
+        _record_started_events(items, resolved, type(self).__name__)
         if len(items) == 1 and resolved[0]:
-            callback = _chained_callback(callback, resolved[0])
+            fallback = fallback._replace(callback=_chained_callback(callback, resolved[0]))
 
-        started = time.perf_counter()
-        _local.depth = 1
-        try:
-            with all_suspended(listeners):
-                result = original(
-                    self, circuits, output_name, callback, num_processes, **kwargs
-                )
-        finally:
-            _local.depth = 0
-        duration = time.perf_counter() - started
+        result, duration = _run_instrumented(fallback, listeners)
 
         outputs = [result] if single else list(result)
-        for triples, output in zip(resolved, outputs):
-            if not triples:
-                continue
-            snapshot = _maybe_output_snapshot(triples, output)
-            try:
-                setattr(output, ID_ATTRIBUTE, triples[0][1].circuit_id)
-            except Exception:
-                pass
-            for debug, timeline, phase in triples:
-                debug.store.add_event(
-                    timeline,
-                    TranspileFinishedEvent,
-                    duration=duration,
-                    depth=output.depth(),
-                    size=output.size(),
-                    phase=phase,
-                    circuit=(
-                        snapshot if debug.config.transpile_snapshots != "none" else None
-                    ),
-                )
+        _record_finished_events(resolved, outputs, duration)
         return result
 
     return run
+
+
+class _RunCall(NamedTuple):
+    """The exact positional/keyword shape ``PassManager.run`` was invoked with."""
+
+    original: Callable
+    instance: Any
+    circuits: Any
+    output_name: Any
+    callback: Any
+    num_processes: Any
+    kwargs: dict
+
+    def invoke(self) -> Any:
+        """Call ``original`` with the arguments it was originally given."""
+        return self.original(
+            self.instance,
+            self.circuits,
+            self.output_name,
+            self.callback,
+            self.num_processes,
+            **self.kwargs,
+        )
+
+
+def _run_instrumented(
+    call: "_RunCall", listeners: list["QisDebug"]
+) -> tuple[Any, float]:
+    """Invoke ``call`` with every listener suspended, timing the call.
+
+    Suspension keeps the construction/execution hooks from recording the
+    pass manager's own internal circuit manipulation as if it were user
+    activity; ``_local.depth`` reentrancy-guards nested ``PassManager.run``
+    calls the same way.
+    """
+    started = time.perf_counter()
+    _local.depth = 1
+    try:
+        with all_suspended(listeners):
+            result = call.invoke()
+    finally:
+        _local.depth = 0
+    return result, time.perf_counter() - started
+
+
+def _record_started_events(
+    items: list[Any], resolved: list[list[TranspileTriple]], pass_manager_name: str
+) -> None:
+    """Emit one :class:`TranspileStartedEvent` per listener per circuit."""
+    for circuit, triples in zip(items, resolved):
+        for debug, timeline, phase in triples:
+            debug.store.add_event(
+                timeline,
+                TranspileStartedEvent,
+                pass_manager=pass_manager_name,
+                depth=circuit.depth(),
+                size=circuit.size(),
+                phase=phase,
+            )
+
+
+def _record_finished_events(
+    resolved: list[list[TranspileTriple]], outputs: list[Any], duration: float
+) -> None:
+    """Emit one :class:`TranspileFinishedEvent` per listener per output circuit."""
+    for triples, output in zip(resolved, outputs):
+        if not triples:
+            continue
+        snapshot = _maybe_output_snapshot(triples, output)
+        try:
+            setattr(output, ID_ATTRIBUTE, triples[0][1].circuit_id)
+        except Exception:
+            pass
+        for debug, timeline, phase in triples:
+            debug.store.add_event(
+                timeline,
+                TranspileFinishedEvent,
+                duration=duration,
+                depth=output.depth(),
+                size=output.size(),
+                phase=phase,
+                circuit=(
+                    snapshot if debug.config.transpile_snapshots != "none" else None
+                ),
+            )
 
 
 def _resolve_triples(
@@ -340,20 +376,42 @@ def _capture_property_set(
         return None, None
 
 
+class _PassRecord(NamedTuple):
+    """Everything a transpile_pass event needs, independent of who's listening."""
+
+    name: str
+    duration: float
+    depth: int | None
+    size: int | None
+    ops: dict
+    changed: bool
+    circuit: Any
+    property_set: Any
+    property_changes: Any
+
+
+def _pass_name(pass_instance: Any) -> str | None:
+    """Return a pass's display name, whether ``.name`` is a method or attribute."""
+    if pass_instance is None:
+        return None
+    namer = getattr(pass_instance, "name", None)
+    return str(namer()) if callable(namer) else str(pass_instance)
+
+
+def _dag_depth_size(dag: Any) -> tuple[int | None, int | None]:
+    """Return ``(depth, size)`` for ``dag``, or ``(None, None)`` if unavailable."""
+    if dag is None:
+        return None, None
+    try:
+        return dag.depth(recurse=True), dag.size(recurse=True)
+    except Exception:
+        return None, None
+
+
 def _record_pass(triples: list[TranspileTriple], details: dict, state: dict) -> None:
     """Record one transpiler pass, snapshotting the circuit when configured."""
-    pass_instance = details.get("pass_")
     dag = details.get("dag")
-    name = None
-    if pass_instance is not None:
-        namer = getattr(pass_instance, "name", None)
-        name = namer() if callable(namer) else str(pass_instance)
-    try:
-        depth = dag.depth(recurse=True) if dag is not None else None
-        size = dag.size(recurse=True) if dag is not None else None
-    except Exception:
-        depth = None
-        size = None
+    depth, size = _dag_depth_size(dag)
     ops = dict(dag.count_ops()) if dag is not None else {}
     signature = _fingerprint(dag, depth, size, ops)
     changed = state["signature"] is None or signature != state["signature"]
@@ -362,24 +420,40 @@ def _record_pass(triples: list[TranspileTriple], details: dict, state: dict) -> 
     circuit = _capture_circuit_snapshot(triples, dag)
     property_set, property_changes = _capture_property_set(triples, details, state)
 
+    record = _PassRecord(
+        name=_pass_name(details.get("pass_")) or "unknown",
+        duration=float(details.get("time") or 0.0),
+        depth=depth,
+        size=size,
+        ops=ops,
+        changed=changed,
+        circuit=circuit,
+        property_set=property_set,
+        property_changes=property_changes,
+    )
+    _emit_pass_events(triples, record)
+
+
+def _emit_pass_events(triples: list[TranspileTriple], record: "_PassRecord") -> None:
+    """Add one transpile_pass event per listener, applying each one's own policy."""
     for debug, timeline, phase in triples:
-        wants_snapshot = _policy_wants(debug.config.transpile_snapshots, changed)
-        wants_props = property_changes is not None and _policy_wants(
-            debug.config.capture_property_set, bool(property_changes)
+        wants_snapshot = _policy_wants(debug.config.transpile_snapshots, record.changed)
+        wants_props = record.property_changes is not None and _policy_wants(
+            debug.config.capture_property_set, bool(record.property_changes)
         )
         debug.store.add_event(
             timeline,
             TranspilePassEvent,
-            pass_name=name or "unknown",
-            duration=float(details.get("time") or 0.0),
-            depth=depth,
-            size=size,
-            ops=ops,
-            changed=changed,
+            pass_name=record.name,
+            duration=record.duration,
+            depth=record.depth,
+            size=record.size,
+            ops=record.ops,
+            changed=record.changed,
             phase=phase,
-            circuit=circuit if wants_snapshot else None,
-            property_changes=property_changes if wants_props else None,
-            property_set=property_set if wants_props else None,
+            circuit=record.circuit if wants_snapshot else None,
+            property_changes=record.property_changes if wants_props else None,
+            property_set=record.property_set if wants_props else None,
         )
 
 
@@ -431,6 +505,34 @@ def _record_standalone_pass(
     The result circuit inherits the timeline id, so later transpiles or runs
     of it stay on the same timeline, mirroring ``PassManager.run`` outputs.
     """
+    pairs = _resolve_pairs(listeners, circuit)
+    if not pairs:
+        return
+    changed = _standalone_changed(result, circuit)
+    depth, size, ops = _standalone_depth_size_ops(result)
+    snapshot = _maybe_standalone_snapshot(pairs, result, changed)
+    try:
+        setattr(result, ID_ATTRIBUTE, pairs[0][1].circuit_id)
+    except Exception:
+        pass
+    record = _PassRecord(
+        name=_pass_name(pass_instance) or "unknown",
+        duration=duration,
+        depth=depth,
+        size=size,
+        ops=ops,
+        changed=changed,
+        circuit=snapshot,
+        property_set=None,
+        property_changes=None,
+    )
+    _emit_standalone_events(pairs, record)
+
+
+def _resolve_pairs(
+    listeners: list["QisDebug"], circuit: Any
+) -> list[tuple["QisDebug", Timeline]]:
+    """Resolve each listener's timeline for ``circuit``, dropping non-matches."""
     pairs: list[tuple["QisDebug", Timeline]] = []
     for debug in listeners:
         timeline = debug.store.timeline_for(
@@ -438,51 +540,60 @@ def _record_standalone_pass(
         )
         if timeline is not None:
             pairs.append((debug, timeline))
-    if not pairs:
-        return
-    namer = getattr(pass_instance, "name", None)
-    name = namer() if callable(namer) else str(pass_instance)
+    return pairs
+
+
+def _standalone_changed(result: Any, circuit: Any) -> bool:
+    """Whether a directly-applied pass produced a different circuit object."""
     if result is circuit:
-        changed = False
-    else:
-        try:
-            changed = result != circuit
-        except Exception:
-            changed = True
+        return False
     try:
-        depth = result.depth()
-        size = result.size()
-        ops = dict(result.count_ops())
+        return result != circuit
     except Exception:
-        depth = None
-        size = None
-        ops = {}
-    snapshot = None
-    if any(
+        return True
+
+
+def _standalone_depth_size_ops(result: Any) -> tuple[int | None, int | None, dict]:
+    """Return ``(depth, size, ops)`` for ``result``, degrading gracefully."""
+    try:
+        return result.depth(), result.size(), dict(result.count_ops())
+    except Exception:
+        return None, None, {}
+
+
+def _maybe_standalone_snapshot(
+    pairs: list[tuple["QisDebug", Timeline]], result: Any, changed: bool
+) -> Any | None:
+    """Copy ``result`` if any listener's policy wants a snapshot for this pass."""
+    wants_any = any(
         debug.config.transpile_snapshots == "all"
         or (debug.config.transpile_snapshots == "changed" and changed)
         for debug, _ in pairs
-    ):
-        try:
-            with all_suspended([debug for debug, _ in pairs]):
-                snapshot = result.copy()
-        except Exception:
-            snapshot = None
+    )
+    if not wants_any:
+        return None
     try:
-        setattr(result, ID_ATTRIBUTE, pairs[0][1].circuit_id)
+        with all_suspended([debug for debug, _ in pairs]):
+            return result.copy()
     except Exception:
-        pass
+        return None
+
+
+def _emit_standalone_events(
+    pairs: list[tuple["QisDebug", Timeline]], record: "_PassRecord"
+) -> None:
+    """Add one transpile_pass event per listener for a directly-applied pass."""
     for debug, timeline in pairs:
         policy = debug.config.transpile_snapshots
-        wants_snapshot = policy == "all" or (policy == "changed" and changed)
+        wants_snapshot = policy == "all" or (policy == "changed" and record.changed)
         debug.store.add_event(
             timeline,
             TranspilePassEvent,
-            pass_name=name or "unknown",
-            duration=duration,
-            depth=depth,
-            size=size,
-            ops=ops,
-            changed=changed,
-            circuit=snapshot if wants_snapshot else None,
+            pass_name=record.name,
+            duration=record.duration,
+            depth=record.depth,
+            size=record.size,
+            ops=record.ops,
+            changed=record.changed,
+            circuit=record.circuit if wants_snapshot else None,
         )

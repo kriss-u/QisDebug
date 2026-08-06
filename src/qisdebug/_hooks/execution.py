@@ -32,7 +32,7 @@ from typing import TYPE_CHECKING, Any, Callable, NamedTuple
 from pydantic import BaseModel, ConfigDict, Field
 
 from .. import _dispatcher
-from .._compat import logger, resolve
+from .._compat import logger, normalize_circuits, resolve
 from .._dispatcher import InstallResult, all_suspended
 from .._events import (
     ExecutionFinishedEvent,
@@ -111,24 +111,18 @@ def install() -> InstallResult:
     applied = False
     aer_backend = resolve("qiskit_aer.backends.aerbackend", "AerBackend")
     if aer_backend is not None:
-        ok, warning = _dispatcher.ensure_patched(
-            aer_backend, "run", _backend_run_wrapper
+        applied = (
+            _dispatcher.patch_and_track(
+                aer_backend, "run", _backend_run_wrapper, targets, warnings
+            )
+            or applied
         )
-        if ok:
-            targets.append((aer_backend, "run"))
-        applied = applied or ok
-        if warning:
-            warnings.append(warning)
         for module_path, class_name, attribute in _INTERNAL_FACTORY_TARGETS:
             owner = resolve(module_path, class_name)
             if owner is not None:
-                ok, warning = _dispatcher.ensure_patched(
-                    owner, attribute, _suspended_call_wrapper
+                _dispatcher.patch_and_track(
+                    owner, attribute, _suspended_call_wrapper, targets, warnings
                 )
-                if ok:
-                    targets.append((owner, attribute))
-                if warning:
-                    warnings.append(warning)
     else:
         logger.info(
             "qisdebug: qiskit-aer not installed; backend statevector capture unavailable"
@@ -137,26 +131,22 @@ def install() -> InstallResult:
         "qiskit.providers.basic_provider.basic_simulator", "BasicSimulator"
     )
     if basic_simulator is not None:
-        ok, warning = _dispatcher.ensure_patched(
-            basic_simulator, "run", _plain_backend_run_wrapper
+        applied = (
+            _dispatcher.patch_and_track(
+                basic_simulator, "run", _plain_backend_run_wrapper, targets, warnings
+            )
+            or applied
         )
-        if ok:
-            targets.append((basic_simulator, "run"))
-        applied = applied or ok
-        if warning:
-            warnings.append(warning)
     for module_path, class_name in _PRIMITIVE_TARGETS:
         primitive_cls = resolve(module_path, class_name)
         if primitive_cls is not None:
             wrapper_factory = _primitive_run_factory(class_name)
-            ok, warning = _dispatcher.ensure_patched(
-                primitive_cls, "run", wrapper_factory
+            applied = (
+                _dispatcher.patch_and_track(
+                    primitive_cls, "run", wrapper_factory, targets, warnings
+                )
+                or applied
             )
-            if ok:
-                targets.append((primitive_cls, "run"))
-            applied = applied or ok
-            if warning:
-                warnings.append(warning)
     if not applied:
         warnings.append(
             "no backend or primitive run method found; execution layer disabled"
@@ -265,55 +255,75 @@ def _plan_backend_run(
     Returns None when the input is not made of QuantumCircuits, which tells
     the wrapper to fall through to the original call untouched.
     """
-    circuit_cls = resolve("qiskit.circuit.quantumcircuit", "QuantumCircuit")
-    if circuit_cls is None:
+    selection = normalize_circuits(circuits)
+    if selection is None:
         return None
-    single = isinstance(circuits, circuit_cls)
-    if single:
-        items = [circuits]
-    elif (
-        isinstance(circuits, (list, tuple))
-        and circuits
-        and all(isinstance(c, circuit_cls) for c in circuits)
-    ):
-        items = list(circuits)
-    else:
-        return None
-    backend_name_attr = getattr(backend, "name", None)
-    backend_name = (
-        backend_name_attr() if callable(backend_name_attr) else backend_name_attr
+    items, single = selection
+    ctx = _EntryContext(
+        listeners=listeners,
+        instrument=instrument,
+        has_binds=bool(run_options.get("parameter_binds")),
+        backend_name=_backend_name(backend),
+        shots=run_options.get("shots"),
     )
-    backend_name = str(backend_name) if backend_name is not None else None
-    shots = run_options.get("shots")
-    has_binds = bool(run_options.get("parameter_binds"))
     entries: list[RunEntry] = []
     payload: list[Any] = []
     for index, circuit in enumerate(items):
-        timelines = _timelines_for(listeners, circuit)
-        entry = RunEntry(
-            index=index, timelines=timelines, backend_name=backend_name, shots=shots
-        )
-        replacement = circuit
-        eligible = [
-            (d, tl)
-            for d, tl in timelines
-            if instrument and d.config.capture_statevectors
-        ]
-        if eligible:
-            if has_binds:
-                _add_event(
-                    eligible,
-                    NoteEvent,
-                    message="statevector capture skipped: parameter_binds present",
-                )
-            else:
-                instrumented = _instrument(circuit, eligible)
-                if instrumented is not None:
-                    replacement, entry.snapshots = instrumented
-                    entry.snapshot_timelines = eligible
+        replacement, entry = _build_run_entry(index, circuit, ctx)
         payload.append(replacement)
         entries.append(entry)
     return RunPlan(payload=payload[0] if single else payload, entries=entries)
+
+
+def _backend_name(backend: Any) -> str | None:
+    """Resolve a backend's display name, calling it if it's a method (BackendV1)."""
+    name_attr = getattr(backend, "name", None)
+    name = name_attr() if callable(name_attr) else name_attr
+    return str(name) if name is not None else None
+
+
+class _EntryContext(NamedTuple):
+    """Per-run settings shared by every circuit's :class:`RunEntry`."""
+
+    listeners: list["QisDebug"]
+    instrument: bool
+    has_binds: bool
+    backend_name: str | None
+    shots: Any
+
+
+def _build_run_entry(
+    index: int, circuit: Any, ctx: "_EntryContext"
+) -> tuple[Any, RunEntry]:
+    """Build one payload replacement plus its :class:`RunEntry`.
+
+    Swaps in an instrumented copy of ``circuit`` when at least one listener
+    wants statevector capture for it, unless ``parameter_binds`` is present
+    (snapshot insertion doesn't yet handle bound-parameter sweeps).
+    """
+    timelines = _timelines_for(ctx.listeners, circuit)
+    entry = RunEntry(
+        index=index, timelines=timelines, backend_name=ctx.backend_name, shots=ctx.shots
+    )
+    replacement = circuit
+    eligible = [
+        (d, tl)
+        for d, tl in timelines
+        if ctx.instrument and d.config.capture_statevectors
+    ]
+    if eligible:
+        if ctx.has_binds:
+            _add_event(
+                eligible,
+                NoteEvent,
+                message="statevector capture skipped: parameter_binds present",
+            )
+        else:
+            instrumented = _instrument(circuit, eligible)
+            if instrumented is not None:
+                replacement, entry.snapshots = instrumented
+                entry.snapshot_timelines = eligible
+    return replacement, entry
 
 
 def _timelines_for(listeners: list["QisDebug"], circuit: Any) -> list[TimelineHandle]:

@@ -73,6 +73,30 @@ def ensure_patched(
         return True, None
 
 
+def patch_and_track(
+    owner: Any,
+    attribute: str,
+    factory: Callable[[Callable], Callable],
+    targets: list[tuple[Any, str]],
+    warnings: list[str],
+) -> bool:
+    """Patch ``owner.attribute`` via :func:`ensure_patched`, recording the
+    outcome into the caller's ``targets``/``warnings`` accumulators.
+
+    Every hook's ``install()`` repeats the same ``ok, warning =
+    ensure_patched(...); if ok: targets.append(...); if warning:
+    warnings.append(...)`` idiom around each patch site; this collapses it to
+    one call. Returns ``ok`` so callers can still fold it into their own
+    ``applied`` flag.
+    """
+    ok, warning = ensure_patched(owner, attribute, factory)
+    if ok:
+        targets.append((owner, attribute))
+    if warning:
+        warnings.append(warning)
+    return ok
+
+
 def release_patched(owner: Any, attribute: str) -> None:
     """Undo one :func:`ensure_patched` call; restores the original at refcount 0."""
     if owner is None:

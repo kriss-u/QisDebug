@@ -31,7 +31,10 @@ class QisDebugConfig(BaseModel):
         default=12,
         ge=1,
         le=30,
-        description="Circuits wider than this skip statevector capture, since snapshot memory grows as 2**num_qubits.",
+        description=(
+            "Circuits wider than this skip statevector capture, since "
+            "snapshot memory grows as 2**num_qubits."
+        ),
     )
     max_snapshots_per_circuit: int = Field(
         default=256,
@@ -40,7 +43,10 @@ class QisDebugConfig(BaseModel):
     )
     transpile_snapshots: Literal["all", "changed", "none"] = Field(
         default="changed",
-        description="Which transpiler passes get a full circuit snapshot attached: every pass, only passes that changed the circuit, or none.",
+        description=(
+            "Which transpiler passes get a full circuit snapshot attached: "
+            "every pass, only passes that changed the circuit, or none."
+        ),
     )
     capture_property_set: Literal["all", "changed", "none"] = Field(
         default="changed",

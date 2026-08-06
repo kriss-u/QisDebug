@@ -84,6 +84,17 @@ class TranspileStartedEvent(TelemetryEvent):
         return f"{verb} ({self.pass_manager}, depth={self.depth}, size={self.size})"
 
 
+class PropertySetChanges(BaseModel):
+    """Added/removed/changed keys in a pass's property_set vs. the previous pass."""
+
+    added: dict[str, str] = Field(default_factory=dict)
+    removed: dict[str, str] = Field(default_factory=dict)
+    changed: dict[str, tuple[str, str]] = Field(default_factory=dict)
+
+    def __bool__(self) -> bool:
+        return bool(self.added or self.removed or self.changed)
+
+
 class TranspilePassEvent(TelemetryEvent):
     """One transpiler pass completed."""
 
@@ -96,12 +107,21 @@ class TranspilePassEvent(TelemetryEvent):
     changed: bool = False
     phase: Literal["user", "backend"] = "user"
     circuit: Any = Field(default=None, exclude=True, repr=False)
+    property_changes: PropertySetChanges | None = None
+    property_set: dict[str, str] | None = Field(default=None, exclude=True, repr=False)
 
     def describe(self) -> str:
-        """Return the pass name and whether it changed the circuit."""
+        """Return the pass name and whether it changed the circuit or property_set."""
         marker = "*" if self.changed else " "
         prefix = "backend pass" if self.phase == "backend" else "pass"
-        return f"{prefix}{marker} {self.pass_name} (depth={self.depth}, size={self.size})"
+        text = f"{prefix}{marker} {self.pass_name} (depth={self.depth}, size={self.size})"
+        if self.property_changes:
+            text += (
+                f" [props +{len(self.property_changes.added)}"
+                f"/-{len(self.property_changes.removed)}"
+                f"~{len(self.property_changes.changed)}]"
+            )
+        return text
 
 
 class TranspileFinishedEvent(TelemetryEvent):

@@ -224,6 +224,42 @@ def test_hand_built_pass_manager_is_recorded(debug):
     assert timeline.filter(EventType.TRANSPILE_FINISHED)
 
 
+def test_property_set_diff_recorded_on_changed_pass(debug):
+    """Layout/routing passes leave a property_changes diff against the previous pass."""
+    debug.start()
+    qc = _bell()
+    transpile(qc, coupling_map=[[0, 1], [1, 0]], basis_gates=["cx", "u"])
+    passes = debug.get(qc).filter(EventType.TRANSPILE_PASS)
+    with_diff = [p for p in passes if p.property_changes]
+    assert with_diff
+    assert any(p.property_changes.added or p.property_changes.changed for p in with_diff)
+    assert any(p.property_set is not None for p in passes)
+
+
+def test_capture_property_set_none_disables_capture(debug):
+    """capture_property_set='none' records passes without property_set data."""
+    debug.configure(capture_property_set="none")
+    debug.start()
+    qc = _bell()
+    transpile(qc, coupling_map=[[0, 1], [1, 0]], basis_gates=["cx", "u"])
+    passes = debug.get(qc).filter(EventType.TRANSPILE_PASS)
+    assert passes
+    assert all(p.property_changes is None for p in passes)
+    assert all(p.property_set is None for p in passes)
+
+
+def test_capture_property_set_all_keeps_every_pass_snapshot(debug):
+    """capture_property_set='all' snapshots every pass, changed or not."""
+    debug.configure(capture_property_set="all")
+    debug.start()
+    qc = _bell()
+    transpile(qc, coupling_map=[[0, 1], [1, 0]], basis_gates=["cx", "u"])
+    passes = debug.get(qc).filter(EventType.TRANSPILE_PASS)
+    assert passes
+    assert all(p.property_set is not None for p in passes)
+    assert all(p.property_changes is not None for p in passes)
+
+
 def test_construction_of_transpiled_circuit_not_polluted(debug):
     """Internal circuits built during transpilation create no timelines."""
     debug.start()

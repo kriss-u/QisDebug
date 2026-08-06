@@ -68,7 +68,7 @@ pip install -e ".[docs]"      # + Sphinx documentation toolchain
 | Phase         | Event types                                                   | How                                                                                                                                                                                |
 | ------------- | ------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Construction  | `gate_added`                                                  | Wraps `QuantumCircuit.append`/`_append`; records each instruction with qubits, clbits, and params after broadcasting resolves                                                      |
-| Transpilation | `transpile_started`, `transpile_pass`, `transpile_finished`   | Wraps `PassManager.run` and injects a per-pass callback through Qiskit's own supported `callback` mechanism                                                                        |
+| Transpilation | `transpile_started`, `transpile_pass`, `transpile_finished`   | Wraps `PassManager.run` and injects a per-pass callback through Qiskit's own `callback` mechanism; `transpile_pass` carries a `property_changes` diff too                          |
 | Execution     | `execution_submitted`, `state_snapshot`, `execution_finished` | Wraps `AerBackend.run` and the Sampler/Estimator primitives; on Aer, runs an instrumented copy with `save_statevector` after every gate and strips the snapshots from your results |
 | Diagnostics   | `note`                                                        | QisDebug explains itself, e.g. why snapshot capture was skipped for a circuit                                                                                                      |
 
@@ -79,21 +79,21 @@ recorded against the circuit you actually wrote.
 ## Public API
 
 `QisDebug` is a class, not a module-level singleton: each instance is an
-independently scoped instrumentation session with its own telemetry and its
-own configuration, so more than one can be started at once (e.g. one scoped
-to a suspect region, another covering a whole script) without either seeing
-the other's timelines. The surface on it is intentionally small:
+independently scoped instrumentation session with its own telemetry and its own
+configuration, so more than one can be started at once (e.g. one scoped to a
+suspect region, another covering a whole script) without either seeing the
+other's timelines. The surface on it is intentionally small:
 
-| Method                    | Purpose                                                                                                   |
-| ------------------------- | --------------------------------------------------------------------------------------------------------- |
-| `debug.start()`           | Attach all instrumentation layers. Idempotent. Returns an `ActivationReport` saying which layers attached |
-| `debug.end()`             | Restore every original Qiskit method this instance was using                                              |
-| `debug.active`            | Whether this instance's patches are currently applied                                                     |
-| `debug.get(qc)`           | The `Timeline` for a circuit, name, or `Timeline`; raises `TimelineNotFoundError` on a miss               |
-| `debug.timelines()`       | Every timeline this instance has recorded, most recently touched first                                    |
-| `debug.circuits()`        | The names of tracked circuits, most recently touched first                                                |
-| `debug.clear()`           | Drop all recorded telemetry without touching active patches                                               |
-| `debug.configure(...)`    | Adjust limits and switches (validated; see below)                                                         |
+| Method                 | Purpose                                                                                                   |
+| ---------------------- | --------------------------------------------------------------------------------------------------------- |
+| `debug.start()`        | Attach all instrumentation layers. Idempotent. Returns an `ActivationReport` saying which layers attached |
+| `debug.end()`          | Restore every original Qiskit method this instance was using                                              |
+| `debug.active`         | Whether this instance's patches are currently applied                                                     |
+| `debug.get(qc)`        | The `Timeline` for a circuit, name, or `Timeline`; raises `TimelineNotFoundError` on a miss               |
+| `debug.timelines()`    | Every timeline this instance has recorded, most recently touched first                                    |
+| `debug.circuits()`     | The names of tracked circuits, most recently touched first                                                |
+| `debug.clear()`        | Drop all recorded telemetry without touching active patches                                               |
+| `debug.configure(...)` | Adjust limits and switches (validated; see below)                                                         |
 
 Importing `qisdebug` has **no side effects** — nothing is patched until
 `start()` is called, and `with QisDebug() as debug:` is an optional shorthand
@@ -112,10 +112,10 @@ tl.circuit_at(n)          # rebuild the circuit as it looked after its first n g
 tl.summary()              # compact text overview
 ```
 
-Exporting timelines to JSON-serializable dicts (amplitudes as `[re, im]`
-pairs) goes through the `QisDebug` instance too, with the same argument shapes
-as `show()`. It always returns a list, even for a single circuit, so callers
-never need to branch on the shape of the result:
+Exporting timelines to JSON-serializable dicts (amplitudes as `[re, im]` pairs)
+goes through the `QisDebug` instance too, with the same argument shapes as
+`show()`. It always returns a list, even for a single circuit, so callers never
+need to branch on the shape of the result:
 
 ```python
 debug.export()              # every timeline this instance has recorded, as a list of dicts
@@ -132,6 +132,7 @@ debug.export([qc1, qc2])     # several circuits, as a list of dicts
 | `max_statevector_qubits`    | `12`        | Skip capture for wider circuits (snapshot memory grows as 2^n)                     |
 | `max_snapshots_per_circuit` | `256`       | Stop inserting snapshots past this count                                           |
 | `transpile_snapshots`       | `"changed"` | Keep full circuit snapshots for `"all"` passes, only `"changed"` ones, or `"none"` |
+| `capture_property_set`      | `"changed"` | Diff/snapshot property_set for `"all"` passes, only `"changed"` ones, or `"none"`  |
 
 ## The timeline viewer
 
@@ -147,10 +148,10 @@ Auto-detects a native GUI window (PySide6) when a display is available, or falls
 back to a text-based interactive CLI otherwise — force either with
 `debug.show(frontend="gui"|"cli")` or the `QISDEBUG_FRONTEND` environment
 variable. Either way, a slider/stepper walks the full event sequence; each
-position shows the circuit as it existed at that moment (drawn with Qiskit's
-own drawer), the statevector with amplitudes and probabilities, or per-pass
-transpiler statistics. Both frontends read only the public `Timeline` fields,
-so the instrumentation and the visualizer can evolve independently.
+position shows the circuit as it existed at that moment (drawn with Qiskit's own
+drawer), the statevector with amplitudes and probabilities, or per-pass
+transpiler statistics. Both frontends read only the public `Timeline` fields, so
+the instrumentation and the visualizer can evolve independently.
 
 ## Debugging with an AI agent (MCP)
 
@@ -175,7 +176,10 @@ and does the arithmetic:
   `auto_activate=false` so this server's own instance stays untouched.
 - **Extract mid-execution state** — `get_events` (filtered, paged),
   `get_state_snapshot` (raw amplitudes and probabilities at any captured step),
-  and `get_circuit_text` (the circuit as it looked after any gate).
+  `get_circuit_text` (the circuit as it looked after any gate), and
+  `get_property_set` (the full layout/routing property_set a specific transpiler
+  pass wrote — `get_events` surfaces the added/removed/changed keys inline as
+  `property_changes`).
 - **Watch what matters** — `add_watch` pins qubits, clbits, or registers;
   `read_watches` reports their gate history, marginal P(1), and Bloch vector as
   of any point in the sequence — the same watch feature the GUI and CLI expose
@@ -194,30 +198,24 @@ rendering, and comparison code the GUI and CLI use.
 
 ## Roadmap
 
-Planned next, on top of what's above — see `CLAUDE.md` for the full design
-of each, including which internal modules they touch:
+Planned next, on top of what's above — see `CLAUDE.md` for the full design of
+each, including which internal modules they touch:
 
-- **Property-set diffing** — Qiskit's transpiler passes write into a shared
-  `property_set` (layout, routing decisions, anything a custom pass adds);
-  each `transpile_pass` event will gain a `property_changes` diff against
-  the previous pass, the one thing [Trebugger](#prior-art) does that QisDebug
-  doesn't yet.
-- **Conditional breakpoints** — pause a _live_ run when a gate, watch
-  threshold, or anomaly condition is hit, not just inspect after the fact.
-  `debug.add_breakpoint(...)`/`debug.wait_for_breakpoint()` for the Python
-  API; a backgrounded `run_script` plus `poll_run`/`resume_run`/`stop_run`
-  for MCP, so an agent can step a script instead of only replaying it; and a
-  "jump to next hit" command in both the GUI and CLI over already-captured
-  timelines.
+- **Conditional breakpoints** — pause a _live_ run when a gate, watch threshold,
+  or anomaly condition is hit, not just inspect after the fact.
+  `debug.add_breakpoint(...)`/`debug.wait_for_breakpoint()` for the Python API;
+  a backgrounded `run_script` plus `poll_run`/`resume_run`/`stop_run` for MCP,
+  so an agent can step a script instead of only replaying it; and a "jump to
+  next hit" command in both the GUI and CLI over already-captured timelines.
 - **Timeline diff** — compare two timelines against each other (not just a
-  timeline against a hand-supplied expectation): aligned gate-by-gate diff,
-  plus statevector fidelity and counts TVD when both have a final state.
+  timeline against a hand-supplied expectation): aligned gate-by-gate diff, plus
+  statevector fidelity and counts TVD when both have a final state.
   `debug.diff(a, b)`, an MCP `diff_timelines` tool, and a
-  `debug.show([a, b], diff=True)` view that highlights the differing lines
-  in the same merged multi-timeline window `show()` already supports.
-- **Visual polish** — a proper stylesheet for the GUI (buttons, spacing,
-  type scale) and consistent prompt/column formatting for the CLI; both are
-  currently unstyled toolkit defaults.
+  `debug.show([a, b], diff=True)` view that highlights the differing lines in
+  the same merged multi-timeline window `show()` already supports.
+- **Visual polish** — a proper stylesheet for the GUI (buttons, spacing, type
+  scale) and consistent prompt/column formatting for the CLI; both are currently
+  unstyled toolkit defaults.
 
 ## Version compatibility
 

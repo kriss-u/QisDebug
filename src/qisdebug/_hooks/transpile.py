@@ -35,6 +35,7 @@ from .._compat import logger, resolve
 from .._dispatcher import InstallResult, all_suspended
 from .._events import (
     NoteEvent,
+    PropertySetChanges,
     Timeline,
     TranspileFinishedEvent,
     TranspilePassEvent,
@@ -65,7 +66,9 @@ def install() -> InstallResult:
         warnings.append(warning)
     base_pass_cls = resolve("qiskit.transpiler.basepasses", "BasePass")
     if base_pass_cls is not None:
-        ok, warning = _dispatcher.ensure_patched(base_pass_cls, "__call__", _pass_call_wrapper)
+        ok, warning = _dispatcher.ensure_patched(
+            base_pass_cls, "__call__", _pass_call_wrapper
+        )
         if ok:
             targets.append((base_pass_cls, "__call__"))
         if warning:
@@ -95,10 +98,16 @@ def _run_wrapper(original: Callable) -> Callable:
         **kwargs: Any,
     ) -> Any:
         if getattr(_local, "depth", 0) > 0:
-            return original(self, circuits, output_name, callback, num_processes, **kwargs)
-        listeners = [d for d in _dispatcher.active_instances() if not d.store.is_suspended()]
+            return original(
+                self, circuits, output_name, callback, num_processes, **kwargs
+            )
+        listeners = [
+            d for d in _dispatcher.active_instances() if not d.store.is_suspended()
+        ]
         if not listeners:
-            return original(self, circuits, output_name, callback, num_processes, **kwargs)
+            return original(
+                self, circuits, output_name, callback, num_processes, **kwargs
+            )
         circuit_cls = resolve("qiskit.circuit.quantumcircuit", "QuantumCircuit")
         single = circuit_cls is not None and isinstance(circuits, circuit_cls)
         if single:
@@ -111,7 +120,9 @@ def _run_wrapper(original: Callable) -> Callable:
         ):
             items = list(circuits)
         else:
-            return original(self, circuits, output_name, callback, num_processes, **kwargs)
+            return original(
+                self, circuits, output_name, callback, num_processes, **kwargs
+            )
 
         resolved = [_resolve_triples(listeners, c) for c in items]
         for circuit, triples in zip(items, resolved):
@@ -131,7 +142,9 @@ def _run_wrapper(original: Callable) -> Callable:
         _local.depth = 1
         try:
             with all_suspended(listeners):
-                result = original(self, circuits, output_name, callback, num_processes, **kwargs)
+                result = original(
+                    self, circuits, output_name, callback, num_processes, **kwargs
+                )
         finally:
             _local.depth = 0
         duration = time.perf_counter() - started
@@ -153,14 +166,18 @@ def _run_wrapper(original: Callable) -> Callable:
                     depth=output.depth(),
                     size=output.size(),
                     phase=phase,
-                    circuit=snapshot if debug.config.transpile_snapshots != "none" else None,
+                    circuit=(
+                        snapshot if debug.config.transpile_snapshots != "none" else None
+                    ),
                 )
         return result
 
     return run
 
 
-def _resolve_triples(listeners: list["QisDebug"], circuit: Any) -> list[TranspileTriple]:
+def _resolve_triples(
+    listeners: list["QisDebug"], circuit: Any
+) -> list[TranspileTriple]:
     """Resolve each listener's timeline for ``circuit`` and its compilation phase.
 
     A pass manager run on a circuit whose id an instance's own execution hook
@@ -211,9 +228,11 @@ def _maybe_output_snapshot(triples: list[TranspileTriple], output: Any) -> Any |
         return None
 
 
-def _chained_callback(user_callback: Callable | None, triples: list[TranspileTriple]) -> Callable:
+def _chained_callback(
+    user_callback: Callable | None, triples: list[TranspileTriple]
+) -> Callable:
     """Build a pass callback that records telemetry then defers to the user's."""
-    state: dict[str, Any] = {"signature": None}
+    state: dict[str, Any] = {"signature": None, "property_set": None}
 
     def callback(**details: Any) -> None:
         try:
@@ -251,6 +270,76 @@ def _fingerprint(dag: Any, depth: int | None, size: int | None, ops: dict) -> tu
     return (bits, depth, size, tuple(sorted(ops.items())), nodes)
 
 
+def _serialize_property_set(property_set: Any) -> dict[str, str]:
+    """Best-effort snapshot of a pass's property_set as ``{key: repr(value)}``.
+
+    Values like a ``Layout`` or ``TranspileLayout`` aren't JSON-native, so
+    this falls back to ``repr()`` per key and never raises -- a property_set
+    entry that can't be repr'd just gets a placeholder instead of losing the
+    whole snapshot.
+    """
+    result: dict[str, str] = {}
+    try:
+        items = list(dict(property_set).items())
+    except Exception:
+        return result
+    for key, value in items:
+        try:
+            result[key] = repr(value)
+        except Exception:
+            result[key] = f"<unrepr-able {type(value).__name__}>"
+    return result
+
+
+def _diff_property_set(
+    old: dict[str, str] | None, new: dict[str, str]
+) -> PropertySetChanges:
+    """Return the added/removed/changed keys between two property_set snapshots."""
+    old = old or {}
+    added = {k: v for k, v in new.items() if k not in old}
+    removed = {k: v for k, v in old.items() if k not in new}
+    changed = {k: (old[k], new[k]) for k in new if k in old and old[k] != new[k]}
+    return PropertySetChanges(added=added, removed=removed, changed=changed)
+
+
+def _capture_circuit_snapshot(triples: list[TranspileTriple], dag: Any) -> Any | None:
+    """Convert the pass's dag to a circuit, if any listener wants a snapshot at all."""
+    wants_snapshot = any(
+        debug.config.transpile_snapshots != "none" for debug, _, _ in triples
+    )
+    if dag is None or not wants_snapshot:
+        return None
+    converter = resolve("qiskit.converters", "dag_to_circuit")
+    if converter is None:
+        return None
+    with all_suspended([debug for debug, _, _ in triples]):
+        try:
+            return converter(dag)
+        except Exception:
+            return None
+
+
+def _policy_wants(policy: str, happened: bool) -> bool:
+    """Return whether an "all"/"changed"/"none" capture policy keeps this pass."""
+    return policy == "all" or (policy == "changed" and happened)
+
+
+def _capture_property_set(
+    triples: list[TranspileTriple], details: dict, state: dict
+) -> tuple[dict[str, str] | None, PropertySetChanges | None]:
+    """Snapshot and diff this pass's property_set, if any listener wants one."""
+    if not any(debug.config.capture_property_set != "none" for debug, _, _ in triples):
+        return None, None
+    try:
+        property_set = _serialize_property_set(details.get("property_set"))
+        property_changes = _diff_property_set(state["property_set"], property_set)
+        state["property_set"] = property_set
+        return property_set, property_changes
+    except Exception:
+        logger.debug("qisdebug: failed to snapshot property_set", exc_info=True)
+        return None, None
+
+
 def _record_pass(triples: list[TranspileTriple], details: dict, state: dict) -> None:
     """Record one transpiler pass, snapshotting the circuit when configured."""
     pass_instance = details.get("pass_")
@@ -270,20 +359,14 @@ def _record_pass(triples: list[TranspileTriple], details: dict, state: dict) -> 
     changed = state["signature"] is None or signature != state["signature"]
     state["signature"] = signature
 
-    circuit = None
-    wants_snapshot = any(debug.config.transpile_snapshots != "none" for debug, _, _ in triples)
-    if dag is not None and wants_snapshot:
-        converter = resolve("qiskit.converters", "dag_to_circuit")
-        if converter is not None:
-            with all_suspended([debug for debug, _, _ in triples]):
-                try:
-                    circuit = converter(dag)
-                except Exception:
-                    circuit = None
+    circuit = _capture_circuit_snapshot(triples, dag)
+    property_set, property_changes = _capture_property_set(triples, details, state)
 
     for debug, timeline, phase in triples:
-        policy = debug.config.transpile_snapshots
-        wants_snapshot = policy == "all" or (policy == "changed" and changed)
+        wants_snapshot = _policy_wants(debug.config.transpile_snapshots, changed)
+        wants_props = property_changes is not None and _policy_wants(
+            debug.config.capture_property_set, bool(property_changes)
+        )
         debug.store.add_event(
             timeline,
             TranspilePassEvent,
@@ -295,6 +378,8 @@ def _record_pass(triples: list[TranspileTriple], details: dict, state: dict) -> 
             changed=changed,
             phase=phase,
             circuit=circuit if wants_snapshot else None,
+            property_changes=property_changes if wants_props else None,
+            property_set=property_set if wants_props else None,
         )
 
 
@@ -335,7 +420,11 @@ def _pass_call_wrapper(original: Callable) -> Callable:
 
 
 def _record_standalone_pass(
-    pass_instance: Any, circuit: Any, result: Any, duration: float, listeners: list["QisDebug"]
+    pass_instance: Any,
+    circuit: Any,
+    result: Any,
+    duration: float,
+    listeners: list["QisDebug"],
 ) -> None:
     """Record one directly-applied pass as a transpile_pass event.
 

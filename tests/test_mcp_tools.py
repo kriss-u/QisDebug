@@ -106,6 +106,56 @@ def test_get_circuit_text_reflects_step(tmp_path):
     assert "X" in full
 
 
+def _write_transpile_script(tmp_path):
+    script = tmp_path / "transpile_bell.py"
+    script.write_text(
+        textwrap.dedent(
+            """
+            from qiskit import transpile
+            from qiskit.circuit import QuantumCircuit
+
+            qc = QuantumCircuit(2, 2, name="routed")
+            qc.h(0)
+            qc.cx(0, 1)
+            qc.measure([0, 1], [0, 1])
+            transpile(qc, coupling_map=[[0, 1], [1, 0]], basis_gates=["cx", "u"])
+            """
+        )
+    )
+    return str(script)
+
+
+def _run_transpile_and_get_id(tmp_path) -> str:
+    tools.run_script(_write_transpile_script(tmp_path))
+    return next(t for t in tools.list_timelines() if t["name"] == "routed")["circuit_id"]
+
+
+def test_get_property_set_returns_full_snapshot(tmp_path):
+    circuit_id = _run_transpile_and_get_id(tmp_path)
+    passes = [
+        e for e in tools.get_events(circuit_id, types=["transpile_pass"]) if e["property_changes"]
+    ]
+    assert passes
+    snapshot = tools.get_property_set(circuit_id, passes[0]["seq"])
+    assert isinstance(snapshot, dict)
+    assert snapshot
+
+
+def test_get_property_set_unknown_seq_raises_value_error(tmp_path):
+    circuit_id = _run_transpile_and_get_id(tmp_path)
+    with pytest.raises(ValueError, match="no transpile_pass event"):
+        tools.get_property_set(circuit_id, 999_999)
+
+
+def test_get_property_set_uncaptured_seq_raises_value_error(tmp_path):
+    tools._debug.configure(capture_property_set="none")
+    circuit_id = _run_transpile_and_get_id(tmp_path)
+    passes = tools.get_events(circuit_id, types=["transpile_pass"])
+    assert passes
+    with pytest.raises(ValueError, match="no property_set snapshot"):
+        tools.get_property_set(circuit_id, passes[0]["seq"])
+
+
 def test_compare_statevector_via_tool_layer(tmp_path):
     circuit_id = _run_bell_and_get_id(tmp_path)
     timeline = tools._debug.get(circuit_id)

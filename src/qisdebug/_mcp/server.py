@@ -36,7 +36,10 @@ server = MCPServer(
         "state between any two gates; get_state_snapshot and compare_statevector take "
         "either step (position in the instrumented replay) or seq (a gate_added event's "
         "seq from get_events, for the state right after that gate) -- use seq to avoid "
-        "converting between the two numberings by hand. "
+        "converting between the two numberings by hand. transpile_pass events carry a "
+        "property_changes diff (added/removed/changed keys) against the previous pass; "
+        "get_property_set(circuit_id, seq) returns the full property_set snapshot for one "
+        "pass, for inspecting layout/routing decisions a specific pass made. "
         "(4) You supply what the program should produce: compare_statevector and "
         "compare_counts check your expected state or distribution against the capture "
         "and report exactly where they diverge. compare_statevector's expected argument "
@@ -59,6 +62,7 @@ for _tool in (
     tools.get_timeline,
     tools.get_events,
     tools.get_circuit_text,
+    tools.get_property_set,
     tools.get_state_snapshot,
     tools.add_watch,
     tools.remove_watch,

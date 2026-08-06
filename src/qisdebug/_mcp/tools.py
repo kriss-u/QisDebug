@@ -159,6 +159,28 @@ def get_circuit_text(circuit_id: str, step: int | None = None) -> str:
     return str(circuit.draw(output="text", fold=-1))
 
 
+def get_property_set(circuit_id: str, seq: int) -> dict[str, str]:
+    """Return the full property_set snapshot captured at one transpile pass.
+
+    ``seq`` is a transpile_pass event's seq (from :func:`get_events`), for
+    the property_set as it stood right after that pass ran. Requires that
+    pass to have captured a snapshot -- governed by ``capture_property_set``
+    ("changed" only keeps snapshots for passes whose property_set changed;
+    call ``set_configuration(overrides={"capture_property_set": "all"})``
+    before a run to guarantee every pass is available).
+    """
+    timeline = _require_timeline(circuit_id)
+    event = next((e for e in timeline.filter(EventType.TRANSPILE_PASS) if e.seq == seq), None)
+    if event is None:
+        raise ValueError(f"no transpile_pass event at seq {seq} for circuit {circuit_id!r}")
+    if event.property_set is None:
+        raise ValueError(
+            f"no property_set snapshot captured for the pass at seq {seq}; "
+            "set capture_property_set='all' before the run to guarantee capture"
+        )
+    return event.property_set
+
+
 def _resolve_snapshot(
     timeline: Timeline, step: int | None, seq: int | None
 ) -> StateSnapshotEvent:

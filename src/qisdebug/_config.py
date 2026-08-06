@@ -38,6 +38,13 @@ class QisDebugConfig(BaseModel):
         default="changed",
         description="Which transpiler passes get a full circuit snapshot attached: every pass, only passes that changed the circuit, or none.",
     )
+    capture_property_set: Literal["all", "changed", "none"] = Field(
+        default="changed",
+        description=(
+            "Whether transpile_pass events capture property_set diffs: every pass, "
+            "only passes whose property_set changed, or none."
+        ),
+    )
     capture_backend_compilation: bool = Field(
         default=True,
         description=(

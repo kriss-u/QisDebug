@@ -17,12 +17,15 @@ import numpy as np
 from .._events import (
     ExecutionFinishedEvent,
     GateEvent,
+    PropertySetChanges,
     StateSnapshotEvent,
     TelemetryEvent,
     Timeline,
     TranspileFinishedEvent,
     TranspilePassEvent,
 )
+
+_MAX_PROPERTY_VALUE_LENGTH = 120
 
 TRACK_LABELS = {
     "circuit": "Circuit (construction)",
@@ -202,12 +205,37 @@ def render_event(_timeline: Timeline, event: TelemetryEvent) -> str:
 def render_pass(event: TranspilePassEvent) -> str:
     """Show pass statistics for one transpiler pass."""
     suffix = "   (backend-internal)" if event.phase == "backend" else ""
-    return (
-        f"pass:     {event.pass_name}{suffix}\n"
-        f"duration: {event.duration:.6f}s\n"
-        f"depth:    {event.depth}   size: {event.size}   changed: {event.changed}\n"
-        f"ops:      {event.ops}"
-    )
+    lines = [
+        f"pass:     {event.pass_name}{suffix}",
+        f"duration: {event.duration:.6f}s",
+        f"depth:    {event.depth}   size: {event.size}   changed: {event.changed}",
+        f"ops:      {event.ops}",
+    ]
+    if event.property_changes:
+        lines.append("")
+        lines.append(_render_property_changes(event.property_changes))
+    return "\n".join(lines)
+
+
+def _truncate_property_value(value: str) -> str:
+    """Cap a property_set repr for display -- Layout/DAG reprs can be very long."""
+    if len(value) <= _MAX_PROPERTY_VALUE_LENGTH:
+        return value
+    return value[:_MAX_PROPERTY_VALUE_LENGTH] + "..."
+
+
+def _render_property_changes(changes: PropertySetChanges) -> str:
+    """Render a property_set diff as +/-/~ lines, one change per line."""
+    lines = ["property changes:"]
+    for key, value in changes.added.items():
+        lines.append(f"  + {key} = {_truncate_property_value(value)}")
+    for key, value in changes.removed.items():
+        lines.append(f"  - {key} = {_truncate_property_value(value)}")
+    for key, (old, new) in changes.changed.items():
+        lines.append(
+            f"  ~ {key}: {_truncate_property_value(old)} -> {_truncate_property_value(new)}"
+        )
+    return "\n".join(lines)
 
 
 def format_statevector(event: StateSnapshotEvent, max_terms: int = 16) -> str:

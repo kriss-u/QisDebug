@@ -77,8 +77,8 @@ DIFF_ADDED_TEXT_COLOR_LIGHT = "#16a34a"
 DIFF_ADDED_TEXT_COLOR_DARK = "#4ade80"
 MAX_IMAGE_WIDTH = 480
 MAX_IMAGE_HEIGHT = 360
-_PLAY_LABEL = "⏵ Play  (Space)"
-_PAUSE_LABEL = "⏸ Pause  (Space)"
+_PLAY_LABEL = "⏵ Play  (Ctrl+Space)"
+_PAUSE_LABEL = "⏸ Pause  (Ctrl+Space)"
 
 
 @dataclass(frozen=True)
@@ -245,10 +245,13 @@ class _PlaybackKeyFilter(QObject):
     """Application-wide key filter for the cassette-style playback shortcuts.
 
     Installed on the ``QApplication`` rather than as a per-widget shortcut,
-    so left/right/space navigate the timeline no matter which control (the
-    slider, the interval spin box, the text panel) currently has focus --
-    those widgets would otherwise consume the same keys themselves before a
-    plain per-widget shortcut ever got a chance to fire.
+    so Ctrl+Left/Ctrl+Right/Ctrl+Space navigate the timeline no matter which
+    control (the slider, the interval spin box, the text panel) currently
+    has focus. The shortcuts require the Ctrl modifier specifically so they
+    never swallow plain Left/Right/Space while the user is typing in a text
+    box or watch/breakpoint field, and Ctrl+arrow/Ctrl+space are not bound to
+    anything at the OS level on any of the supported platforms, unlike
+    Alt+Left/Right (browser/window-manager back-forward) or plain Space.
     """
 
     def __init__(self, handler: Callable[[int], bool]) -> None:
@@ -256,9 +259,11 @@ class _PlaybackKeyFilter(QObject):
         self._handler = handler
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802
-        """Consume Left/Right/Space before the focused widget sees them."""
+        """Consume Ctrl+Left/Ctrl+Right/Ctrl+Space before the focused widget sees them."""
         if isinstance(event, QKeyEvent) and event.type() == QEvent.Type.KeyPress:
-            if self._handler(event.key()):
+            if event.modifiers() == Qt.KeyboardModifier.ControlModifier and self._handler(
+                event.key()
+            ):
                 return True
         return super().eventFilter(watched, event)
 
@@ -407,13 +412,13 @@ class _TimelineWindow(
         self.first_button = _button("⏮ First", lambda: self._goto(0))
         controls.addWidget(self.first_button)
         self.prev_button = _button(
-            "◀ Prev  (←)", lambda: self._goto(controller.index - 1)
+            "◀ Prev  (Ctrl+←)", lambda: self._goto(controller.index - 1)
         )
         controls.addWidget(self.prev_button)
         self.play_button = _button(_PLAY_LABEL, self._toggle_play)
         controls.addWidget(self.play_button)
         self.next_button = _button(
-            "Next ▶  (→)", lambda: self._goto(controller.index + 1)
+            "Next ▶  (Ctrl+→)", lambda: self._goto(controller.index + 1)
         )
         controls.addWidget(self.next_button)
         self.last_button = _button("Last ⏭", lambda: self._goto(controller.last_index))

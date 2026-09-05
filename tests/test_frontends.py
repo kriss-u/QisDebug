@@ -161,6 +161,7 @@ def test_gui_frontend_mark_and_diff_panel(debug, monkeypatch):
     window._clear_marks()
     assert window.marks == {"a": None, "b": None}
     assert window.tabs.indexOf(window._diff_panel) < 0
+    del app
 
 
 @pytest.mark.skipif(
@@ -178,8 +179,11 @@ def test_gui_frontend_question_mark_opens_help(debug, monkeypatch):
     monkeypatch.setattr(
         QMessageBox, "information", lambda *args, **kwargs: calls.append(args)
     )
-    window._help_shortcut.activated.emit()
+    # See the matching disable in gui.py: astroid can't introspect a Qt
+    # Signal's C-extension members, so `.emit` looks unknown to pylint.
+    window._help_shortcut.activated.emit()  # pylint: disable=no-member
     assert len(calls) == 1
+    del app
 
 
 @pytest.mark.skipif(
@@ -200,12 +204,14 @@ def test_gui_frontend_collapses_to_active_circuit_by_default(debug, monkeypatch)
 
     window.show_all_circuits_checkbox.setChecked(False)
     assert window._show_all_circuits is False
+    del app
 
 
 @pytest.mark.skipif(
     not QtFrontend().is_available(), reason="no display available for Qt"
 )
 def test_gui_frontend_zoom_changes_circuit_font_size(debug, monkeypatch):
+    """Zooming the circuit view in and out adjusts its font size by one point."""
     # pylint: disable=protected-access
     timeline = _traced_bell(debug)
     app, window = build_gui_window(monkeypatch, timeline)

@@ -378,6 +378,10 @@ class _TimelineWindow(
             app.installEventFilter(self._key_filter)
 
         self._help_shortcut = QShortcut(QKeySequence("?"), self.window)
+        # QShortcut.activated is a PySide6 Signal descriptor implemented in a
+        # C extension; astroid can't introspect it, so pylint can't see
+        # `.connect`/`.emit` on the bound signal it returns -- a known false
+        # positive for every Qt signal, not specific to this one.
         self._help_shortcut.activated.connect(self._show_help)  # pylint: disable=no-member
 
     def _cleanup_key_filter(self) -> None:

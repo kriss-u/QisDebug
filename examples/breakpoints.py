@@ -36,6 +36,8 @@ def build_and_run() -> None:
 
 
 def main() -> None:
+    """Hit a gate breakpoint during construction, then a watch breakpoint
+    during execution, resuming the worker thread between the two."""
     debug = qisdebug.QisDebug()
     debug.start()
 

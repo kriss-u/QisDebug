@@ -19,6 +19,7 @@ independent notions of what's valid to type next.
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from typing import Callable, Literal, cast
 
 from pydantic import ValidationError
@@ -681,7 +682,7 @@ def _replay_prev_depth(merged: Merged, upto_index: int) -> dict[str, int | None]
 
 def find_next_hit(
     merged: Merged,
-    conditions: dict[str, BreakpointCondition],
+    conditions: Mapping[str, BreakpointCondition],
     start_index: int,
 ) -> tuple[int, str] | None:
     """Return ``(index, handle)`` of the first event after ``start_index``
@@ -706,7 +707,7 @@ def find_next_hit(
 
 def find_prev_hit(
     merged: Merged,
-    conditions: dict[str, BreakpointCondition],
+    conditions: Mapping[str, BreakpointCondition],
     start_index: int,
 ) -> tuple[int, str] | None:
     """Return ``(index, handle)`` of the last event before ``start_index``
@@ -735,7 +736,7 @@ def find_prev_hit(
 
 
 def find_first_hit(
-    merged: Merged, conditions: dict[str, BreakpointCondition]
+    merged: Merged, conditions: Mapping[str, BreakpointCondition]
 ) -> tuple[int, str] | None:
     """Return ``(index, handle)`` of the earliest event in ``merged`` that
     satisfies any registered condition, or ``None`` if none do."""
@@ -743,7 +744,7 @@ def find_first_hit(
 
 
 def find_last_hit(
-    merged: Merged, conditions: dict[str, BreakpointCondition]
+    merged: Merged, conditions: Mapping[str, BreakpointCondition]
 ) -> tuple[int, str] | None:
     """Return ``(index, handle)`` of the latest event in ``merged`` that
     satisfies any registered condition, or ``None`` if none do."""

@@ -35,6 +35,7 @@ from qisdebug._store import BreakpointStopped
 
 
 def test_gate_match_condition_matches_name_and_any_qubits():
+    """Gate match condition matches name and any qubits."""
     timeline = Timeline(circuit_id="c1")
     condition = GateMatchCondition(gate="h")
     assert matches(condition, GateEvent(seq=1, gate="h", qubits=(3,)), timeline)
@@ -42,6 +43,7 @@ def test_gate_match_condition_matches_name_and_any_qubits():
 
 
 def test_gate_match_condition_qubits_must_match_as_a_set():
+    """Gate match condition qubits must match as a set."""
     timeline = Timeline(circuit_id="c1")
     condition = GateMatchCondition(gate="cx", qubits=(0, 1))
     assert matches(condition, GateEvent(seq=1, gate="cx", qubits=(0, 1)), timeline)
@@ -50,12 +52,14 @@ def test_gate_match_condition_qubits_must_match_as_a_set():
 
 
 def test_condition_circuit_id_scopes_the_match():
+    """Condition circuit id scopes the match."""
     timeline = Timeline(circuit_id="c1")
     condition = GateMatchCondition(gate="h", circuit_id="other-circuit")
     assert not matches(condition, GateEvent(seq=1, gate="h", qubits=(0,)), timeline)
 
 
 def test_seq_threshold_condition_matches_at_or_after_seq():
+    """Seq threshold condition matches at or after seq."""
     timeline = Timeline(circuit_id="c1")
     condition = SeqThresholdCondition(seq=5)
     assert not matches(condition, GateEvent(seq=4, gate="h", qubits=(0,)), timeline)
@@ -64,6 +68,7 @@ def test_seq_threshold_condition_matches_at_or_after_seq():
 
 
 def test_watch_threshold_condition_matches_qubit_probability():
+    """Watch threshold condition matches qubit probability."""
     timeline = Timeline(circuit_id="c1", num_qubits=1)
     event = StateSnapshotEvent(seq=1, step=1, num_qubits=1, statevector=[0.0, 1.0])
     above = WatchThresholdCondition(
@@ -77,6 +82,7 @@ def test_watch_threshold_condition_matches_qubit_probability():
 
 
 def test_watch_threshold_condition_qubit_ignores_non_snapshot_events():
+    """Watch threshold condition qubit ignores non snapshot events."""
     timeline = Timeline(circuit_id="c1")
     condition = WatchThresholdCondition(
         circuit_id="c1", watch_kind="qubit", ref="0", comparator="gt", threshold=0.0
@@ -85,6 +91,7 @@ def test_watch_threshold_condition_qubit_ignores_non_snapshot_events():
 
 
 def test_watch_threshold_condition_matches_clbit_probability():
+    """Watch threshold condition matches clbit probability."""
     timeline = Timeline(circuit_id="c1")
     event = ExecutionFinishedEvent(seq=1, backend="aer", counts={"1": 10, "0": 0})
     condition = WatchThresholdCondition(
@@ -94,6 +101,7 @@ def test_watch_threshold_condition_matches_clbit_probability():
 
 
 def test_watch_threshold_condition_register_resolves_to_its_bits():
+    """Watch threshold condition register resolves to its bits."""
     timeline = Timeline(circuit_id="c1", num_qubits=2, qregs={"q": [0, 1]})
     event = StateSnapshotEvent(seq=1, step=1, num_qubits=2, statevector=[0, 0, 0, 1])
     condition = WatchThresholdCondition(
@@ -103,12 +111,14 @@ def test_watch_threshold_condition_register_resolves_to_its_bits():
 
 
 def test_anomaly_condition_matches_non_normalized_snapshot():
+    """Anomaly condition matches non normalized snapshot."""
     timeline = Timeline(circuit_id="c1")
     event = StateSnapshotEvent(seq=1, step=0, statevector=[2.0, 0.0])
     assert matches(AnomalyCondition(), event, timeline)
 
 
 def test_anomaly_condition_severity_filter():
+    """Anomaly condition severity filter."""
     timeline = Timeline(circuit_id="c1")
     event = ExecutionFinishedEvent(seq=1, backend="aer", success=True, counts={})
     assert matches(AnomalyCondition(min_severity="warning"), event, timeline)
@@ -116,6 +126,7 @@ def test_anomaly_condition_severity_filter():
 
 
 def test_expectation_condition_matches_z_on_zero_state():
+    """Expectation condition matches z on zero state."""
     timeline = Timeline(circuit_id="c1", num_qubits=1)
     event = StateSnapshotEvent(seq=1, step=0, num_qubits=1, statevector=[1.0, 0.0])
     condition = ExpectationCondition(
@@ -125,6 +136,7 @@ def test_expectation_condition_matches_z_on_zero_state():
 
 
 def test_expectation_condition_matches_z_on_one_state():
+    """Expectation condition matches z on one state."""
     timeline = Timeline(circuit_id="c1", num_qubits=1)
     event = StateSnapshotEvent(seq=1, step=0, num_qubits=1, statevector=[0.0, 1.0])
     condition = ExpectationCondition(
@@ -134,6 +146,7 @@ def test_expectation_condition_matches_z_on_one_state():
 
 
 def test_expectation_condition_ignores_non_snapshot_events():
+    """Expectation condition ignores non snapshot events."""
     timeline = Timeline(circuit_id="c1")
     condition = ExpectationCondition(
         circuit_id="c1", pauli="Z", qubit=0, comparator="ge", threshold=0.0
@@ -142,6 +155,7 @@ def test_expectation_condition_ignores_non_snapshot_events():
 
 
 def test_probability_condition_matches_statevector_outcome():
+    """Probability condition matches statevector outcome."""
     timeline = Timeline(circuit_id="c1", num_qubits=2)
     event = StateSnapshotEvent(seq=1, step=0, num_qubits=2, statevector=[0, 0, 0, 1])
     condition = ProbabilityCondition(
@@ -155,6 +169,7 @@ def test_probability_condition_matches_statevector_outcome():
 
 
 def test_probability_condition_matches_counts_outcome():
+    """Probability condition matches counts outcome."""
     timeline = Timeline(circuit_id="c1")
     event = ExecutionFinishedEvent(seq=1, backend="aer", counts={"01": 8, "00": 2})
     condition = ProbabilityCondition(
@@ -164,6 +179,7 @@ def test_probability_condition_matches_counts_outcome():
 
 
 def test_distribution_distance_condition_matches_tvd():
+    """Distribution distance condition matches tvd."""
     timeline = Timeline(circuit_id="c1")
     event = ExecutionFinishedEvent(seq=1, backend="aer", counts={"11": 10})
     close = DistributionDistanceCondition(
@@ -177,6 +193,7 @@ def test_distribution_distance_condition_matches_tvd():
 
 
 def test_seq_threshold_condition_comparator_defaults_to_ge_but_is_overridable():
+    """Seq threshold condition comparator defaults to ge but is overridable."""
     timeline = Timeline(circuit_id="c1")
     lt_condition = SeqThresholdCondition(seq=5, comparator="lt")
     assert matches(lt_condition, GateEvent(seq=4, gate="h", qubits=(0,)), timeline)
@@ -187,6 +204,7 @@ def test_seq_threshold_condition_comparator_defaults_to_ge_but_is_overridable():
 
 
 def test_add_breakpoint_pauses_the_hit_thread_until_resumed(debug):
+    """Add breakpoint pauses the hit thread until resumed."""
     debug.start()
     debug.add_breakpoint(GateMatchCondition(gate="cx"))
     qc = QuantumCircuit(2)
@@ -215,6 +233,7 @@ def test_add_breakpoint_pauses_the_hit_thread_until_resumed(debug):
 
 
 def test_stop_raises_breakpoint_stopped_in_the_paused_thread(debug):
+    """Stop raises breakpoint stopped in the paused thread."""
     debug.start()
     debug.add_breakpoint(GateMatchCondition(gate="cx"))
     qc = QuantumCircuit(2)
@@ -241,6 +260,7 @@ def test_stop_raises_breakpoint_stopped_in_the_paused_thread(debug):
 
 
 def test_add_breakpoint_enforces_max_breakpoints(debug):
+    """Add breakpoint enforces max breakpoints."""
     debug.configure(max_breakpoints=1)
     debug.add_breakpoint(SeqThresholdCondition(seq=1))
     with pytest.raises(ValueError, match="max_breakpoints"):
@@ -248,6 +268,7 @@ def test_add_breakpoint_enforces_max_breakpoints(debug):
 
 
 def test_remove_and_list_breakpoints(debug):
+    """Remove and list breakpoints."""
     handle = debug.add_breakpoint(SeqThresholdCondition(seq=1))
     assert [h for h, _ in debug.list_breakpoints()] == [handle]
     debug.remove_breakpoint(handle)
@@ -255,6 +276,7 @@ def test_remove_and_list_breakpoints(debug):
 
 
 def test_wait_for_breakpoint_times_out_when_nothing_hits(debug):
+    """Wait for breakpoint times out when nothing hits."""
     debug.start()
     debug.add_breakpoint(GateMatchCondition(gate="does-not-exist"))
     bell_circuit("viz")  # never touches qisdebug's construction hook path meaningfully
@@ -265,6 +287,7 @@ def test_wait_for_breakpoint_times_out_when_nothing_hits(debug):
 
 
 def test_find_next_hit_locates_the_first_matching_event(debug):
+    """Find next hit locates the first matching event."""
     timeline = traced_bell(debug, shots=5)
     merged, _tracks, _labels = _render.merge_timelines([timeline])
     conditions = {"1": GateMatchCondition(gate="cx")}
@@ -276,6 +299,7 @@ def test_find_next_hit_locates_the_first_matching_event(debug):
 
 
 def test_find_next_hit_returns_none_when_nothing_matches(debug):
+    """Find next hit returns none when nothing matches."""
     timeline = traced_bell(debug, shots=5)
     merged, _tracks, _labels = _render.merge_timelines([timeline])
     conditions = {"1": GateMatchCondition(gate="does-not-exist")}
@@ -283,6 +307,7 @@ def test_find_next_hit_returns_none_when_nothing_matches(debug):
 
 
 def test_find_first_hit_locates_the_earliest_matching_event(debug):
+    """Find first hit locates the earliest matching event."""
     timeline = traced_bell(debug, shots=5)
     merged, _tracks, _labels = _render.merge_timelines([timeline])
     conditions = {"1": GateMatchCondition(gate="h")}
@@ -294,6 +319,7 @@ def test_find_first_hit_locates_the_earliest_matching_event(debug):
 
 
 def test_find_last_hit_locates_the_latest_matching_event(debug):
+    """Find last hit locates the latest matching event."""
     timeline = traced_bell(debug, shots=5)
     merged, _tracks, _labels = _render.merge_timelines([timeline])
     conditions = {"1": GateMatchCondition(gate="h")}
@@ -305,6 +331,7 @@ def test_find_last_hit_locates_the_latest_matching_event(debug):
 
 
 def test_find_prev_hit_locates_the_event_before_the_current_one(debug):
+    """Find prev hit locates the event before the current one."""
     timeline = traced_bell(debug, shots=5)
     merged, _tracks, _labels = _render.merge_timelines([timeline])
     conditions = {"1": GateMatchCondition(gate="h")}
@@ -316,6 +343,7 @@ def test_find_prev_hit_locates_the_event_before_the_current_one(debug):
 
 
 def test_find_prev_hit_returns_none_at_the_start(debug):
+    """Find prev hit returns none at the start."""
     timeline = traced_bell(debug, shots=5)
     merged, _tracks, _labels = _render.merge_timelines([timeline])
     conditions = {"1": GateMatchCondition(gate="h")}
@@ -323,6 +351,7 @@ def test_find_prev_hit_returns_none_at_the_start(debug):
 
 
 def test_describe_condition_renders_each_kind():
+    """Describe condition renders each kind."""
     assert "gate cx" in frontend_bp.describe_condition(GateMatchCondition(gate="cx"))
     assert "seq >= 5" in frontend_bp.describe_condition(SeqThresholdCondition(seq=5))
     assert "> 0.9" in frontend_bp.describe_condition(
@@ -346,11 +375,13 @@ def test_describe_condition_renders_each_kind():
 
 
 def test_parse_condition_args_rejects_unknown_kind():
+    """Parse condition args rejects unknown kind."""
     with pytest.raises(ValueError, match="unknown breakpoint kind"):
         frontend_bp.parse_condition_args("nonsense", [], "c1")
 
 
 def test_parse_condition_args_builds_gate_condition():
+    """Parse condition args builds gate condition."""
     condition = frontend_bp.parse_condition_args("gate", ["cx", "0", "1"], "c1")
     assert isinstance(condition, GateMatchCondition)
     assert condition.gate == "cx"
@@ -359,16 +390,19 @@ def test_parse_condition_args_builds_gate_condition():
 
 
 def test_parse_condition_args_gate_on_clause_overrides_circuit():
+    """Parse condition args gate on clause overrides circuit."""
     condition = frontend_bp.parse_condition_args("gate", ["cx", "on", "other"], "c1")
     assert condition.circuit_id == "other"
 
 
 def test_parse_condition_args_gate_on_star_means_any_circuit():
+    """Parse condition args gate on star means any circuit."""
     condition = frontend_bp.parse_condition_args("gate", ["cx", "on", "*"], "c1")
     assert condition.circuit_id is None
 
 
 def test_parse_condition_args_seq_uses_symbol_comparator():
+    """Parse condition args seq uses symbol comparator."""
     condition = frontend_bp.parse_condition_args("seq", [">=", "5"], "c1")
     assert isinstance(condition, SeqThresholdCondition)
     assert condition.comparator == "ge"
@@ -376,6 +410,7 @@ def test_parse_condition_args_seq_uses_symbol_comparator():
 
 
 def test_parse_condition_args_watch_needs_a_specific_circuit():
+    """Parse condition args watch needs a specific circuit."""
     with pytest.raises(ValueError, match="specific circuit"):
         frontend_bp.parse_condition_args(
             "watch", ["qubit", "0", ">", "0.5", "on", "*"], "c1"
@@ -383,6 +418,7 @@ def test_parse_condition_args_watch_needs_a_specific_circuit():
 
 
 def test_parse_condition_args_builds_expectation_condition():
+    """Parse condition args builds expectation condition."""
     condition = frontend_bp.parse_condition_args(
         "expect", ["Z", "0", ">=", "0.5"], "c1"
     )
@@ -394,6 +430,7 @@ def test_parse_condition_args_builds_expectation_condition():
 
 
 def test_parse_condition_args_builds_probability_condition():
+    """Parse condition args builds probability condition."""
     condition = frontend_bp.parse_condition_args(
         "prob", ["01", ">", "0.2", "on", "c2"], "c1"
     )
@@ -403,6 +440,7 @@ def test_parse_condition_args_builds_probability_condition():
 
 
 def test_parse_condition_args_builds_distribution_condition():
+    """Parse condition args builds distribution condition."""
     condition = frontend_bp.parse_condition_args(
         "tvd", ["00=0.5", "11=0.5", "<=", "0.1"], "c1"
     )
@@ -413,6 +451,7 @@ def test_parse_condition_args_builds_distribution_condition():
 
 
 def test_parse_condition_args_tvd_rejects_malformed_pair():
+    """Parse condition args tvd rejects malformed pair."""
     with pytest.raises(ValueError, match="usage: tvd"):
         frontend_bp.parse_condition_args("tvd", ["nonsense", "<=", "0.1"], "c1")
 
@@ -449,6 +488,7 @@ def test_parse_condition_args_on_clause_unresolved_name_used_verbatim():
 
 
 def test_describe_condition_shows_circuit_name_not_hidden_id():
+    """Describe condition shows circuit name not hidden id."""
     timelines_by_id = {"c1": Timeline(circuit_id="c1", name="bell")}
     condition = GateMatchCondition(gate="h", circuit_id="c1")
     description = frontend_bp.describe_condition(condition, timelines_by_id)
@@ -468,18 +508,21 @@ def test_suggest_tokens_never_offers_on_twice():
 
 
 def test_suggest_tokens_gate_offers_known_gate_names(debug):
+    """Suggest tokens gate offers known gate names."""
     timeline = traced_bell(debug, shots=5)
     assert "h" in frontend_bp.suggest_tokens("gate", [], timeline, [])
     assert "cx" in frontend_bp.suggest_tokens("gate", [], timeline, [])
 
 
 def test_suggest_tokens_seq_offers_comparators_first():
+    """Suggest tokens seq offers comparators first."""
     assert set(frontend_bp.suggest_tokens("seq", [], None, [])) == set(
         frontend_bp.COMPARATOR_SYMBOLS
     )
 
 
 def test_suggest_tokens_watch_cascades_by_kind(debug):
+    """Suggest tokens watch cascades by kind."""
     timeline = traced_bell(debug, shots=5)
     assert frontend_bp.suggest_tokens("watch", [], timeline, []) == list(
         frontend_bp.WATCH_KINDS
@@ -488,6 +531,7 @@ def test_suggest_tokens_watch_cascades_by_kind(debug):
 
 
 def test_suggest_tokens_on_clause_offers_known_circuits(debug):
+    """Suggest tokens on clause offers known circuits."""
     timeline = traced_bell(debug, shots=5)
     circuits = [timeline.circuit_id]
     suggestions = frontend_bp.suggest_tokens("anomaly", ["on"], timeline, circuits)
@@ -498,6 +542,7 @@ def test_suggest_tokens_on_clause_offers_known_circuits(debug):
 
 
 def test_cli_break_continue_and_unbreak_commands(debug, monkeypatch, capsys):
+    """Cli break continue and unbreak commands."""
     timeline = traced_bell(debug, shots=5)
     responses = iter(
         ["break gate cx", "continue", "breakpoints", "unbreak 1", "breakpoints", "q"]
@@ -515,6 +560,7 @@ def test_cli_break_continue_and_unbreak_commands(debug, monkeypatch, capsys):
 
 
 def test_cli_break_reports_usage_on_bad_input(debug, monkeypatch, capsys):
+    """Cli break reports usage on bad input."""
     timeline = traced_bell(debug, shots=5)
     responses = iter(["break nonsense", "q"])
     monkeypatch.setattr(builtins, "input", lambda prompt="": next(responses))
@@ -526,6 +572,7 @@ def test_cli_break_reports_usage_on_bad_input(debug, monkeypatch, capsys):
 
 
 def test_cli_hit_navigation_commands(debug, monkeypatch, capsys):
+    """Cli hit navigation commands."""
     timeline = traced_bell(debug, shots=5)
     responses = iter(["break gate h", "hl", "hf", "next", "hp", "q"])
     monkeypatch.setattr(builtins, "input", lambda prompt="": next(responses))
@@ -539,6 +586,7 @@ def test_cli_hit_navigation_commands(debug, monkeypatch, capsys):
 
 
 def test_cli_complete_break_suggests_kinds_and_gate_names(debug):
+    """Cli complete break suggests kinds and gate names."""
     timeline = traced_bell(debug, shots=5)
     # pylint: disable-next=import-outside-toplevel
     from qisdebug._frontends._cli_session import CliSession
@@ -550,6 +598,7 @@ def test_cli_complete_break_suggests_kinds_and_gate_names(debug):
 
 
 def test_cli_complete_unbreak_suggests_handles_and_all(debug):
+    """Cli complete unbreak suggests handles and all."""
     timeline = traced_bell(debug, shots=5)
     # pylint: disable-next=import-outside-toplevel
     from qisdebug._frontends._cli_session import CliSession
@@ -571,6 +620,7 @@ def test_cli_complete_unbreak_suggests_handles_and_all(debug):
     not QtFrontend().is_available(), reason="no display available for Qt"
 )
 def test_gui_frontend_add_breakpoint_and_hit_navigation(debug, monkeypatch):
+    """Gui frontend add breakpoint and hit navigation."""
     timeline = traced_bell(debug, shots=5)
     app, window = build_gui_window(monkeypatch, timeline)
 
@@ -579,6 +629,8 @@ def test_gui_frontend_add_breakpoint_and_hit_navigation(debug, monkeypatch):
     window._add_breakpoint()  # pylint: disable=protected-access
     assert len(window.breakpoints) == 1
     assert window.breakpoint_list.count() == 1
+
+    assert window.controller is not None
 
     window._goto_next_hit()  # pylint: disable=protected-access
     _source, event = window.controller.current
@@ -606,6 +658,7 @@ def test_gui_frontend_add_breakpoint_and_hit_navigation(debug, monkeypatch):
     not QtFrontend().is_available(), reason="no display available for Qt"
 )
 def test_gui_frontend_expectation_breakpoint(debug, monkeypatch):
+    """Gui frontend expectation breakpoint."""
     timeline = traced_bell(debug, shots=5)
     app, window = build_gui_window(monkeypatch, timeline)
 
@@ -626,6 +679,7 @@ def test_gui_frontend_expectation_breakpoint(debug, monkeypatch):
     not QtFrontend().is_available(), reason="no display available for Qt"
 )
 def test_gui_frontend_add_breakpoint_rejects_bad_args(debug, monkeypatch):
+    """Gui frontend add breakpoint rejects bad args."""
     timeline = traced_bell(debug, shots=5)
     app, window = build_gui_window(monkeypatch, timeline)
 
@@ -641,6 +695,7 @@ def test_gui_frontend_add_breakpoint_rejects_bad_args(debug, monkeypatch):
     not QtFrontend().is_available(), reason="no display available for Qt"
 )
 def test_gui_frontend_breakpoint_fields_refresh_for_current_circuit(debug, monkeypatch):
+    """Gui frontend breakpoint fields refresh for current circuit."""
     timeline = traced_bell(debug, shots=5)
     app, window = build_gui_window(monkeypatch, timeline)
 

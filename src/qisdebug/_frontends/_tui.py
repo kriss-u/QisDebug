@@ -281,6 +281,11 @@ class DiffScreen(Screen[None]):
     circuit diagram and a diff at the same time.
     """
 
+    # Screen.app is typed generically as App[object] since a Screen doesn't
+    # know which App subclass hosts it; this only ever runs inside
+    # TimelineApp, so declare that concretely for `self.app` in action_close.
+    app: TimelineApp
+
     DEFAULT_CSS = """
     DiffScreen {
         layout: vertical;

@@ -1,3 +1,8 @@
+"""A QFT-based adder of two 2-qubit registers (``a`` and ``b``) into ``a``,
+using controlled-phase gates between the registers -- an example of
+debugging cross-register gate interactions with qisdebug.
+"""
+
 import numpy as np
 from qiskit import QuantumCircuit, QuantumRegister, ClassicalRegister
 from qiskit_aer import AerSimulator

@@ -55,6 +55,8 @@ def phase_estimation(theta: float) -> QuantumCircuit:
 
 
 def main() -> None:
+    """Run the buggy QPE circuit and inspect its timeline for the ``crz``
+    gates responsible for the wrong measurement peak."""
     debug = qisdebug.QisDebug()
     debug.start()
 

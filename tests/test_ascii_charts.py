@@ -59,6 +59,7 @@ def test_render_histogram_ascii_skewed_split_proportional_to_share():
 
 
 def test_render_histogram_ascii_empty_counts():
+    """Render histogram ascii empty counts."""
     assert render_histogram_ascii({}) == "(no counts)"
 
 
@@ -99,5 +100,6 @@ def test_render_bloch_ascii_none_for_multi_qubit_snapshot():
 
 
 def test_render_bloch_ascii_none_without_amplitudes():
+    """Render bloch ascii none without amplitudes."""
     event = StateSnapshotEvent(seq=1, step=0, statevector=None, num_qubits=1)
     assert render_bloch_ascii(event) is None

@@ -53,7 +53,9 @@ def as_timelines(timelines: Timeline | Iterable[Timeline]) -> list[Timeline]:
     return list(timelines)
 
 
-def circuit_tracks(timeline: Timeline) -> tuple[list[dict[str, str]], list[str | None]]:
+def circuit_tracks(
+    timeline: Timeline, fold: int = -1
+) -> tuple[list[dict[str, str]], list[str | None]]:
     """Return, per event, the latest known circuit drawing for each track.
 
     A "track" is a distinct circuit lineage -- the circuit as constructed,
@@ -68,6 +70,11 @@ def circuit_tracks(timeline: Timeline) -> tuple[list[dict[str, str]], list[str |
     shows the most recent known state instead of only appearing on the
     event that happened to produce it.
 
+    ``fold`` is Qiskit's text-drawer line width (``-1`` never wraps); a
+    caller offering the user zoom in/out passes a narrower or wider value
+    and re-derives this series, since the drawing itself has to be redrawn
+    at the new width rather than reflowed after the fact.
+
     Also returns, per event, which track was most recently touched (carried
     forward the same way), so callers can highlight/scroll to the circuit
     that is actually relevant to the currently selected event.
@@ -81,7 +88,7 @@ def circuit_tracks(timeline: Timeline) -> tuple[list[dict[str, str]], list[str |
             cache_key = id(circuit)
             if cache_key not in text_cache:
                 try:
-                    text_cache[cache_key] = str(circuit.draw(output="text", fold=-1))
+                    text_cache[cache_key] = str(circuit.draw(output="text", fold=fold))
                 except Exception:
                     continue
             rendered[key] = text_cache[cache_key]
@@ -90,7 +97,7 @@ def circuit_tracks(timeline: Timeline) -> tuple[list[dict[str, str]], list[str |
 
 
 def merge_timelines(
-    timelines: list[Timeline],
+    timelines: list[Timeline], fold: int = -1
 ) -> tuple[
     list[tuple[Timeline, TelemetryEvent]], list[dict[str, str]], list[str | None]
 ]:
@@ -102,10 +109,14 @@ def merge_timelines(
     Circuit tracks are computed independently per timeline (each carries
     forward its own state) and merged under a per-circuit-prefixed key so
     the panel can show every circuit's latest known state side by side.
-    Also returns, per merged event, the display label of the track most
-    relevant to that event (or ``None``), for scroll/highlight focus.
+    ``fold`` is forwarded to :func:`circuit_tracks` for callers that support
+    zooming the circuit drawing in/out. Also returns, per merged event, the
+    display label of the track most relevant to that event (or ``None``),
+    for scroll/highlight focus.
     """
-    per_timeline_tracks = {t.circuit_id: circuit_tracks(t) for t in timelines}
+    per_timeline_tracks = {
+        t.circuit_id: circuit_tracks(t, fold=fold) for t in timelines
+    }
     merged = sorted(
         ((t, event) for t in timelines for event in t.events),
         key=lambda pair: pair[1].seq,
@@ -155,13 +166,22 @@ def track_label(combined_key: str) -> str:
     return f"{prefix} — {label}" if prefix else label
 
 
+def _section_heading(label: str) -> str:
+    """A plain-text heading for one circuit/track section: the label on its
+    own line, underlined with a rule the same length -- readable in both a
+    Qt text widget and a terminal, unlike a color/bold style, and plainer
+    than bracketing it in dashes (``-- label --``).
+    """
+    return f"{label}\n{'─' * len(label)}"
+
+
 def render_tracks_text(tracks: dict[str, str]) -> str:
     """Render the circuit panel as plain text for one point in the timeline."""
     if not tracks:
         return "(no circuit recorded yet)"
     sections = []
     for key, text in tracks.items():
-        sections.append(f"-- {track_label(key)} --\n{text}")
+        sections.append(f"{_section_heading(track_label(key))}\n{text}")
     return "\n\n".join(sections)
 
 
@@ -183,13 +203,41 @@ def render_tracks_text_with_active(
     line = 1
     for key, text in tracks.items():
         label = track_label(key)
-        section = f"-- {label} --\n{text}"
+        section = f"{_section_heading(label)}\n{text}"
         section_line_count = section.count("\n") + 1
         if active_label is not None and label == active_label:
             active_span = (line, line + section_line_count - 1)
         sections.append(section)
         line += section_line_count + 1
     return "\n\n".join(sections), active_span
+
+
+def split_active_track(
+    tracks: dict[str, str], active_label: str | None
+) -> tuple[str, list[str]]:
+    """Split a rendered tracks dict into the drawing of whichever track is
+    currently active (see :func:`merge_timelines`'s ``active_labels``) and
+    the display labels of every other tracked circuit/track.
+
+    Lets a caller show only the circuit actually relevant to the event on
+    screen by default -- not every tracked circuit's every track
+    concatenated together (see :func:`render_tracks_text`, still there for
+    a caller that wants the full expansion) -- plus enough to name what
+    else is available without drawing it too. Falls back to the most
+    recently added track when ``active_label`` doesn't match anything yet
+    (e.g. before any event has touched a circuit), so there is always
+    something to show.
+    """
+    if not tracks:
+        return "(no circuit recorded yet)", []
+    labels = {key: track_label(key) for key in tracks}
+    active_key = next(
+        (key for key, label in labels.items() if label == active_label), None
+    )
+    if active_key is None:
+        active_key = next(reversed(tracks))
+    others = [label for key, label in labels.items() if key != active_key]
+    return tracks[active_key], others
 
 
 def render_event(_timeline: Timeline, event: TelemetryEvent) -> str:
@@ -267,22 +315,8 @@ def format_statevector(event: StateSnapshotEvent, max_terms: int = 16) -> str:
             break
         label = format(basis, f"0{num_qubits}b")
         amplitude_text = f"{amplitude.real:+.4f}{amplitude.imag:+.4f}j"
-        lines.append(f"|{label}>  {amplitude_text}   p={probability:.4f}")
+        lines.append(f"|{label}⟩  {amplitude_text}   p={probability:.4f}")
         shown += 1
-    return "\n".join(lines)
-
-
-def render_histogram_ascii(counts: dict[str, int], width: int = 40) -> str:
-    """Render execution counts as a simple text bar chart."""
-    if not counts:
-        return "(no counts)"
-    total = sum(counts.values())
-    peak = max(counts.values())
-    lines = []
-    for outcome, count in sorted(counts.items()):
-        bar_len = max(1, round(count / peak * width)) if peak else 0
-        filled = "#" * bar_len
-        lines.append(f"{outcome:>12}  {filled:<{width}}  {count} ({count / total:.1%})")
     return "\n".join(lines)
 
 
@@ -833,18 +867,18 @@ def _qubit_watch_rows(
     for qubit in qubits:
         probability_one = qubit_probability_one(amplitudes, qubit)
         bloch = tuple(
-            _clean(v) for v in _reduced_bloch_vector(amplitudes, qubit, num_qubits)
+            clean_float(v) for v in reduced_bloch_vector(amplitudes, qubit, num_qubits)
         )
         rows.append((qubit, probability_one, bloch))
     return rows
 
 
-def _clean(value: float, epsilon: float = 1e-9) -> float:
+def clean_float(value: float, epsilon: float = 1e-9) -> float:
     """Snap near-zero floats to exactly 0.0 so formatting never prints ``-0.000``."""
     return 0.0 if abs(value) < epsilon else value
 
 
-def _reduced_bloch_vector(
+def reduced_bloch_vector(
     amplitudes: list[complex], qubit: int, num_qubits: int
 ) -> tuple[float, float, float]:
     """Return the single-qubit Bloch vector from the partial trace over the rest."""

@@ -459,11 +459,7 @@ def test_cli_break_continue_and_unbreak_commands(debug, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "breakpoint 1: gate cx" in out
     assert "hit breakpoint 1: gate cx" in out
-    # The breakpoints table lists handle and condition as separate cells,
-    # not one contiguous string -- check the listing (header + row) landed
-    # rather than an exact substring.
-    assert "handle" in out and "condition" in out
-    assert "gate cx" in out
+    assert "[1] gate cx" in out
     assert "removed breakpoint 1" in out
     assert "no active breakpoints" in out
 
@@ -494,15 +490,28 @@ def test_cli_hit_navigation_commands(debug, monkeypatch, capsys):
 
 def test_cli_complete_break_suggests_kinds_and_gate_names(debug):
     timeline = traced_bell(debug, shots=5)
-    merged, tracks, _labels = _render.merge_timelines([timeline])
-    # pylint: disable-next=import-outside-toplevel,protected-access
-    from qisdebug._frontends.cli import _TimelineShell
-    from rich.console import Console
+    # pylint: disable-next=import-outside-toplevel
+    from qisdebug._frontends._cli_session import CliSession
 
-    shell = _TimelineShell(Console(), merged, tracks, {timeline.circuit_id: timeline})
+    session = CliSession([timeline])
 
-    assert set(shell.break_completions([])) == set(frontend_bp.KINDS)
-    assert shell.break_completions(["gate"]) == frontend_bp.known_gate_names(timeline)
+    assert set(session.break_completions([])) == set(frontend_bp.KINDS)
+    assert session.break_completions(["gate"]) == frontend_bp.known_gate_names(timeline)
+
+
+def test_cli_complete_unbreak_suggests_handles_and_all(debug):
+    timeline = traced_bell(debug, shots=5)
+    # pylint: disable-next=import-outside-toplevel
+    from qisdebug._frontends._cli_session import CliSession
+
+    session = CliSession([timeline])
+
+    assert session.unbreak_completions([]) == ["all"]
+
+    handle = session.add_breakpoint(session.parse_break_arg("gate h"))
+
+    assert set(session.unbreak_completions([])) == {handle, "all"}
+    assert session.unbreak_completions([handle]) == []
 
 
 # -- GUI integration --------------------------------------------------------

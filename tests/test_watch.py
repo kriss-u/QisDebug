@@ -212,6 +212,41 @@ def test_cli_watch_and_unwatch_commands(debug, monkeypatch, capsys):
     assert "no active watches" in out
 
 
+def test_cli_complete_watch_suggests_kinds_and_refs(debug):
+    """Mirrors ``break_completions``: the kind first, then that kind's
+    refs -- the same contract a completion-driven input popup relies on."""
+    # pylint: disable-next=import-outside-toplevel
+    from qisdebug._frontends._cli_session import CliSession
+
+    timeline = _traced_bell_with_registers(debug)
+    session = CliSession([timeline])
+
+    assert set(session.watch_completions([])) == {"qubit", "clbit", "register", "track"}
+    assert session.watch_completions(["qubit"]) == ["0", "1"]
+    assert session.watch_completions(["register"]) == ["q", "c"]
+    assert session.watch_completions(["qubit", "0"]) == []
+
+
+def test_cli_complete_unwatch_suggests_only_active_watches(debug):
+    """Unlike ``watch_completions``, ``unwatch_completions`` only ever
+    offers a watch that's actually set -- plus ``"all"`` at the top level."""
+    # pylint: disable-next=import-outside-toplevel
+    from qisdebug._frontends._cli_session import CliSession
+
+    timeline = _traced_bell_with_registers(debug)
+    session = CliSession([timeline])
+
+    assert session.unwatch_completions([]) == ["all"]
+
+    session.add_watch("qubit", "0")
+    session.add_watch("register", "c")
+
+    assert set(session.unwatch_completions([])) == {"qubit", "register", "all"}
+    assert session.unwatch_completions(["qubit"]) == ["0"]
+    assert session.unwatch_completions(["register"]) == ["c"]
+    assert session.unwatch_completions(["all"]) == []
+
+
 @pytest.mark.skipif(
     not QtFrontend().is_available(), reason="no display available for Qt"
 )

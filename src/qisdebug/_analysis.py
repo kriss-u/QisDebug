@@ -50,17 +50,27 @@ class BasisMismatch(BaseModel):
 
 
 class StatevectorDiff(BaseModel):
-    """Result of comparing a captured statevector against an expected one."""
+    """Result of comparing a captured statevector against an expected one.
+
+    ``note`` is set instead of ``mismatches`` being populated when the two
+    sides aren't even the same shape (different qubit counts) -- there's no
+    shared basis to compare amplitude-by-amplitude, so ``matched=False`` /
+    ``fidelity=0.0`` communicate "these differ" the normal way, and ``note``
+    says why in place of a (necessarily empty) mismatch list.
+    """
 
     matched: bool
     fidelity: float
     max_amplitude_delta: float
     mismatches: list[BasisMismatch] = Field(default_factory=list)
+    note: str | None = None
 
     def describe(self) -> str:
         """Return a one-paragraph human-readable summary."""
         if self.matched:
             return f"statevector matches expected (fidelity={self.fidelity:.6f})"
+        if self.note:
+            return f"statevector MISMATCH: {self.note}"
         lines = [
             f"statevector MISMATCH (fidelity={self.fidelity:.6f}, "
             f"max amplitude delta={self.max_amplitude_delta:.6f})"
@@ -741,12 +751,31 @@ def _last_transpile_shape(
 def _diff_statevectors(
     a: Timeline, b: Timeline, seq_a: int | None, seq_b: int | None, atol: float
 ) -> StatevectorDiff | None:
-    """Compare the state snapshot at/before each side's seq bound, if both captured one."""
+    """Compare the state snapshot at/before each side's seq bound, if both
+    captured one. A qubit-count mismatch between the two sides (diffing
+    stages of circuits that simply have different widths) is a legitimate
+    diff outcome -- "these differ" -- not a caller error, so it's reported
+    as an outright mismatch rather than letting :func:`compare_statevector`
+    raise (that function's own hard error is for its other caller, the MCP
+    ``compare_statevector`` tool, where a mis-shaped ``expected`` argument
+    really is the caller's mistake to fix).
+    """
     a_snapshot = a.snapshot_upto(seq_a)
     b_snapshot = b.snapshot_upto(seq_b)
     if a_snapshot is None or b_snapshot is None:
         return None
-    return compare_statevector(b_snapshot, a_snapshot.amplitudes(), atol=atol)
+    a_amplitudes = a_snapshot.amplitudes()
+    b_amplitudes = b_snapshot.amplitudes()
+    if len(a_amplitudes) != len(b_amplitudes):
+        a_qubits = a_snapshot.num_qubits or int(np.log2(len(a_amplitudes)))
+        b_qubits = b_snapshot.num_qubits or int(np.log2(len(b_amplitudes)))
+        return StatevectorDiff(
+            matched=False,
+            fidelity=0.0,
+            max_amplitude_delta=0.0,
+            note=f"different qubit counts ({a_qubits} vs {b_qubits}) -- no shared basis to compare",
+        )
+    return compare_statevector(b_snapshot, a_amplitudes, atol=atol)
 
 
 def _diff_counts(

@@ -397,7 +397,7 @@ def test_get_state_snapshot_returns_structured_state(tmp_path):
     assert len(final["amplitudes"]) == 4
     assert final["probabilities"][0] == pytest.approx(0.5, abs=1e-6)
     assert final["probabilities"][3] == pytest.approx(0.5, abs=1e-6)
-    assert "|00>" in final["formatted"]
+    assert "|00⟩" in final["formatted"]
 
     initial = tools.get_state_snapshot(circuit_id, step=0)
     assert initial["probabilities"][0] == pytest.approx(1.0, abs=1e-6)

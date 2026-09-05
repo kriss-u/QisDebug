@@ -274,3 +274,38 @@ def test_diff_timelines_matching_explicit_seqs_across_two_circuits(debug):
 
     assert diff.gate_diff == [entry for entry in diff.gate_diff if entry.op == "equal"]
     assert len(diff.gate_diff) == 1
+
+
+def test_diff_timelines_different_qubit_counts_reports_mismatch_not_crash(debug):
+    """Diffing two stages whose statevector snapshots have different qubit
+    counts is a legitimate "these differ" outcome, not a crash -- unlike
+    compare_statevector's own hard error for a caller-supplied expected
+    vector of the wrong shape (see test_compare_statevector_rejects_wrong_length),
+    diffing two circuits that simply have different widths is exactly the
+    kind of difference a diff should report, not raise on."""
+    debug.start()
+    qc_a = QuantumCircuit(2, name="two_qubit")
+    qc_a.h(0)
+    qc_a.cx(0, 1)
+    AerSimulator().run(qc_a, shots=10).result()
+
+    qc_b = QuantumCircuit(3, name="three_qubit")
+    qc_b.h(0)
+    qc_b.h(1)
+    qc_b.cx(1, 2)
+    AerSimulator().run(qc_b, shots=10).result()
+    debug.end()
+
+    timeline_a = debug.get(qc_a)
+    timeline_b = debug.get(qc_b)
+
+    diff = diff_timelines(timeline_a, timeline_b)
+
+    assert diff.statevector_diff is not None
+    assert diff.statevector_diff.matched is False
+    assert diff.statevector_diff.fidelity == 0.0
+    assert diff.statevector_diff.note is not None
+    assert "2" in diff.statevector_diff.note and "3" in diff.statevector_diff.note
+    # describe() must not raise either -- this is what render_state_diff
+    # (the TUI/CLI diff screen's own text) calls.
+    assert "MISMATCH" in diff.statevector_diff.describe()

@@ -21,6 +21,9 @@ classifiers = [
 dependencies = [
     "qiskit>=1.0",
     "pydantic>=2.5",
+    "typer>=0.12",
+    "prompt_toolkit>=3.0",
+    "rich>=13",
 ]
 
 [project.optional-dependencies]
@@ -43,6 +46,7 @@ docs = ["sphinx>=7", "furo>=2024.1", "myst-parser>=2", "sphinx-autodoc-typehints
 Homepage = "https://github.com/nullvector/qisdebug"
 
 [project.scripts]
+qisdebug = "qisdebug._cli.app:main"
 qisdebug-mcp = "qisdebug._mcp.server:main"
 
 [tool.setuptools.packages.find]

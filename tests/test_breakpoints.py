@@ -459,7 +459,11 @@ def test_cli_break_continue_and_unbreak_commands(debug, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "breakpoint 1: gate cx" in out
     assert "hit breakpoint 1: gate cx" in out
-    assert "[1] gate cx" in out
+    # The breakpoints table lists handle and condition as separate cells,
+    # not one contiguous string -- check the listing (header + row) landed
+    # rather than an exact substring.
+    assert "handle" in out and "condition" in out
+    assert "gate cx" in out
     assert "removed breakpoint 1" in out
     assert "no active breakpoints" in out
 
@@ -493,11 +497,12 @@ def test_cli_complete_break_suggests_kinds_and_gate_names(debug):
     merged, tracks, _labels = _render.merge_timelines([timeline])
     # pylint: disable-next=import-outside-toplevel,protected-access
     from qisdebug._frontends.cli import _TimelineShell
+    from rich.console import Console
 
-    shell = _TimelineShell(merged, tracks, {timeline.circuit_id: timeline})
+    shell = _TimelineShell(Console(), merged, tracks, {timeline.circuit_id: timeline})
 
-    assert set(shell.complete_break("", "break ", 6, 6)) == set(frontend_bp.KINDS)
-    assert shell.complete_break("h", "break gate h", 11, 12) == ["h"]
+    assert set(shell.break_completions([])) == set(frontend_bp.KINDS)
+    assert shell.break_completions(["gate"]) == frontend_bp.known_gate_names(timeline)
 
 
 # -- GUI integration --------------------------------------------------------

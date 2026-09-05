@@ -417,6 +417,56 @@ def test_parse_condition_args_tvd_rejects_malformed_pair():
         frontend_bp.parse_condition_args("tvd", ["nonsense", "<=", "0.1"], "c1")
 
 
+def test_circuit_choices_shows_names_not_hidden_ids():
+    """The ``on CIRCUIT`` clause's candidate list must never surface the
+    internal circuit_id when a human-facing name is available."""
+    timelines_by_id = {
+        "c1": Timeline(circuit_id="c1", name="bell"),
+        "c2": Timeline(circuit_id="c2", name=None),
+    }
+    choices = frontend_bp.circuit_choices(timelines_by_id)
+    assert "bell" in choices
+    assert "c2" in choices  # falls back to the id only when unnamed
+    assert "c1" not in choices
+
+
+def test_parse_condition_args_on_clause_resolves_name_to_hidden_id():
+    """Typing a circuit's name in the ``on`` clause (what the guided wizard
+    now offers, per :func:`circuit_choices`) must resolve back to the real
+    circuit_id the stored condition needs to match against."""
+    timelines_by_id = {"c1": Timeline(circuit_id="c1", name="bell")}
+    condition = frontend_bp.parse_condition_args(
+        "gate", ["cx", "on", "bell"], "other", timelines_by_id
+    )
+    assert condition.circuit_id == "c1"
+
+
+def test_parse_condition_args_on_clause_unresolved_name_used_verbatim():
+    """A label that matches nothing tracked (or no ``timelines_by_id`` at
+    all) falls back to the original id-only behavior rather than erroring."""
+    condition = frontend_bp.parse_condition_args("gate", ["cx", "on", "ghost"], "c1")
+    assert condition.circuit_id == "ghost"
+
+
+def test_describe_condition_shows_circuit_name_not_hidden_id():
+    timelines_by_id = {"c1": Timeline(circuit_id="c1", name="bell")}
+    condition = GateMatchCondition(gate="h", circuit_id="c1")
+    description = frontend_bp.describe_condition(condition, timelines_by_id)
+    assert "bell" in description
+    assert "c1" not in description
+
+
+def test_suggest_tokens_never_offers_on_twice():
+    """Regression: once an ``on CIRCUIT`` clause is already in the typed
+    tokens, 'on' must not be suggested again -- otherwise a guided wizard
+    would let a second 'on' clause be added, which the parser then rejects."""
+    timeline = Timeline(circuit_id="c1", num_qubits=2)
+    suggestions = frontend_bp.suggest_tokens(
+        "seq", [">=", "3", "on", "bell"], timeline, ["bell"]
+    )
+    assert suggestions == []
+
+
 def test_suggest_tokens_gate_offers_known_gate_names(debug):
     timeline = traced_bell(debug, shots=5)
     assert "h" in frontend_bp.suggest_tokens("gate", [], timeline, [])

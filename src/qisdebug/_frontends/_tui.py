@@ -47,7 +47,6 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen, Screen
 from textual.widgets import Footer, Input, Label, ListItem, ListView, Static
 
-from . import _breakpoints as _bp
 from . import _guided
 from . import _render
 from ._cli_session import HELP_TEXT, CliSession, CommandError
@@ -858,16 +857,16 @@ class TimelineApp(App[None]):  # pylint: disable=too-many-public-methods
 
     @work
     async def action_add_watch_guided(self) -> None:
-        """Add a watch through a small popup with terminal-style tab
-        completion (see :mod:`._guided`) -- the exact typed syntax the
-        ``:`` command line already accepts (``watch qubit 0``), just with
-        live completion and without opening the command line and typing
-        "watch" first."""
+        """Add a watch through the guided step wizard (see :mod:`._guided`)
+        -- an arrow-navigable list of valid next tokens plus a dynamic
+        hint, building the exact same ``watch kind ref`` line the ``:``
+        command line accepts, without opening it and typing "watch" first."""
         text = await self.push_screen_wait(
-            _guided.CommandInputScreen(
+            _guided.GuidedWizardScreen(
                 "Add watch",
-                "kind ref -- e.g. qubit 0 (Tab completes, Enter adds)",
+                self.session.watch_step_hint,
                 self.session.watch_completions,
+                self.session.watch_is_complete,
             )
         )
         if text is not None:
@@ -875,12 +874,16 @@ class TimelineApp(App[None]):  # pylint: disable=too-many-public-methods
 
     @work
     async def action_add_breakpoint_guided(self) -> None:
-        """Add a breakpoint through the same popup (see :mod:`._guided`) --
-        typed syntax (``seq >= 3``, ``watch qubit 0 >= 0.5``), tab-completed
-        from the exact same suggestions the ``:`` command line offers."""
+        """Add a breakpoint through the same wizard (see :mod:`._guided`) --
+        builds the same typed syntax (``seq >= 3``, ``watch qubit 0 >= 0.5``)
+        one token at a time, from the exact same suggestions the ``:``
+        command line offers."""
         text = await self.push_screen_wait(
-            _guided.CommandInputScreen(
-                "Add breakpoint", _bp.CONDITION_USAGE, self.session.break_completions
+            _guided.GuidedWizardScreen(
+                "Add breakpoint",
+                self.session.break_step_hint,
+                self.session.break_completions,
+                self.session.break_is_complete,
             )
         )
         if text is not None:
@@ -888,19 +891,20 @@ class TimelineApp(App[None]):  # pylint: disable=too-many-public-methods
 
     @work
     async def action_remove_watch_guided(self) -> None:
-        """Remove a watch through the same completion popup -- typed
-        ``kind ref`` (only ever suggesting an *actually active* watch's
-        kind/ref, see :meth:`~._cli_session.CliSession.unwatch_completions`)
-        or ``all``, the CLI counterpart to the GUI's "Remove selected"
-        button for the watch list."""
+        """Remove a watch through the same wizard -- ``kind ref`` (only
+        ever suggesting an *actually active* watch's kind/ref, see
+        :meth:`~._cli_session.CliSession.unwatch_completions`) or ``all``,
+        the CLI counterpart to the GUI's "Remove selected" button for the
+        watch list."""
         if not self.session.watches:
             self.notify("no active watches", timeout=3)
             return
         text = await self.push_screen_wait(
-            _guided.CommandInputScreen(
+            _guided.GuidedWizardScreen(
                 "Remove watch",
-                "kind ref, or 'all' (Tab completes, Enter removes)",
+                self.session.unwatch_step_hint,
                 self.session.unwatch_completions,
+                self.session.unwatch_is_complete,
             )
         )
         if text is not None:
@@ -908,17 +912,18 @@ class TimelineApp(App[None]):  # pylint: disable=too-many-public-methods
 
     @work
     async def action_remove_breakpoint_guided(self) -> None:
-        """Remove a breakpoint through the same completion popup -- typed
-        handle or ``all``, the CLI counterpart to the GUI's "Remove
-        selected" button for the breakpoint list."""
+        """Remove a breakpoint through the same wizard -- handle or
+        ``all``, the CLI counterpart to the GUI's "Remove selected" button
+        for the breakpoint list."""
         if not self.session.breakpoints:
             self.notify("no active breakpoints", timeout=3)
             return
         text = await self.push_screen_wait(
-            _guided.CommandInputScreen(
+            _guided.GuidedWizardScreen(
                 "Remove breakpoint",
-                "handle, or 'all' (Tab completes, Enter removes)",
+                self.session.unbreak_step_hint,
                 self.session.unbreak_completions,
+                self.session.unbreak_is_complete,
             )
         )
         if text is not None:

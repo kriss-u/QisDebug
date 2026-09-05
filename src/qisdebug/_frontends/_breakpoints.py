@@ -150,8 +150,28 @@ def register_names(timeline: Timeline) -> list[str]:
 
 
 def circuit_choices(timelines_by_id: dict[str, Timeline]) -> list[str]:
-    """Return every circuit id currently known, for the ``on CIRCUIT`` clause."""
-    return sorted(timelines_by_id)
+    """Return every circuit's display label currently known, for the
+    ``on CIRCUIT`` clause -- each circuit's name where it has one, falling
+    back to its otherwise-hidden id only when it doesn't, never the raw id
+    when a name is available (per the project's rule that ``circuit_id`` is
+    internal plumbing, not part of the public surface)."""
+    return sorted({timeline.name or circuit_id for circuit_id, timeline in timelines_by_id.items()})
+
+
+def _resolve_circuit_by_label(
+    label: str, timelines_by_id: dict[str, Timeline]
+) -> Timeline | None:
+    """Resolve a typed ``on CIRCUIT`` label back to its timeline, checking
+    the (hidden) id first and falling back to a name match -- mirroring
+    :meth:`~qisdebug._store.TelemetryStore.get_by_name`'s "most recently
+    touched wins" rule for the (rare) case of two circuits sharing a name.
+    """
+    if label in timelines_by_id:
+        return timelines_by_id[label]
+    for timeline in reversed(list(timelines_by_id.values())):
+        if timeline.name == label:
+            return timeline
+    return None
 
 
 # -- Comparator/threshold/scope parsing, shared by every numeric kind -----
@@ -183,7 +203,11 @@ def _parse_trailing_comparator(
 
 
 def _resolve_circuit_id(
-    on_clause: str | None, default_circuit_id: str, *, allow_any: bool
+    on_clause: str | None,
+    default_circuit_id: str,
+    timelines_by_id: dict[str, Timeline],
+    *,
+    allow_any: bool,
 ) -> str | None:
     if on_clause is None:
         return default_circuit_id
@@ -191,10 +215,13 @@ def _resolve_circuit_id(
         if not allow_any:
             raise ValueError("this condition needs a specific circuit, use 'on NAME'")
         return None
-    return on_clause
+    resolved = _resolve_circuit_by_label(on_clause, timelines_by_id)
+    return resolved.circuit_id if resolved is not None else on_clause
 
 
-def _parse_gate(args: list[str], circuit_id: str) -> GateMatchCondition:
+def _parse_gate(
+    args: list[str], circuit_id: str, timelines_by_id: dict[str, Timeline]
+) -> GateMatchCondition:
     args, on_clause = _split_on_clause(args)
     if not args:
         raise ValueError(
@@ -203,26 +230,30 @@ def _parse_gate(args: list[str], circuit_id: str) -> GateMatchCondition:
     gate, qubit_args = args[0], args[1:]
     qubits = tuple(int(q) for q in qubit_args) if qubit_args else None
     return GateMatchCondition(
-        circuit_id=_resolve_circuit_id(on_clause, circuit_id, allow_any=True),
+        circuit_id=_resolve_circuit_id(on_clause, circuit_id, timelines_by_id, allow_any=True),
         gate=gate,
         qubits=qubits,
     )
 
 
-def _parse_seq(args: list[str], circuit_id: str) -> SeqThresholdCondition:
+def _parse_seq(
+    args: list[str], circuit_id: str, timelines_by_id: dict[str, Timeline]
+) -> SeqThresholdCondition:
     usage = f"usage: seq CMP N [on CIRCUIT|*]  ({CONDITION_USAGE})"
     args, on_clause = _split_on_clause(args)
     leading, comparator, threshold = _parse_trailing_comparator(args, usage)
     if leading:
         raise ValueError(usage)
     return SeqThresholdCondition(
-        circuit_id=_resolve_circuit_id(on_clause, circuit_id, allow_any=True),
+        circuit_id=_resolve_circuit_id(on_clause, circuit_id, timelines_by_id, allow_any=True),
         seq=int(threshold),
         comparator=comparator,
     )
 
 
-def _parse_watch(args: list[str], circuit_id: str) -> WatchThresholdCondition:
+def _parse_watch(
+    args: list[str], circuit_id: str, timelines_by_id: dict[str, Timeline]
+) -> WatchThresholdCondition:
     usage = (
         "usage: watch qubit|clbit|register REF CMP THRESHOLD [on CIRCUIT]"
         f"  ({CONDITION_USAGE})"
@@ -235,7 +266,8 @@ def _parse_watch(args: list[str], circuit_id: str) -> WatchThresholdCondition:
     watch_kind = cast(Literal["qubit", "clbit", "register"], watch_kind_arg)
     return WatchThresholdCondition(
         circuit_id=cast(
-            str, _resolve_circuit_id(on_clause, circuit_id, allow_any=False)
+            str,
+            _resolve_circuit_id(on_clause, circuit_id, timelines_by_id, allow_any=False),
         ),
         watch_kind=watch_kind,
         ref=ref,
@@ -244,7 +276,9 @@ def _parse_watch(args: list[str], circuit_id: str) -> WatchThresholdCondition:
     )
 
 
-def _parse_expect(args: list[str], circuit_id: str) -> ExpectationCondition:
+def _parse_expect(
+    args: list[str], circuit_id: str, timelines_by_id: dict[str, Timeline]
+) -> ExpectationCondition:
     usage = f"usage: expect X|Y|Z QUBIT CMP THRESHOLD [on CIRCUIT]  ({CONDITION_USAGE})"
     args, on_clause = _split_on_clause(args)
     leading, comparator, threshold = _parse_trailing_comparator(args, usage)
@@ -257,7 +291,8 @@ def _parse_expect(args: list[str], circuit_id: str) -> ExpectationCondition:
         raise ValueError(usage) from exc
     return ExpectationCondition(
         circuit_id=cast(
-            str, _resolve_circuit_id(on_clause, circuit_id, allow_any=False)
+            str,
+            _resolve_circuit_id(on_clause, circuit_id, timelines_by_id, allow_any=False),
         ),
         pauli=cast(Literal["X", "Y", "Z"], pauli_arg),
         qubit=qubit,
@@ -266,7 +301,9 @@ def _parse_expect(args: list[str], circuit_id: str) -> ExpectationCondition:
     )
 
 
-def _parse_prob(args: list[str], circuit_id: str) -> ProbabilityCondition:
+def _parse_prob(
+    args: list[str], circuit_id: str, timelines_by_id: dict[str, Timeline]
+) -> ProbabilityCondition:
     usage = f"usage: prob OUTCOME CMP THRESHOLD [on CIRCUIT]  ({CONDITION_USAGE})"
     args, on_clause = _split_on_clause(args)
     leading, comparator, threshold = _parse_trailing_comparator(args, usage)
@@ -274,7 +311,8 @@ def _parse_prob(args: list[str], circuit_id: str) -> ProbabilityCondition:
         raise ValueError(usage)
     return ProbabilityCondition(
         circuit_id=cast(
-            str, _resolve_circuit_id(on_clause, circuit_id, allow_any=False)
+            str,
+            _resolve_circuit_id(on_clause, circuit_id, timelines_by_id, allow_any=False),
         ),
         outcome=leading[0],
         comparator=comparator,
@@ -282,7 +320,9 @@ def _parse_prob(args: list[str], circuit_id: str) -> ProbabilityCondition:
     )
 
 
-def _parse_tvd(args: list[str], circuit_id: str) -> DistributionDistanceCondition:
+def _parse_tvd(
+    args: list[str], circuit_id: str, timelines_by_id: dict[str, Timeline]
+) -> DistributionDistanceCondition:
     usage = (
         "usage: tvd OUTCOME=PROB [OUTCOME=PROB ...] CMP THRESHOLD [on CIRCUIT]"
         f"  ({CONDITION_USAGE})"
@@ -300,7 +340,8 @@ def _parse_tvd(args: list[str], circuit_id: str) -> DistributionDistanceConditio
             raise ValueError(usage) from exc
     return DistributionDistanceCondition(
         circuit_id=cast(
-            str, _resolve_circuit_id(on_clause, circuit_id, allow_any=False)
+            str,
+            _resolve_circuit_id(on_clause, circuit_id, timelines_by_id, allow_any=False),
         ),
         expected=expected,
         comparator=comparator,
@@ -308,14 +349,16 @@ def _parse_tvd(args: list[str], circuit_id: str) -> DistributionDistanceConditio
     )
 
 
-def _parse_anomaly(args: list[str], circuit_id: str) -> AnomalyCondition:
+def _parse_anomaly(
+    args: list[str], circuit_id: str, timelines_by_id: dict[str, Timeline]
+) -> AnomalyCondition:
     usage = f"usage: anomaly [info|warning|error] [on CIRCUIT|*]  ({CONDITION_USAGE})"
     args, on_clause = _split_on_clause(args)
     if len(args) > 1 or (args and args[0] not in SEVERITIES):
         raise ValueError(usage)
     min_severity = cast(Severity, args[0]) if args else "warning"
     return AnomalyCondition(
-        circuit_id=_resolve_circuit_id(on_clause, circuit_id, allow_any=True),
+        circuit_id=_resolve_circuit_id(on_clause, circuit_id, timelines_by_id, allow_any=True),
         min_severity=min_severity,
     )
 
@@ -332,7 +375,10 @@ _PARSERS = {
 
 
 def parse_condition_args(
-    kind: str, args: list[str], circuit_id: str
+    kind: str,
+    args: list[str],
+    circuit_id: str,
+    timelines_by_id: dict[str, Timeline] | None = None,
 ) -> BreakpointCondition:
     """Parse one condition's kind and remaining tokens into a
     :class:`~qisdebug._breakpoints.BreakpointCondition`, defaulting to
@@ -346,12 +392,18 @@ def parse_condition_args(
     and never drift apart on what's valid. Raises ``ValueError`` (including
     on a wrapped :class:`pydantic.ValidationError`) with a message safe to
     show the user directly.
+
+    ``timelines_by_id`` resolves an ``on CIRCUIT`` clause's typed label
+    (a circuit's name, per :func:`circuit_choices`) back to the real,
+    otherwise-hidden ``circuit_id`` the stored condition needs; omitted (or
+    a label that matches nothing tracked), the clause is used verbatim as
+    the id, matching this function's original id-only behavior.
     """
     parser = _PARSERS.get(kind)
     if parser is None:
         raise ValueError(f"unknown breakpoint kind {kind!r}  ({CONDITION_USAGE})")
     try:
-        return parser(args, circuit_id)
+        return parser(args, circuit_id, timelines_by_id or {})
     except ValidationError as exc:
         raise ValueError(str(exc)) from exc
 
@@ -458,13 +510,125 @@ def suggest_tokens(
     directly for its own dropdowns, so CLI completion and GUI choices never
     diverge on what's valid. Dispatches to one small per-kind helper so no
     single function has to branch on every kind and every position at once.
+
+    ``on CIRCUIT``/``on *`` is a clause every kind accepts at most once, so
+    once ``"on"`` already appears anywhere in ``tokens`` (not just as the
+    very last one, which instead means "still typing the circuit") nothing
+    further is offered -- a condition already has its scope decided by
+    then, and a per-kind suggester further down would otherwise keep
+    re-offering ``"on"`` forever with no way to tell "done" from "still
+    going" (see :meth:`~._cli_session.CliSession.break_is_complete`, which
+    is what actually closes the guided wizard once this returns empty).
     """
     if tokens and tokens[-1] == "on":
         return circuits
+    if "on" in tokens:
+        return []
     suggester = _SUGGESTERS.get(kind)
     if suggester is None:
         return []
     return suggester(tokens, timeline, list(COMPARATOR_SYMBOLS))
+
+
+def _hint_gate(rest: list[str]) -> str:
+    if not rest:
+        return "Which gate name should trigger it?"
+    return (
+        "Optionally add the exact qubit indices it must touch, add 'on' to "
+        "scope to one circuit, or finish now to match any qubits/circuit."
+    )
+
+
+def _hint_seq(rest: list[str]) -> str:
+    if not rest:
+        return "Choose a comparator for the sequence number."
+    if len(rest) == 1:
+        return "Type the sequence-number threshold."
+    return "Optionally scope to one circuit with 'on', or finish now."
+
+
+def _hint_watch(rest: list[str]) -> str:
+    position = len(rest)
+    if position == 0:
+        return "Watch a qubit, a clbit, or a register?"
+    if position == 1:
+        return "Which one? (index or name)"
+    if position == 2:
+        return "Choose a comparator."
+    if position == 3:
+        return "Type the threshold value (0-1 probability)."
+    return "Optionally scope to one circuit with 'on', or finish now."
+
+
+def _hint_expect(rest: list[str]) -> str:
+    position = len(rest)
+    if position == 0:
+        return "Which Pauli operator (X, Y, or Z)?"
+    if position == 1:
+        return "Which qubit index?"
+    if position == 2:
+        return "Choose a comparator."
+    if position == 3:
+        return "Type the expectation-value threshold."
+    return "Optionally scope to one circuit with 'on', or finish now."
+
+
+def _hint_prob(rest: list[str]) -> str:
+    position = len(rest)
+    if position == 0:
+        return "Which exact outcome bitstring?"
+    if position == 1:
+        return "Choose a comparator."
+    if position == 2:
+        return "Type the probability threshold (0-1)."
+    return "Optionally scope to one circuit with 'on', or finish now."
+
+
+def _hint_tvd(rest: list[str]) -> str:
+    if not rest:
+        return "Type an OUTCOME=PROB pair, e.g. 00=0.5 (repeatable)."
+    if rest[-1] in COMPARATOR_SYMBOLS:
+        return "Type the total-variation-distance threshold."
+    if len(rest) >= 2 and rest[-2] in COMPARATOR_SYMBOLS:
+        return "Optionally scope to one circuit with 'on', or finish now."
+    if _OUTCOME_PAIR_RE.match(rest[-1]):
+        return "Add another OUTCOME=PROB pair, or choose a comparator to set the threshold."
+    return "Type an OUTCOME=PROB pair, e.g. 00=0.5."
+
+
+def _hint_anomaly(rest: list[str]) -> str:
+    if not rest:
+        return "Minimum severity to break on, or finish now for the default (warning)."
+    return "Optionally scope to one circuit with 'on', or finish now."
+
+
+_STEP_HINTS: dict[str, Callable[[list[str]], str]] = {
+    "gate": _hint_gate,
+    "seq": _hint_seq,
+    "watch": _hint_watch,
+    "expect": _hint_expect,
+    "prob": _hint_prob,
+    "tvd": _hint_tvd,
+    "anomaly": _hint_anomaly,
+}
+
+
+def condition_step_hint(tokens: list[str]) -> str:
+    """Return a one-line, plain-language explanation of what the next
+    breakpoint token means, given everything typed so far (kind included).
+
+    Mirrors :func:`suggest_tokens`'s ``(kind, position)`` dispatch exactly,
+    but describes the step in words instead of enumerating candidates --
+    the two are shown side by side by a guided input screen so the visible
+    option list is never the only explanation of what it's for.
+    """
+    if not tokens or tokens[0] not in KINDS:
+        return "What should trigger this breakpoint?"
+    if tokens[-1] == "on":
+        return "Which circuit (or * for any)?"
+    if "on" in tokens[1:]:
+        return "Ready -- finish to register this breakpoint."
+    return _STEP_HINTS[tokens[0]](tokens[1:])
 
 
 def small_outcome_space(timeline: Timeline | None) -> list[str]:
@@ -586,48 +750,75 @@ def find_last_hit(
     return find_prev_hit(merged, conditions, len(merged))
 
 
-def _describe_gate(condition: GateMatchCondition) -> str:
+def _circuit_label(circuit_id: str, timelines_by_id: dict[str, Timeline]) -> str:
+    """Human-facing label for a condition's stored ``circuit_id``: the
+    circuit's name if it's still tracked and named, else the id itself as a
+    last resort (e.g. a circuit evicted since the breakpoint was set) --
+    never omitted outright, but never the raw id when a name is available.
+    """
+    timeline = timelines_by_id.get(circuit_id)
+    return timeline.name if timeline is not None and timeline.name else circuit_id
+
+
+def _optional_scope(circuit_id: str | None, timelines_by_id: dict[str, Timeline]) -> str:
+    """`` on <name>`` for a scoped condition, or ``""`` for one that isn't."""
+    if not circuit_id:
+        return ""
+    return f" on {_circuit_label(circuit_id, timelines_by_id)}"
+
+
+def _describe_gate(condition: GateMatchCondition, timelines_by_id: dict[str, Timeline]) -> str:
     qubits = f" q{list(condition.qubits)}" if condition.qubits is not None else ""
-    scope = f" on {condition.circuit_id}" if condition.circuit_id else ""
+    scope = _optional_scope(condition.circuit_id, timelines_by_id)
     return f"gate {condition.gate}{qubits}{scope}"
 
 
-def _describe_seq(condition: SeqThresholdCondition) -> str:
-    scope = f" on {condition.circuit_id}" if condition.circuit_id else ""
+def _describe_seq(condition: SeqThresholdCondition, timelines_by_id: dict[str, Timeline]) -> str:
+    scope = _optional_scope(condition.circuit_id, timelines_by_id)
     return f"seq {_SYMBOL_FOR_COMPARATOR[condition.comparator]} {condition.seq}{scope}"
 
 
-def _describe_watch(condition: WatchThresholdCondition) -> str:
+def _describe_watch(
+    condition: WatchThresholdCondition, timelines_by_id: dict[str, Timeline]
+) -> str:
+    label = _circuit_label(condition.circuit_id, timelines_by_id)
     return (
-        f"{condition.circuit_id} {condition.watch_kind} {condition.ref} "
+        f"{label} {condition.watch_kind} {condition.ref} "
         f"{_SYMBOL_FOR_COMPARATOR[condition.comparator]} {condition.threshold}"
     )
 
 
-def _describe_expectation(condition: ExpectationCondition) -> str:
+def _describe_expectation(
+    condition: ExpectationCondition, timelines_by_id: dict[str, Timeline]
+) -> str:
     return (
-        f"{condition.circuit_id} expect {condition.pauli}{condition.qubit} "
+        f"{_circuit_label(condition.circuit_id, timelines_by_id)} "
+        f"expect {condition.pauli}{condition.qubit} "
         f"{_SYMBOL_FOR_COMPARATOR[condition.comparator]} {condition.threshold}"
     )
 
 
-def _describe_probability(condition: ProbabilityCondition) -> str:
+def _describe_probability(
+    condition: ProbabilityCondition, timelines_by_id: dict[str, Timeline]
+) -> str:
     return (
-        f"{condition.circuit_id} prob {condition.outcome} "
+        f"{_circuit_label(condition.circuit_id, timelines_by_id)} prob {condition.outcome} "
         f"{_SYMBOL_FOR_COMPARATOR[condition.comparator]} {condition.threshold}"
     )
 
 
-def _describe_distribution(condition: DistributionDistanceCondition) -> str:
+def _describe_distribution(
+    condition: DistributionDistanceCondition, timelines_by_id: dict[str, Timeline]
+) -> str:
     expected = " ".join(f"{k}={v}" for k, v in condition.expected.items())
     return (
-        f"{condition.circuit_id} tvd({expected}) "
+        f"{_circuit_label(condition.circuit_id, timelines_by_id)} tvd({expected}) "
         f"{_SYMBOL_FOR_COMPARATOR[condition.comparator]} {condition.threshold}"
     )
 
 
-def _describe_anomaly(condition: AnomalyCondition) -> str:
-    scope = f" on {condition.circuit_id}" if condition.circuit_id else ""
+def _describe_anomaly(condition: AnomalyCondition, timelines_by_id: dict[str, Timeline]) -> str:
+    scope = _optional_scope(condition.circuit_id, timelines_by_id)
     return f"anomaly >= {condition.min_severity}{scope}"
 
 
@@ -642,7 +833,11 @@ _DESCRIBERS: dict[str, Callable[..., str]] = {
 }
 
 
-def describe_condition(condition: BreakpointCondition) -> str:
+def describe_condition(
+    condition: BreakpointCondition, timelines_by_id: dict[str, Timeline] | None = None
+) -> str:
     """Return a compact one-line label for a breakpoint condition, for
-    listing widgets in both frontends."""
-    return _DESCRIBERS[condition.kind](condition)
+    listing widgets in both frontends. ``timelines_by_id`` renders any
+    scoped circuit by name rather than its hidden id; omitted, an id that
+    matches nothing tracked is shown as-is."""
+    return _DESCRIBERS[condition.kind](condition, timelines_by_id or {})

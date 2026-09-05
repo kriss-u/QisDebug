@@ -6,7 +6,7 @@ from _helpers import bell_circuit, traced_bell
 
 from qisdebug._events import ExecutionFinishedEvent, StateSnapshotEvent, Timeline
 from qisdebug._frontends._cli_session import CliSession
-from qisdebug._frontends._guided import CommandInputScreen
+from qisdebug._frontends._guided import GuidedWizardScreen
 from qisdebug._frontends._tui import CommandScreen, DiffScreen, ElementPickerScreen, TimelineApp
 
 
@@ -321,31 +321,33 @@ async def test_tui_element_picker_skipped_for_single_element_stage(debug):
 
 
 async def test_tui_guided_watch_add_via_w_shortcut(debug):
-    """"w" opens a small popup with a single text field -- typing the exact
-    ``watch`` syntax and pressing Enter adds the watch, the same as typing
-    ``: watch qubit 0`` would, just without opening the command line first."""
+    """"w" opens the guided step wizard -- typing the exact ``watch``
+    syntax with embedded spaces and pressing Enter commits both tokens at
+    once and closes automatically, since a watch's ``kind ref`` shape has
+    nothing left to add after that."""
     app, session, _timeline = _make_app(debug)
     async with app.run_test() as pilot:
         await pilot.press("w")
         await pilot.pause()
-        assert isinstance(app.screen, CommandInputScreen)
+        assert isinstance(app.screen, GuidedWizardScreen)
 
         for char in "qubit 0":
             await pilot.press(char if char != " " else "space")
         await pilot.press("enter")
         await pilot.pause()
 
-        assert not isinstance(app.screen, CommandInputScreen)
+        assert not isinstance(app.screen, GuidedWizardScreen)
         assert len(session.watches) == 1
         assert session.watches[0].kind == "qubit"
         assert session.watches[0].ref == "0"
 
 
-async def test_tui_watch_popup_tab_completes_kind_then_ref(debug):
+async def test_tui_watch_wizard_tab_completes_kind_then_ref(debug):
     """Tab completes the kind from its unique prefix, then completes the
-    ref from whatever the chosen kind offers -- real shell-style completion
-    rather than a dropdown to pick from."""
-    app, _session, _timeline = _make_app(debug)
+    ref from whatever the chosen kind offers -- committing the kind token
+    with Enter leaves the wizard open on the next step (a ref is still
+    needed) rather than closing early."""
+    app, session, _timeline = _make_app(debug)
     async with app.run_test() as pilot:
         await pilot.press("w")
         await pilot.pause()
@@ -355,46 +357,84 @@ async def test_tui_watch_popup_tab_completes_kind_then_ref(debug):
         await pilot.pause()
 
         input_widget = app.screen.query_one("#cmd-input", Input)
-        assert input_widget.value == "register "
+        assert input_widget.value == "register"
 
-        for char in "q":  # "q" uniquely prefixes this bell circuit's "q" register
+        await pilot.press("enter")
+        await pilot.pause()
+        assert isinstance(app.screen, GuidedWizardScreen)
+
+        for char in "q":  # this bell circuit's quantum register is named "q"
             await pilot.press(char)
         await pilot.press("tab")
         await pilot.pause()
-        assert input_widget.value == "register q "
+        assert input_widget.value == "q"
+
+        await pilot.press("enter")
+        await pilot.pause()
+        assert not isinstance(app.screen, GuidedWizardScreen)
+        assert len(session.watches) == 1
+        assert session.watches[0].kind == "register"
+        assert session.watches[0].ref == "q"
 
 
-async def test_tui_watch_popup_cancel_via_escape(debug):
-    """Escape closes the popup without adding anything, mirroring every
-    other modal screen in this app."""
+async def test_tui_watch_wizard_cancel_via_escape(debug):
+    """Escape closes the wizard without adding anything when nothing has
+    been committed yet, mirroring every other modal screen in this app."""
     app, session, _timeline = _make_app(debug)
     async with app.run_test() as pilot:
         await pilot.press("w")
         await pilot.pause()
-        assert isinstance(app.screen, CommandInputScreen)
+        assert isinstance(app.screen, GuidedWizardScreen)
 
         await pilot.press("escape")
         await pilot.pause()
 
-        assert not isinstance(app.screen, CommandInputScreen)
+        assert not isinstance(app.screen, GuidedWizardScreen)
         assert len(session.watches) == 0
 
 
+async def test_tui_watch_wizard_escape_steps_back_one_token(debug):
+    """Escape after a token is already committed backs up one step instead
+    of closing outright, so a wrong pick doesn't mean starting over."""
+    app, _session, _timeline = _make_app(debug)
+    async with app.run_test() as pilot:
+        await pilot.press("w")
+        await pilot.pause()
+        for char in "qubit":
+            await pilot.press(char)
+        await pilot.press("enter")
+        await pilot.pause()
+        assert isinstance(app.screen, GuidedWizardScreen)
+
+        await pilot.press("escape")
+        await pilot.pause()
+
+        assert isinstance(app.screen, GuidedWizardScreen)
+        breadcrumb = app.screen.query_one("#cmd-breadcrumb")
+        assert str(breadcrumb.render()) == "(nothing chosen yet)"
+
+
 async def test_tui_guided_breakpoint_add_enumerable_kind(debug):
-    """A fully-enumerable breakpoint kind (anomaly) needs no free text at
-    all -- type it and press Enter."""
+    """A fully-enumerable breakpoint kind (anomaly) needs no free text --
+    type it, Enter, then pick the pinned "finish" entry once the only
+    thing left on offer is the optional 'on' clause."""
     app, session, _timeline = _make_app(debug)
     async with app.run_test() as pilot:
         await pilot.press("b")
         await pilot.pause()
-        assert isinstance(app.screen, CommandInputScreen)
+        assert isinstance(app.screen, GuidedWizardScreen)
 
         for char in "anomaly warning":
             await pilot.press(char if char != " " else "space")
         await pilot.press("enter")
         await pilot.pause()
+        assert isinstance(app.screen, GuidedWizardScreen)  # 'on' is still optional
 
-        assert not isinstance(app.screen, CommandInputScreen)
+        await pilot.press("down")  # move off 'on' onto the pinned finish entry
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert not isinstance(app.screen, GuidedWizardScreen)
         rows = session.breakpoint_rows()
         assert len(rows) == 1
         assert "anomaly" in rows[0][1]
@@ -402,7 +442,8 @@ async def test_tui_guided_breakpoint_add_enumerable_kind(debug):
 
 async def test_tui_guided_breakpoint_add_needs_free_text(debug):
     """A "seq" breakpoint mixes an enumerable comparator with a free-text
-    event number, typed straight into the popup like any other command."""
+    event number, typed straight into the wizard like any other command,
+    then finished explicitly since 'on' remains optional afterward."""
     app, session, _timeline = _make_app(debug)
     async with app.run_test() as pilot:
         await pilot.press("b")
@@ -412,6 +453,9 @@ async def test_tui_guided_breakpoint_add_needs_free_text(debug):
             await pilot.press(char if char != " " else "space")
         await pilot.press("enter")
         await pilot.pause()
+        await pilot.press("down")
+        await pilot.press("enter")
+        await pilot.pause()
 
         rows = session.breakpoint_rows()
         assert len(rows) == 1
@@ -419,7 +463,44 @@ async def test_tui_guided_breakpoint_add_needs_free_text(debug):
         assert "3" in rows[0][1]
 
 
-async def test_tui_breakpoint_popup_tab_completes_kind(debug):
+async def test_tui_breakpoint_wizard_stays_open_after_comparator_for_threshold(debug):
+    """Regression: choosing a comparator one step at a time (rather than
+    typing "seq >= 3" in one go) must not auto-close the wizard before the
+    threshold is typed -- the threshold step has nothing to suggest, but
+    "nothing to suggest" isn't "nothing left to type"."""
+    app, session, _timeline = _make_app(debug)
+    async with app.run_test() as pilot:
+        await pilot.press("b")
+        await pilot.pause()
+        for char in "seq":
+            await pilot.press(char)
+        await pilot.press("enter")
+        await pilot.pause()
+        assert isinstance(app.screen, GuidedWizardScreen)
+
+        for char in ">=":
+            await pilot.press(char)
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert isinstance(app.screen, GuidedWizardScreen)  # must still be open
+        assert len(session.breakpoint_rows()) == 0
+
+        for char in "3":
+            await pilot.press(char)
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.press("down")
+        await pilot.press("enter")
+        await pilot.pause()
+
+        rows = session.breakpoint_rows()
+        assert len(rows) == 1
+        assert "seq" in rows[0][1]
+        assert "3" in rows[0][1]
+
+
+async def test_tui_breakpoint_wizard_tab_completes_kind(debug):
     """Tab completes the breakpoint kind from a unique prefix, mirroring
     the typed ``:`` command line's own completion contract."""
     app, _session, _timeline = _make_app(debug)
@@ -432,13 +513,14 @@ async def test_tui_breakpoint_popup_tab_completes_kind(debug):
         await pilot.pause()
 
         input_widget = app.screen.query_one("#cmd-input", Input)
-        assert input_widget.value == "anomaly "
+        assert input_widget.value == "anomaly"
 
 
-async def test_tui_breakpoint_popup_empty_line_shows_error_and_stays_open(debug):
-    """Submitting a blank line toasts an error and keeps the popup open,
-    instead of silently adding nothing and closing."""
-    app, session, _timeline = _make_app(debug)
+async def test_tui_breakpoint_wizard_blank_enter_picks_top_of_list(debug):
+    """With nothing typed, Enter accepts whatever is highlighted at the
+    top of the always-visible option list -- the wizard's default choice
+    -- and advances a step, rather than erroring on a blank line."""
+    app, _session, _timeline = _make_app(debug)
     async with app.run_test() as pilot:
         await pilot.press("b")
         await pilot.pause()
@@ -446,29 +528,31 @@ async def test_tui_breakpoint_popup_empty_line_shows_error_and_stays_open(debug)
         await pilot.press("enter")
         await pilot.pause()
 
-        assert isinstance(app.screen, CommandInputScreen)
-        assert len(session.breakpoint_rows()) == 0
+        assert isinstance(app.screen, GuidedWizardScreen)
+        breadcrumb = app.screen.query_one("#cmd-breadcrumb")
+        assert str(breadcrumb.render()) == "gate"
 
 
-async def test_tui_breakpoint_popup_cancel_via_escape(debug):
-    """Escape closes the breakpoint popup without adding anything."""
+async def test_tui_breakpoint_wizard_cancel_via_escape(debug):
+    """Escape closes the breakpoint wizard without adding anything when
+    nothing has been committed yet."""
     app, session, _timeline = _make_app(debug)
     async with app.run_test() as pilot:
         await pilot.press("b")
         await pilot.pause()
-        assert isinstance(app.screen, CommandInputScreen)
+        assert isinstance(app.screen, GuidedWizardScreen)
 
         await pilot.press("escape")
         await pilot.pause()
 
-        assert not isinstance(app.screen, CommandInputScreen)
+        assert not isinstance(app.screen, GuidedWizardScreen)
         assert len(session.breakpoint_rows()) == 0
 
 
 async def test_tui_remove_breakpoint_via_shift_b(debug):
-    """"B" opens the same kind of popup as "b", scoped to removing a
-    breakpoint by handle -- the CLI counterpart to the GUI's "Remove
-    selected" button."""
+    """"B" opens the same wizard as "b", scoped to removing a breakpoint
+    by handle -- the CLI counterpart to the GUI's "Remove selected"
+    button."""
     app, session, _timeline = _make_app(debug)
     async with app.run_test() as pilot:
         await pilot.press("b")
@@ -477,11 +561,14 @@ async def test_tui_remove_breakpoint_via_shift_b(debug):
             await pilot.press(char)
         await pilot.press("enter")
         await pilot.pause()
+        await pilot.press("down", "down", "down", "down")
+        await pilot.press("enter")
+        await pilot.pause()
         assert len(session.breakpoint_rows()) == 1
 
         await pilot.press("B")
         await pilot.pause()
-        assert isinstance(app.screen, CommandInputScreen)
+        assert isinstance(app.screen, GuidedWizardScreen)
         for char in "1":
             await pilot.press(char)
         await pilot.press("enter")
@@ -492,16 +579,16 @@ async def test_tui_remove_breakpoint_via_shift_b(debug):
 
 async def test_tui_remove_breakpoint_shortcut_noop_with_none_active(debug):
     """"B" with no active breakpoints toasts instead of opening an empty,
-    useless popup."""
+    useless wizard."""
     app, _session, _timeline = _make_app(debug)
     async with app.run_test() as pilot:
         await pilot.press("B")
         await pilot.pause()
-        assert not isinstance(app.screen, CommandInputScreen)
+        assert not isinstance(app.screen, GuidedWizardScreen)
 
 
 async def test_tui_remove_watch_via_shift_w(debug):
-    """"W" opens the same kind of popup as "w", scoped to removing a
+    """"W" opens the same kind of wizard as "w", scoped to removing a
     watch by kind/ref -- suggestions only ever include an actually active
     watch, never any valid-but-unset one."""
     app, session, _timeline = _make_app(debug)
@@ -516,7 +603,7 @@ async def test_tui_remove_watch_via_shift_w(debug):
 
         await pilot.press("W")
         await pilot.pause()
-        assert isinstance(app.screen, CommandInputScreen)
+        assert isinstance(app.screen, GuidedWizardScreen)
         for char in "qubit 0":
             await pilot.press(char if char != " " else "space")
         await pilot.press("enter")
@@ -527,12 +614,12 @@ async def test_tui_remove_watch_via_shift_w(debug):
 
 async def test_tui_remove_watch_shortcut_noop_with_none_active(debug):
     """"W" with no active watches toasts instead of opening an empty,
-    useless popup."""
+    useless wizard."""
     app, _session, _timeline = _make_app(debug)
     async with app.run_test() as pilot:
         await pilot.press("W")
         await pilot.pause()
-        assert not isinstance(app.screen, CommandInputScreen)
+        assert not isinstance(app.screen, GuidedWizardScreen)
 
 
 async def test_tui_command_palette_runs_watch_and_dismisses(debug):

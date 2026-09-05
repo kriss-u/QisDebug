@@ -456,6 +456,32 @@ class CliSession:
         }
         return refs_by_kind.get(tokens[0], lambda _t: [])(timeline)
 
+    def watch_is_complete(self, tokens: list[str]) -> bool:
+        """Whether ``tokens`` already parses as a full ``watch`` command --
+        distinct from :meth:`watch_completions` running out of suggestions,
+        which also happens mid-command whenever the next token is free-text
+        (e.g. nothing enumerable follows a comparator), not just once
+        nothing more is expected."""
+        try:
+            self.parse_watch_arg(" ".join(tokens))
+        except CommandError:
+            return False
+        return True
+
+    def watch_step_hint(self, tokens: list[str]) -> str:
+        """One-line explanation of the next ``watch`` token, mirroring
+        :meth:`watch_completions`'s own ``(position)`` dispatch."""
+        if not tokens:
+            return "Watch a qubit, a clbit, a named register, or a circuit track?"
+        if len(tokens) == 1:
+            return {
+                "qubit": "Which qubit index?",
+                "clbit": "Which classical bit index?",
+                "register": "Which register name?",
+                "track": "Which track (e.g. transpiled, transpiled#2)?",
+            }.get(tokens[0], "Pick a value.")
+        return "Ready -- finish to start watching this."
+
     def add_watch(self, kind: WatchKind, ref: str) -> _render.WatchTarget:
         """Start tracking ``kind``/``ref`` from the circuit currently on screen."""
         source, _event = self.current_source_event()
@@ -490,6 +516,26 @@ class CliSession:
         if tokens[0] == "all" or len(tokens) > 1:
             return []
         return [target.ref for target in self.watches if target.kind == tokens[0]]
+
+    def unwatch_is_complete(self, tokens: list[str]) -> bool:
+        """Whether ``tokens`` already parses as a full ``unwatch`` command
+        (see :meth:`watch_is_complete` for why this can't just be "no more
+        suggestions")."""
+        if tokens == ["all"]:
+            return True
+        try:
+            self.parse_watch_arg(" ".join(tokens))
+        except CommandError:
+            return False
+        return True
+
+    def unwatch_step_hint(self, tokens: list[str]) -> str:
+        """One-line explanation of the next ``unwatch`` token."""
+        if not tokens:
+            return "Remove which watch? Pick a kind, or 'all' to clear everything."
+        if tokens[0] == "all":
+            return "Finish to clear every watch."
+        return "Which one currently being watched?"
 
     def watch_labels(self) -> list[str]:
         """One label per active watch, for a persistent watch panel."""
@@ -649,9 +695,28 @@ class CliSession:
             raise CommandError(f"usage: break {_bp.CONDITION_USAGE}")
         source, _event = self.current_source_event()
         try:
-            return _bp.parse_condition_args(parts[0], parts[1:], source.circuit_id)
+            return _bp.parse_condition_args(
+                parts[0], parts[1:], source.circuit_id, self.timelines_by_id
+            )
         except ValueError as exc:
             raise CommandError(str(exc)) from exc
+
+    def break_is_complete(self, tokens: list[str]) -> bool:
+        """Whether ``tokens`` already parses as a full breakpoint condition
+        -- distinct from :meth:`break_completions` running out of
+        suggestions, which also happens right after a comparator (the
+        threshold that must follow is free-text, not enumerable) even
+        though the condition is nowhere near complete yet."""
+        try:
+            self.parse_break_arg(" ".join(tokens))
+        except CommandError:
+            return False
+        return True
+
+    def break_step_hint(self, tokens: list[str]) -> str:
+        """One-line explanation of the next ``break`` token; delegates to
+        :func:`~._breakpoints.condition_step_hint`, shared with the GUI."""
+        return _bp.condition_step_hint(tokens)
 
     def add_breakpoint(self, condition: BreakpointCondition) -> str:
         """Register a breakpoint condition, returning its handle."""
@@ -675,10 +740,21 @@ class CliSession:
             return []
         return [*(handle for handle, _ in self.breakpoint_rows()), "all"]
 
+    def unbreak_is_complete(self, tokens: list[str]) -> bool:
+        """Whether ``tokens`` already parses as a full ``unbreak`` command:
+        exactly one token, either an active handle or ``all``."""
+        return len(tokens) == 1 and (tokens[0] == "all" or tokens[0] in self.breakpoints)
+
+    def unbreak_step_hint(self, tokens: list[str]) -> str:
+        """One-line explanation of the next ``unbreak`` token."""
+        if not tokens:
+            return "Remove which breakpoint? Pick a handle, or 'all' to clear everything."
+        return "Finish to remove it."
+
     def breakpoint_rows(self) -> list[tuple[str, str]]:
         """``(handle, description)`` per active breakpoint, for a persistent panel."""
         return [
-            (handle, _bp.describe_condition(condition))
+            (handle, _bp.describe_condition(condition, self.timelines_by_id))
             for handle, condition in self.breakpoints.items()
         ]
 
@@ -866,7 +942,7 @@ class CliSession:
         except CommandError as exc:
             return [str(exc)]
         handle = self.add_breakpoint(condition)
-        return [f"breakpoint {handle}: {_bp.describe_condition(condition)}"]
+        return [f"breakpoint {handle}: {_bp.describe_condition(condition, self.timelines_by_id)}"]
 
     def _cmd_breakpoints(self, _arg: str) -> list[str | Text]:
         rows = self.breakpoint_rows()
@@ -885,7 +961,7 @@ class CliSession:
     def _describe_hit(self, handle: str) -> str:
         condition = self.breakpoints.get(handle)
         assert condition is not None
-        return f"hit breakpoint {handle}: {_bp.describe_condition(condition)}"
+        return f"hit breakpoint {handle}: {_bp.describe_condition(condition, self.timelines_by_id)}"
 
     def _cmd_continue(self, _arg: str) -> list[str | Text]:
         try:

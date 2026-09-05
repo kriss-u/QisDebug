@@ -1290,9 +1290,8 @@ class _TimelineWindow(
         self.breakpoint_scope.clear()
         self.breakpoint_scope.addItem(self._BREAKPOINT_SCOPE_CURRENT, None)
         self.breakpoint_scope.addItem(self._BREAKPOINT_SCOPE_ALL, "*")
-        for circuit_id in _bp.circuit_choices(self.timelines_by_id):
-            timeline = self.timelines_by_id.get(circuit_id)
-            name = timeline.name if timeline is not None else None
+        for circuit_id in sorted(self.timelines_by_id):
+            name = self.timelines_by_id[circuit_id].name
             label = f"{name} ({circuit_id})" if name else circuit_id
             self.breakpoint_scope.addItem(label, circuit_id)
         new_index = 0
@@ -1359,13 +1358,17 @@ class _TimelineWindow(
         kind = self.breakpoint_kind.currentText()
         args = self._breakpoint_tokens(kind)
         try:
-            condition = _bp.parse_condition_args(kind, args, source.circuit_id)
+            condition = _bp.parse_condition_args(
+                kind, args, source.circuit_id, self.timelines_by_id
+            )
         except ValueError as exc:
             self.breakpoint_kind.setToolTip(str(exc))
             return
         self.breakpoint_kind.setToolTip("")
         handle = self.breakpoints.add(condition)
-        item = QListWidgetItem(f"[{handle}] {_bp.describe_condition(condition)}")
+        item = QListWidgetItem(
+            f"[{handle}] {_bp.describe_condition(condition, self.timelines_by_id)}"
+        )
         item.setData(Qt.ItemDataRole.UserRole, handle)
         self.breakpoint_list.addItem(item)
 
@@ -1388,7 +1391,8 @@ class _TimelineWindow(
         condition = self.breakpoints.get(handle)
         assert condition is not None
         self.hit_status_label.setText(
-            f"hit breakpoint [{handle}] {_bp.describe_condition(condition)}"
+            f"hit breakpoint [{handle}] "
+            f"{_bp.describe_condition(condition, self.timelines_by_id)}"
         )
         self._goto(index)
 

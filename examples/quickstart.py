@@ -10,8 +10,9 @@ calls below are completely ordinary Qiskit code.
 
 import json
 
-from qiskit import QuantumCircuit, transpile
+from qiskit import transpile
 from qiskit_aer import AerSimulator
+from _circuits import ghz_circuit
 
 import qisdebug
 
@@ -21,11 +22,7 @@ def main() -> None:
     debug = qisdebug.QisDebug()
     debug.start()
 
-    qc = QuantumCircuit(3, 3, name="ghz")
-    qc.h(0)
-    qc.cx(0, 1)
-    qc.cx(1, 2)
-    qc.measure(range(3), range(3))
+    qc = ghz_circuit()
 
     backend = AerSimulator()
     transpiled = transpile(qc, basis_gates=["cx", "u"], optimization_level=1)

@@ -28,13 +28,16 @@ from PySide6.QtGui import (
     QFontDatabase,
     QImage,
     QKeyEvent,
+    QKeySequence,
     QPainter,
     QPalette,
     QPen,
+    QShortcut,
     QTextCursor,
 )
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QCompleter,
     QDoubleSpinBox,
@@ -43,6 +46,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QMessageBox,
     QPushButton,
     QSlider,
     QSpinBox,
@@ -77,6 +81,20 @@ DIFF_ADDED_TEXT_COLOR_LIGHT = "#16a34a"
 DIFF_ADDED_TEXT_COLOR_DARK = "#4ade80"
 MAX_IMAGE_WIDTH = 480
 MAX_IMAGE_HEIGHT = 360
+DEFAULT_CIRCUIT_FONT_POINT_SIZE = 10
+MIN_CIRCUIT_FONT_POINT_SIZE = 6
+MAX_CIRCUIT_FONT_POINT_SIZE = 24
+CIRCUIT_FONT_ZOOM_STEP = 1
+HELP_TEXT = """\
+Keyboard shortcuts
+
+Ctrl+← / Ctrl+→      previous / next event
+Ctrl+Space          play / pause
+Ctrl+= / Ctrl+-     zoom the circuit drawing in / out
+Ctrl+0              reset circuit drawing zoom
+Ctrl+scroll wheel   zoom the circuit drawing (over the drawing pane)
+?                   this help
+"""
 _PLAY_LABEL = "⏵ Play  (Ctrl+Space)"
 _PAUSE_LABEL = "⏸ Pause  (Ctrl+Space)"
 
@@ -142,11 +160,26 @@ class _TrackTextEdit(QTextEdit):
     def __init__(self) -> None:
         super().__init__()
         self._active_span: tuple[int, int] | None = None
+        self.on_ctrl_wheel: Callable[[int], None] | None = None
 
     def set_active_span(self, span: tuple[int, int] | None) -> None:
         """Outline the 1-indexed (start_line, end_line) span, or clear it if ``None``."""
         self._active_span = span
         self.viewport().update()
+
+    def wheelEvent(self, event) -> None:  # noqa: N802 (Qt override name)
+        """Ctrl+scroll zooms the circuit drawing instead of scrolling it,
+        mirroring the desktop-wide convention (browsers, editors); plain
+        scrolling is left to the base class for everything else.
+        """
+        if (
+            self.on_ctrl_wheel is not None
+            and event.modifiers() == Qt.KeyboardModifier.ControlModifier
+        ):
+            self.on_ctrl_wheel(1 if event.angleDelta().y() > 0 else -1)
+            event.accept()
+            return
+        super().wheelEvent(event)
 
     def paintEvent(self, event) -> None:  # noqa: N802 (Qt override name)
         """Paint normally, then outline the active span if one is set."""
@@ -300,6 +333,8 @@ class _TimelineWindow(
         self._syncing_slider = False
         self._timers: list[QTimer] = []
         self._key_filter: _PlaybackKeyFilter | None = None
+        self._show_all_circuits = False
+        self._circuit_font_point_size = DEFAULT_CIRCUIT_FONT_POINT_SIZE
 
         self.window = _TimelineWidget(self._cleanup_key_filter)
         self.window.setWindowTitle(f"QisDebug timeline — {title}")
@@ -342,6 +377,13 @@ class _TimelineWindow(
             self._key_filter = _PlaybackKeyFilter(self._handle_shortcut)
             app.installEventFilter(self._key_filter)
 
+        self._help_shortcut = QShortcut(QKeySequence("?"), self.window)
+        # QShortcut.activated is a PySide6 Signal descriptor implemented in a
+        # C extension; astroid can't introspect it, so pylint can't see
+        # `.connect`/`.emit` on the bound signal it returns -- a known false
+        # positive for every Qt signal, not specific to this one.
+        self._help_shortcut.activated.connect(self._show_help)  # pylint: disable=no-member
+
     def _cleanup_key_filter(self) -> None:
         """Unregister the playback key filter so it doesn't outlive this window."""
         app = QApplication.instance()
@@ -350,19 +392,61 @@ class _TimelineWindow(
         self._key_filter = None
 
     def _handle_shortcut(self, key: int) -> bool:
-        """Handle a global playback shortcut key, returning whether it was consumed."""
+        """Handle a global playback/zoom shortcut key, returning whether it was consumed."""
         if self.controller is None:
             return False
-        if key == Qt.Key.Key_Left:
-            self._goto(self.controller.index - 1)
-            return True
-        if key == Qt.Key.Key_Right:
-            self._goto(self.controller.index + 1)
-            return True
-        if key == Qt.Key.Key_Space:
-            self._toggle_play()
-            return True
-        return False
+        controller = self.controller
+        actions: dict[int, Callable[[], None]] = {
+            Qt.Key.Key_Left: lambda: self._goto(controller.index - 1),
+            Qt.Key.Key_Right: lambda: self._goto(controller.index + 1),
+            Qt.Key.Key_Space: self._toggle_play,
+            Qt.Key.Key_Plus: self._zoom_in,
+            Qt.Key.Key_Equal: self._zoom_in,
+            Qt.Key.Key_Minus: self._zoom_out,
+            Qt.Key.Key_0: self._zoom_reset,
+        }
+        action = actions.get(key)
+        if action is None:
+            return False
+        action()
+        return True
+
+    def _zoom_in(self) -> None:
+        self._set_circuit_font_point_size(
+            self._circuit_font_point_size + CIRCUIT_FONT_ZOOM_STEP
+        )
+
+    def _zoom_out(self) -> None:
+        self._set_circuit_font_point_size(
+            self._circuit_font_point_size - CIRCUIT_FONT_ZOOM_STEP
+        )
+
+    def _zoom_reset(self) -> None:
+        self._set_circuit_font_point_size(DEFAULT_CIRCUIT_FONT_POINT_SIZE)
+
+    def _set_circuit_font_point_size(self, point_size: int) -> None:
+        """Apply a clamped font point size to the circuit drawing pane --
+        the GUI's "zoom", a native desktop interaction the terminal frontend
+        can't offer, which instead zooms by redrawing at a different fold
+        width (see :meth:`~._cli_session.CliSession.zoom_in`).
+        """
+        self._circuit_font_point_size = max(
+            MIN_CIRCUIT_FONT_POINT_SIZE,
+            min(MAX_CIRCUIT_FONT_POINT_SIZE, point_size),
+        )
+        font = self.text.font()
+        font.setPointSize(self._circuit_font_point_size)
+        self.text.setFont(font)
+
+    def _set_show_all_circuits(self, checked: bool) -> None:
+        """Switch the drawing pane between just the active circuit and every
+        tracked circuit's every track, per the "Show all circuits" checkbox."""
+        self._show_all_circuits = checked
+        self._render()
+
+    def _show_help(self) -> None:
+        """Open a minimal dialog listing the window's keyboard shortcuts."""
+        QMessageBox.information(self.window, "QisDebug — Help", HELP_TEXT)
 
     def show(self) -> None:
         """Show the underlying Qt window."""
@@ -398,16 +482,35 @@ class _TimelineWindow(
 
         layout = QVBoxLayout(container)
 
+        header_row = QHBoxLayout()
         self.header = QLabel()
         self.header.setTextFormat(Qt.TextFormat.PlainText)
         self.header.setWordWrap(True)
-        layout.addWidget(self.header)
+        header_row.addWidget(self.header, stretch=1)
+        self.show_all_circuits_checkbox = QCheckBox("Show all circuits")
+        self.show_all_circuits_checkbox.setToolTip(
+            "Only the circuit relevant to the current event is drawn by "
+            "default; check this to draw every tracked circuit's every "
+            "track at once, the way earlier versions always did."
+        )
+        self.show_all_circuits_checkbox.toggled.connect(  # pylint: disable=no-member
+            self._set_show_all_circuits
+        )
+        header_row.addWidget(self.show_all_circuits_checkbox)
+        layout.addLayout(header_row)
 
-        self.text = _TrackTextEdit()
-        self.text.setReadOnly(True)
-        self.text.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
-        self.text.setFont(_monospace_font())
-        layout.addWidget(self.text, stretch=1)
+        # Its own row, outside the circuit-drawing pane itself -- session
+        # metadata (what else is tracked but not drawn), not part of the
+        # diagram, so it shouldn't live inside the same text that zooms.
+        self.other_circuits_label = QLabel()
+        self.other_circuits_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.other_circuits_label.setWordWrap(True)
+        self.other_circuits_label.setVisible(False)
+        layout.addWidget(self.other_circuits_label)
+
+        detail_split, self.text, self.info_text = self._build_detail_split()
+        self._set_circuit_font_point_size(DEFAULT_CIRCUIT_FONT_POINT_SIZE)
+        layout.addWidget(detail_split, stretch=1)
 
         controls = QHBoxLayout()
         self.first_button = _button("⏮ First", lambda: self._goto(0))
@@ -439,6 +542,58 @@ class _TimelineWindow(
         layout.addWidget(self.slider)
 
         return layout
+
+    def _build_detail_split(self) -> tuple[QSplitter, _TrackTextEdit, QTextEdit]:
+        """Build the circuit-drawing and event-info panes, returning the
+        splitter plus each pane's text widget for the caller to keep.
+
+        Two panes, not one blob of text, so both stay visible together
+        instead of one pushing the other down a shared scroll region; a
+        ``QSplitter`` so the user can still resize the split by hand.
+        Stacked (circuit above info), not side by side: the circuit drawing
+        is usually wide, and a side-by-side info column would either cramp
+        it or itself be too narrow to read.
+        """
+        circuit_text = _TrackTextEdit()
+        circuit_text.setReadOnly(True)
+        circuit_text.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
+        circuit_text.setFont(_monospace_font())
+        circuit_text.on_ctrl_wheel = lambda direction: (
+            self._zoom_in() if direction > 0 else self._zoom_out()
+        )
+
+        info_text = QTextEdit()
+        info_text.setReadOnly(True)
+        info_text.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
+        info_text.setFont(_monospace_font())
+
+        detail_split = QSplitter(Qt.Orientation.Vertical)
+        detail_split.addWidget(self._labeled_pane("Circuit", circuit_text))
+        detail_split.addWidget(self._labeled_pane("Info", info_text))
+        detail_split.setStretchFactor(0, 2)
+        detail_split.setStretchFactor(1, 1)
+        return detail_split, circuit_text, info_text
+
+    @staticmethod
+    def _labeled_pane(title: str, widget: QWidget) -> QWidget:
+        """Wrap ``widget`` with a small caption above it, for a splitter pane
+        whose contents alone wouldn't say what it's showing. Styled bold
+        with a bottom rule (via Qt's theme-relative ``palette()`` stylesheet
+        function, so it stays correct in both light and dark palettes
+        without hardcoding a color) so it actually reads as a title rather
+        than blending into the pane's own content.
+        """
+        pane = QWidget()
+        pane_layout = QVBoxLayout(pane)
+        pane_layout.setContentsMargins(0, 0, 0, 0)
+        label = QLabel(title)
+        label.setTextFormat(Qt.TextFormat.PlainText)
+        label.setStyleSheet(
+            "font-weight: bold; padding: 2px 2px; border-bottom: 1px solid palette(mid);"
+        )
+        pane_layout.addWidget(label)
+        pane_layout.addWidget(widget, stretch=1)
+        return pane
 
     def _build_watch_widgets(self, layout: QVBoxLayout) -> None:
         """Lay out the watch kind/ref pickers and add/remove buttons on the
@@ -763,14 +918,24 @@ class _TimelineWindow(
         self._set_mark("b")
 
     def _set_mark(self, slot: str) -> None:
-        """Pin the current playback position's stage as ``slot`` of the diff panel."""
+        """Pin the current playback position's stage as ``slot`` of the diff
+        panel. Once both slots become set, jump straight to the Diff tab so
+        the per-stage element pickers (populated by
+        :meth:`_refresh_diff_panel`) are the next thing the user sees --
+        the guided "which element do you want" question a mark implies,
+        without an extra click to go find it.
+        """
         if self.controller is None:
             raise RuntimeError(
                 "internal error: controller accessed before it was built"
             )
+        was_both_marked = self.marks["a"] is not None and self.marks["b"] is not None
         _source, event = self.controller.current
         self.marks[slot] = _render.StageMark(seq=event.seq)
         self._refresh_diff_panel()
+        now_both_marked = self.marks["a"] is not None and self.marks["b"] is not None
+        if now_both_marked and not was_both_marked:
+            self._show_diff()
 
     def _clear_marks(self) -> None:
         self.marks = {"a": None, "b": None}
@@ -965,13 +1130,30 @@ class _TimelineWindow(
         )
         self.header.setText(header_text)
 
-        tracks_text, active_span = _render.render_tracks_text_with_active(
-            self.tracks[index], self.active_labels[index]
-        )
+        other_circuits: list[str] = []
+        if self._show_all_circuits:
+            tracks_text, active_span = _render.render_tracks_text_with_active(
+                self.tracks[index], self.active_labels[index]
+            )
+        else:
+            tracks_text, other_circuits = _render.split_active_track(
+                self.tracks[index], self.active_labels[index]
+            )
+            active_span = None
         self.text.clear()
-        self.text.setPlainText(
-            tracks_text + "\n\n" + _render.render_event(source, event)
-        )
+        self.text.setPlainText(tracks_text)
+
+        if other_circuits:
+            names_not_shown = ", ".join(other_circuits)
+            self.other_circuits_label.setText(
+                f"+{len(other_circuits)} more not shown: {names_not_shown}"
+            )
+            self.other_circuits_label.setVisible(True)
+        else:
+            self.other_circuits_label.setVisible(False)
+
+        self.info_text.clear()
+        self.info_text.setPlainText(_render.render_event(source, event))
 
         label, png_bytes = _render.render_extra_visual_bytes(event)
         if png_bytes:
@@ -983,7 +1165,7 @@ class _TimelineWindow(
                     Qt.AspectRatioMode.KeepAspectRatio,
                     Qt.TransformationMode.SmoothTransformation,
                 )
-            cursor = QTextCursor(self.text.document())
+            cursor = QTextCursor(self.info_text.document())
             cursor.movePosition(QTextCursor.MoveOperation.End)
             cursor.insertBlock()
             cursor.insertText(f"-- {label} --\n")
@@ -1112,9 +1294,8 @@ class _TimelineWindow(
         self.breakpoint_scope.clear()
         self.breakpoint_scope.addItem(self._BREAKPOINT_SCOPE_CURRENT, None)
         self.breakpoint_scope.addItem(self._BREAKPOINT_SCOPE_ALL, "*")
-        for circuit_id in _bp.circuit_choices(self.timelines_by_id):
-            timeline = self.timelines_by_id.get(circuit_id)
-            name = timeline.name if timeline is not None else None
+        for circuit_id in sorted(self.timelines_by_id):
+            name = self.timelines_by_id[circuit_id].name
             label = f"{name} ({circuit_id})" if name else circuit_id
             self.breakpoint_scope.addItem(label, circuit_id)
         new_index = 0
@@ -1181,13 +1362,17 @@ class _TimelineWindow(
         kind = self.breakpoint_kind.currentText()
         args = self._breakpoint_tokens(kind)
         try:
-            condition = _bp.parse_condition_args(kind, args, source.circuit_id)
+            condition = _bp.parse_condition_args(
+                kind, args, source.circuit_id, self.timelines_by_id
+            )
         except ValueError as exc:
             self.breakpoint_kind.setToolTip(str(exc))
             return
         self.breakpoint_kind.setToolTip("")
         handle = self.breakpoints.add(condition)
-        item = QListWidgetItem(f"[{handle}] {_bp.describe_condition(condition)}")
+        item = QListWidgetItem(
+            f"[{handle}] {_bp.describe_condition(condition, self.timelines_by_id)}"
+        )
         item.setData(Qt.ItemDataRole.UserRole, handle)
         self.breakpoint_list.addItem(item)
 
@@ -1210,7 +1395,8 @@ class _TimelineWindow(
         condition = self.breakpoints.get(handle)
         assert condition is not None
         self.hit_status_label.setText(
-            f"hit breakpoint [{handle}] {_bp.describe_condition(condition)}"
+            f"hit breakpoint [{handle}] "
+            f"{_bp.describe_condition(condition, self.timelines_by_id)}"
         )
         self._goto(index)
 

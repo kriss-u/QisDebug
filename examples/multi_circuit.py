@@ -13,6 +13,7 @@ timeline.
 
 from qiskit import QuantumCircuit, transpile
 from qiskit_aer import AerSimulator
+from _circuits import ghz_circuit
 
 import qisdebug
 
@@ -23,16 +24,6 @@ def bell() -> QuantumCircuit:
     qc.h(0)
     qc.cx(0, 1)
     qc.measure(range(2), range(2))
-    return qc
-
-
-def ghz() -> QuantumCircuit:
-    """Three-qubit GHZ state."""
-    qc = QuantumCircuit(3, 3, name="ghz")
-    qc.h(0)
-    qc.cx(0, 1)
-    qc.cx(1, 2)
-    qc.measure(range(3), range(3))
     return qc
 
 
@@ -52,7 +43,7 @@ def main() -> None:
     debug = qisdebug.QisDebug()
     debug.start()
 
-    circuits = [bell(), ghz(), qft()]
+    circuits = [bell(), ghz_circuit(), qft()]
     backend = AerSimulator()
     for qc in circuits:
         transpiled = transpile(qc, basis_gates=["cx", "u"], optimization_level=1)

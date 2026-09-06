@@ -63,18 +63,22 @@ def _wait_until(predicate, timeout=5.0):
 
 def _wait_for_status(run_id, status):
     """Poll ``poll_run`` until it reports ``status``; returns the last response."""
-    return _wait_until(
-        lambda: (lambda s: s if s["status"] == status else None)(tools.poll_run(run_id))
-    )
+
+    def _poll():
+        response = tools.poll_run(run_id)
+        return response if response["status"] == status else None
+
+    return _wait_until(_poll)
 
 
 def _wait_while_paused(run_id):
     """Poll ``poll_run`` until it stops reporting "paused"; returns the last response."""
-    return _wait_until(
-        lambda: (lambda s: s if s["status"] != "paused" else None)(
-            tools.poll_run(run_id)
-        )
-    )
+
+    def _poll():
+        response = tools.poll_run(run_id)
+        return response if response["status"] != "paused" else None
+
+    return _wait_until(_poll)
 
 
 def _write_bell_script(tmp_path):
@@ -397,7 +401,7 @@ def test_get_state_snapshot_returns_structured_state(tmp_path):
     assert len(final["amplitudes"]) == 4
     assert final["probabilities"][0] == pytest.approx(0.5, abs=1e-6)
     assert final["probabilities"][3] == pytest.approx(0.5, abs=1e-6)
-    assert "|00>" in final["formatted"]
+    assert "|00⟩" in final["formatted"]
 
     initial = tools.get_state_snapshot(circuit_id, step=0)
     assert initial["probabilities"][0] == pytest.approx(1.0, abs=1e-6)

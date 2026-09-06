@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import warnings
 import weakref
+from collections.abc import Sequence as AbcSequence
+from collections.abc import Set as AbcSet
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
@@ -34,12 +36,13 @@ if TYPE_CHECKING:
     from qiskit.circuit import QuantumCircuit
 
     TimelineLike = QuantumCircuit | str | Timeline
-    TimelineContainer = (
-        list[TimelineLike] | tuple[TimelineLike, ...] | set[TimelineLike]
-    )
-    # A container type rather than a generic Iterable so isinstance narrows
-    # cleanly in _resolve_timelines: list/tuple/set are the only container
-    # shapes it actually recognizes.
+    TimelineContainer = AbcSequence[TimelineLike] | AbcSet[TimelineLike]
+    # Sequence/AbstractSet (rather than list/tuple/set) so a caller's
+    # list[QuantumCircuit] type-checks: those builtin generics are invariant
+    # and would otherwise reject any element type more specific than the
+    # full TimelineLike union. _resolve_timelines narrows on these same ABCs
+    # at runtime (excluding str, itself a Sequence) to tell "one target" from
+    # "a container of targets".
     TimelineTargets = TimelineLike | TimelineContainer | None
 
 
@@ -184,7 +187,7 @@ class QisDebug:
         """
         if target is None:
             return self.timelines()
-        if isinstance(target, (list, tuple, set)):
+        if isinstance(target, (AbcSequence, AbcSet)) and not isinstance(target, str):
             return [self.get(item) for item in target]
         return [self.get(target)]
 

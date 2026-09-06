@@ -90,6 +90,56 @@ def receiver_marginal(counts: dict[str, int]) -> dict[str, float]:
     return {bit: total / shots for bit, total in totals.items()}
 
 
+def _report_receiver_marginals(
+    payload: QuantumCircuit, transpiled: QuantumCircuit, device: FakeManilaV2
+) -> None:
+    """Print the receiver qubit's marginal distribution: analytic, ideal-simulated,
+    and noisy-simulated, so the effect of the noise model is visible directly."""
+    shots = 4000
+    noisy_backend = AerSimulator.from_backend(device)
+    ideal_backend = AerSimulator()
+
+    # Run the payload circuit on its own too: it is a pure unitary with no
+    # measurement, so QisDebug can capture its full statevector evolution,
+    # which is what _print_payload_evolution below reads.
+    ideal_backend.run(payload, shots=1).result()
+
+    noisy_counts = noisy_backend.run(transpiled, shots=shots).result().get_counts()
+    ideal_counts = ideal_backend.run(transpiled, shots=shots).result().get_counts()
+
+    expected = ideal_receiver_marginal(payload)
+    print(f"expected receiver marginal (analytic): {expected}")
+    print(f"ideal simulator receiver marginal:      {receiver_marginal(ideal_counts)}")
+    print(f"{device.name} noisy receiver marginal:   {receiver_marginal(noisy_counts)}")
+
+
+def _print_timelines(
+    debug: qisdebug.QisDebug, circuits: tuple[QuantumCircuit, ...]
+) -> dict[str, qisdebug.Timeline]:
+    """Print each circuit's timeline summary and events, returning them by name."""
+    print("\nper-circuit timelines:")
+    timelines: dict[str, qisdebug.Timeline] = {}
+    for qc in circuits:
+        timeline = debug.get(qc)
+        timelines[qc.name] = timeline
+        print(f"\n{timeline.summary()}")
+        for event in timeline.events:
+            print(f"  [{event.seq:>3}] {event.type.value:<22} {event.describe()}")
+    return timelines
+
+
+def _print_payload_evolution(payload_timeline: qisdebug.Timeline) -> None:
+    """Print the payload qubit's probabilities at each captured statevector snapshot."""
+    print("\npayload state evolution (pure unitary, so statevector capture applies):")
+    for snapshot in payload_timeline.snapshots:
+        probs = {
+            format(i, f"0{snapshot.num_qubits}b"): round(p, 3)
+            for i, p in enumerate(snapshot.probabilities())
+            if p > 1e-9
+        }
+        print(f"  step {snapshot.step} ({snapshot.gate or 'initial':<7}) {probs}")
+
+
 def main() -> None:
     """Build, transpile and run a teleportation circuit assembled from two subcircuits."""
     debug = qisdebug.QisDebug()
@@ -103,41 +153,11 @@ def main() -> None:
     pass_manager = generate_preset_pass_manager(optimization_level=1, backend=device)
     transpiled = pass_manager.run(teleport)
 
-    noisy_backend = AerSimulator.from_backend(device)
-    ideal_backend = AerSimulator()
-    shots = 4000
+    _report_receiver_marginals(payload, transpiled, device)
 
-    # Run the payload circuit on its own too: it is a pure unitary with no
-    # measurement, so QisDebug can capture its full statevector evolution,
-    # which is what the "payload state evolution" section below reads.
-    ideal_backend.run(payload, shots=1).result()
-
-    noisy_counts = noisy_backend.run(transpiled, shots=shots).result().get_counts()
-    ideal_counts = ideal_backend.run(transpiled, shots=shots).result().get_counts()
-
-    expected = ideal_receiver_marginal(payload)
-    print(f"expected receiver marginal (analytic): {expected}")
-    print(f"ideal simulator receiver marginal:      {receiver_marginal(ideal_counts)}")
-    print(f"{device.name} noisy receiver marginal:   {receiver_marginal(noisy_counts)}")
-
-    print("\nper-circuit timelines:")
-    timelines: dict[str, qisdebug.Timeline] = {}
-    for qc in (payload, epr, teleport):
-        timeline = debug.get(qc)
-        timelines[qc.name] = timeline
-        print(f"\n{timeline.summary()}")
-        for event in timeline.events:
-            print(f"  [{event.seq:>3}] {event.type.value:<22} {event.describe()}")
-
+    timelines = _print_timelines(debug, (payload, epr, teleport))
     payload_timeline = timelines["payload"]
-    print("\npayload state evolution (pure unitary, so statevector capture applies):")
-    for snapshot in payload_timeline.snapshots:
-        probs = {
-            format(i, f"0{snapshot.num_qubits}b"): round(p, 3)
-            for i, p in enumerate(snapshot.probabilities())
-            if p > 1e-9
-        }
-        print(f"  step {snapshot.step} ({snapshot.gate or 'initial':<7}) {probs}")
+    _print_payload_evolution(payload_timeline)
 
     teleport_timeline = timelines["teleport"]
     print(

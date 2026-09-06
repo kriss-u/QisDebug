@@ -94,9 +94,10 @@ def test_gui_frontend_builds_window_without_mainloop(debug, monkeypatch):
 def test_cli_frontend_mark_and_diff_appear_after_both_slots_set(
     debug, monkeypatch, capsys
 ):
-    """mark a / mark b pin the current event; the diff panel appears once both are set."""
+    """mark a / mark b pin the current event; a collapsed "diff ready" line
+    appears once both are set, and "diff full" expands it on demand."""
     timeline = _traced_bell(debug)
-    responses = iter(["mark a", "n", "n", "mark b", "q"])
+    responses = iter(["mark a", "n", "n", "mark b", "diff full", "q"])
     monkeypatch.setattr(builtins, "input", lambda prompt="": next(responses))
 
     CLIFrontend().show([timeline])
@@ -104,12 +105,12 @@ def test_cli_frontend_mark_and_diff_appear_after_both_slots_set(
     out = capsys.readouterr().out
     assert "marked a:" in out
     assert "marked b:" in out
-    assert "-- Diff A vs B --" in out
+    assert "diff ready --" in out
     assert "gates:" in out
 
 
 def test_cli_frontend_unmark_clears_diff_panel(debug, monkeypatch, capsys):
-    """unmark all drops both marks, so the diff panel stops appearing."""
+    """unmark all drops both marks, so the diff indicator stops appearing."""
     timeline = _traced_bell(debug)
     responses = iter(["mark a", "n", "mark b", "unmark all", "q"])
     monkeypatch.setattr(builtins, "input", lambda prompt="": next(responses))
@@ -118,8 +119,8 @@ def test_cli_frontend_unmark_clears_diff_panel(debug, monkeypatch, capsys):
 
     out = capsys.readouterr().out
     assert "cleared all marks" in out
-    # After clearing, the final frame print (from "unmark all") has no diff panel.
-    assert out.rsplit("cleared all marks", 1)[1].count("-- Diff A vs B --") == 0
+    # After clearing, the final frame print (from "unmark all") has no diff indicator.
+    assert out.rsplit("cleared all marks", 1)[1].count("diff ready --") == 0
 
 
 @pytest.mark.skipif(
@@ -160,5 +161,65 @@ def test_gui_frontend_mark_and_diff_panel(debug, monkeypatch):
     window._clear_marks()
     assert window.marks == {"a": None, "b": None}
     assert window.tabs.indexOf(window._diff_panel) < 0
+    del app
+
+
+@pytest.mark.skipif(
+    not QtFrontend().is_available(), reason="no display available for Qt"
+)
+def test_gui_frontend_question_mark_opens_help(debug, monkeypatch):
+    """Regression test: the "?" shortcut previously didn't exist at all."""
+    # pylint: disable=protected-access
+    from PySide6.QtWidgets import QMessageBox
+
+    timeline = _traced_bell(debug)
+    app, window = build_gui_window(monkeypatch, timeline)
+
+    calls = []
+    monkeypatch.setattr(
+        QMessageBox, "information", lambda *args, **kwargs: calls.append(args)
+    )
+    # See the matching disable in gui.py: astroid can't introspect a Qt
+    # Signal's C-extension members, so `.emit` looks unknown to pylint.
+    window._help_shortcut.activated.emit()  # pylint: disable=no-member
+    assert len(calls) == 1
+    del app
+
+
+@pytest.mark.skipif(
+    not QtFrontend().is_available(), reason="no display available for Qt"
+)
+def test_gui_frontend_collapses_to_active_circuit_by_default(debug, monkeypatch):
+    """Only the circuit relevant to the current event is drawn until "Show
+    all circuits" is checked."""
+    # pylint: disable=protected-access
+    timeline = _traced_bell(debug)
+    app, window = build_gui_window(monkeypatch, timeline)
+
+    assert window.show_all_circuits_checkbox.isChecked() is False
+    assert "(no circuit recorded yet)" not in window.text.toPlainText()
+
+    window.show_all_circuits_checkbox.setChecked(True)
+    assert window._show_all_circuits is True
+
+    window.show_all_circuits_checkbox.setChecked(False)
+    assert window._show_all_circuits is False
+    del app
+
+
+@pytest.mark.skipif(
+    not QtFrontend().is_available(), reason="no display available for Qt"
+)
+def test_gui_frontend_zoom_changes_circuit_font_size(debug, monkeypatch):
+    """Zooming the circuit view in and out adjusts its font size by one point."""
+    # pylint: disable=protected-access
+    timeline = _traced_bell(debug)
+    app, window = build_gui_window(monkeypatch, timeline)
+
+    default_size = window.text.font().pointSize()
+    window._zoom_in()
+    assert window.text.font().pointSize() == default_size + 1
+    window._zoom_reset()
+    assert window.text.font().pointSize() == default_size
     assert window.show_diff_button.isHidden()
     del app

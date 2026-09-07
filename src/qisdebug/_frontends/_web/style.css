@@ -179,8 +179,21 @@ main {
   flex-direction: column;
   gap: 8px;
   margin-bottom: 8px;
-  height: 30vh;
-  min-height: 160px;
+}
+
+/* Unlike the timeline tab's circuit/info split (fixed height, its own
+   internal scrollbar, so the sticky transport controls never move), the
+   diff tab has no controls sitting below it that could be pushed around --
+   so let each pane grow to its full content height and leave scrolling to
+   `main`'s single page-level scrollbar instead of nesting a scrollbar per
+   pane. */
+.stack .pane {
+  height: auto;
+}
+
+.stack .scroll {
+  flex: 0 0 auto;
+  overflow: visible;
 }
 
 .pane {
@@ -214,9 +227,23 @@ main {
   min-height: 0;
   white-space: pre;
   font-size: var(--circuit-size);
+  /* The body's 1.4 line-height leaves each line "leading" space above and
+     below its glyphs that an inline highlight span's background never
+     covers -- visible as a thin gap between every consecutive highlighted
+     row, no matter how the spans are split. A tight line-height removes
+     that unfilled leading so highlighted rows sit flush against each
+     other. */
+  line-height: 1;
 }
 
-#circuit-text { font-size: var(--circuit-size); }
+#circuit-text {
+  font-size: var(--circuit-size);
+  /* Makes this the offset parent for .active-span, so its .offsetTop is
+     relative to the scroll container itself -- without this, nothing in
+     the ancestor chain is positioned, so offsetTop resolves relative to
+     the document instead and the centering scroll math is meaningless. */
+  position: relative;
+}
 
 .active-span {
   display: block;
@@ -431,8 +458,12 @@ select, input[type="number"], input[type="text"] {
 .amp { color: var(--text); }
 .prob { color: var(--text-dim); }
 
-.diff-added { background: var(--diff-added-bg); color: var(--diff-added-text); border-radius: 2px; }
-.diff-removed { background: var(--diff-removed-bg); color: var(--diff-removed-text); border-radius: 2px; }
+/* No border-radius here: a span highlighting a multi-line range renders as
+   one line-fragment box per wrapped line, and rounding those corners leaves
+   a small uncolored notch between consecutive lines -- flush corners keep
+   the highlight visually continuous top-to-bottom with no break. */
+.diff-added { background: var(--diff-added-bg); color: var(--diff-added-text); }
+.diff-removed { background: var(--diff-removed-bg); color: var(--diff-removed-text); }
 .diff-line-added { color: var(--diff-added-text); }
 .diff-line-removed { color: var(--diff-removed-text); }
 

@@ -17,9 +17,10 @@
   // -- Rendering helpers -------------------------------------------------
 
   function renderCircuitText(text, activeSpan) {
+    const container = $("circuit-text");
     const lines = text.split("\n");
     if (!activeSpan) {
-      $("circuit-text").innerHTML = escapeHtml(text);
+      container.innerHTML = escapeHtml(text);
       return;
     }
     const [start, end] = activeSpan;
@@ -30,7 +31,16 @@
     if (before) parts.push(escapeHtml(before) + "\n");
     parts.push(`<span class="active-span">${escapeHtml(active)}</span>`);
     if (after) parts.push("\n" + escapeHtml(after));
-    $("circuit-text").innerHTML = parts.join("");
+    container.innerHTML = parts.join("");
+
+    // In "show all circuits" mode the active track can be anywhere in a
+    // long concatenation of every tracked circuit's every track -- center
+    // it in the pane instead of leaving the user to hunt for it by hand.
+    const activeEl = container.querySelector(".active-span");
+    if (activeEl) {
+      const target = activeEl.offsetTop - (container.clientHeight - activeEl.offsetHeight) / 2;
+      container.scrollTop = Math.max(0, target);
+    }
   }
 
   const KET_LINE_RE = /^(\|[01]+⟩)(\s+)([+-][\d.]+[+-][\d.]+j)(\s+p=)([\d.]+)$/;
@@ -54,16 +64,41 @@
   function highlightSpans(text, spans, cls) {
     if (!spans || !spans.length) return escapeHtml(text);
     const sorted = [...spans].sort((a, b) => a[0] - b[0]);
-    let out = "";
-    let cursor = 0;
-    for (const [start, end] of sorted) {
-      if (end <= start || start < cursor) continue;
-      out += escapeHtml(text.slice(cursor, start));
-      out += `<span class="${cls}">${escapeHtml(text.slice(start, end))}</span>`;
-      cursor = end;
+
+    // A <span> whose content contains a literal "\n" gets fragmented by the
+    // browser into one background-painted box per line (white-space: pre
+    // treats "\n" as a forced break, same as <br>), and those fragments
+    // render with a small visible gap between them -- multiple thin bars
+    // instead of one solid block. The fix is to never let a single span
+    // cross a line boundary: split into per-line spans instead, each
+    // confined to one line, so nothing is ever fragmented in the first
+    // place and the highlight reads as one continuous, gap-free region.
+    const lines = text.split("\n");
+    const lineStarts = [];
+    let offset = 0;
+    for (const line of lines) {
+      lineStarts.push(offset);
+      offset += line.length + 1;
     }
-    out += escapeHtml(text.slice(cursor));
-    return out;
+
+    return lines
+      .map((line, i) => {
+        const lineStart = lineStarts[i];
+        const lineEnd = lineStart + line.length;
+        let out = "";
+        let cursor = 0;
+        for (const [start, end] of sorted) {
+          const s = Math.max(start, lineStart) - lineStart;
+          const e = Math.min(end, lineEnd) - lineStart;
+          if (e <= s || s < cursor) continue;
+          out += escapeHtml(line.slice(cursor, s));
+          out += `<span class="${cls}">${escapeHtml(line.slice(s, e))}</span>`;
+          cursor = e;
+        }
+        out += escapeHtml(line.slice(cursor));
+        return out;
+      })
+      .join("\n");
   }
 
   function highlightDiffLines(text) {

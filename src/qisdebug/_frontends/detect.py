@@ -31,14 +31,13 @@ def _load_frontend(name: str) -> TimelineFrontend:
     """Import and instantiate the frontend for ``name``.
 
     Each branch imports its module lazily so, for example, forcing ``"cli"``
-    never touches ``gui.py`` -- which imports PySide6 unconditionally at
-    module scope -- on a machine that doesn't have the ``gui`` extra
-    installed.
+    never touches ``gui.py`` on a machine that doesn't have the ``gui``
+    extra installed.
     """
     if name == "gui":
-        from .gui import QtFrontend
+        from .gui import WebviewFrontend
 
-        return QtFrontend()
+        return WebviewFrontend()
     from .cli import CLIFrontend
 
     return CLIFrontend()

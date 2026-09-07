@@ -320,6 +320,25 @@ def format_statevector(event: StateSnapshotEvent, max_terms: int = 16) -> str:
     return "\n".join(lines)
 
 
+def _ensure_agg_backend() -> None:
+    """Force matplotlib's non-interactive ``Agg`` raster backend.
+
+    Every caller in this module only ever rasterizes a figure to PNG bytes
+    and closes it -- it is never shown interactively -- so an interactive
+    backend (``macosx``, ``tkagg``, ...) is always the wrong choice here,
+    not just a threading workaround. It matters in practice because the web
+    GUI's bridge methods run on the thread pywebview delivers ``js_api``
+    calls on, not the main thread, and an interactive backend refuses to
+    build a GUI figure off the main thread (silently, since the qiskit
+    ``plot_*`` call site here is wrapped in a broad ``except Exception``
+    that degrades to ``None`` rather than propagating the warning/error).
+    """
+    import matplotlib
+
+    if matplotlib.get_backend().lower() != "agg":
+        matplotlib.use("Agg")
+
+
 def _figure_to_png_bytes(fig: Any) -> bytes:
     """Render a matplotlib figure to raw PNG bytes, then close it."""
     import matplotlib.pyplot as plt
@@ -345,6 +364,7 @@ def render_histogram(event: ExecutionFinishedEvent) -> str | None:
     if not event.counts:
         return None
     try:
+        _ensure_agg_backend()
         from qiskit.visualization import plot_histogram
 
         return _figure_to_data_uri(plot_histogram(event.counts))
@@ -357,6 +377,7 @@ def render_histogram_bytes(event: ExecutionFinishedEvent) -> bytes | None:
     if not event.counts:
         return None
     try:
+        _ensure_agg_backend()
         from qiskit.visualization import plot_histogram
 
         return _figure_to_png_bytes(plot_histogram(event.counts))
@@ -373,6 +394,7 @@ def render_bloch(event: StateSnapshotEvent) -> str | None:
     if event.statevector is None:
         return None
     try:
+        _ensure_agg_backend()
         from qiskit.visualization import plot_bloch_multivector
 
         return _figure_to_data_uri(
@@ -387,6 +409,7 @@ def render_bloch_bytes(event: StateSnapshotEvent) -> bytes | None:
     if event.statevector is None:
         return None
     try:
+        _ensure_agg_backend()
         from qiskit.visualization import plot_bloch_multivector
 
         return _figure_to_png_bytes(

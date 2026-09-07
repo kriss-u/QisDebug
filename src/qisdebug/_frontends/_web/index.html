@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>QisDebug</title>
+<style>/*__STYLE__*/</style>
+</head>
+<body>
+  <div class="app-header">
+    <nav class="tabs">
+      <button class="tab-button active" data-tab="timeline">Timeline</button>
+      <button class="tab-button" data-tab="diff" id="diff-tab-button" hidden>Diff</button>
+    </nav>
+
+    <header class="topbar">
+      <div class="topbar-info">
+        <div id="header" class="mono"></div>
+        <div id="other-circuits" class="hint"></div>
+      </div>
+      <label class="toggle">
+        <input type="checkbox" id="show-all-circuits" />
+        Show all circuits
+      </label>
+    </header>
+
+    <div class="transport" id="timeline-transport">
+      <button id="btn-first" title="First">⏮</button>
+      <button id="btn-prev" title="←">◀</button>
+      <button id="btn-play" title="Space">⏵ Play</button>
+      <button id="btn-next" title="→">▶</button>
+      <button id="btn-last" title="Last">⏭</button>
+      <input type="range" id="slider" class="slider" min="1" value="1" />
+      <label class="interval-label">ms/step
+        <input type="number" id="interval-ms" min="50" max="10000" step="50" value="800" />
+      </label>
+      <button id="btn-help" class="ghost" title="?">?</button>
+    </div>
+  </div>
+
+  <main>
+    <section id="tab-timeline" class="tab-panel active">
+      <div class="split">
+        <div class="pane">
+          <div class="pane-title">Circuit</div>
+          <pre id="circuit-text" class="mono scroll" tabindex="0"></pre>
+        </div>
+        <div class="pane pane-secondary">
+          <div class="pane-title">Info</div>
+          <div id="info-text" class="mono scroll"></div>
+        </div>
+      </div>
+
+      <div class="dock">
+        <div class="dock-row">
+          <span class="dock-label">Watch</span>
+          <select id="watch-kind"></select>
+          <select id="watch-ref"></select>
+          <button id="btn-add-watch">+ Add</button>
+        </div>
+        <div id="watch-cards" class="cards"></div>
+
+        <div class="dock-row">
+          <span class="dock-label">Mark</span>
+          <button id="btn-mark-a" title="Pin the current event as point A">Mark A</button>
+          <button id="btn-mark-b" title="Pin the current event as point B">Mark B</button>
+          <button id="btn-clear-marks" class="ghost">Clear</button>
+          <span id="mark-status" class="hint"></span>
+          <button id="btn-show-diff" hidden>Diff →</button>
+        </div>
+
+        <div class="dock-row">
+          <span class="dock-label">Break</span>
+          <select id="bp-kind"></select>
+          <span id="bp-fields" class="bp-fields"></span>
+          <span class="hint">on</span>
+          <select id="bp-scope"></select>
+          <button id="btn-add-breakpoint">+ Add</button>
+        </div>
+        <div id="bp-error" class="error" hidden></div>
+        <div id="breakpoint-rows" class="rows"></div>
+        <div class="dock-row">
+          <span class="dock-label">Hits</span>
+          <button id="btn-hit-first" title="First hit">⏮</button>
+          <button id="btn-hit-prev" title="Prev hit">◀</button>
+          <button id="btn-hit-next" title="Next hit">▶</button>
+          <button id="btn-hit-last" title="Last hit">⏭</button>
+          <span id="hit-status" class="hint"></span>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-diff" class="tab-panel">
+      <div class="row">
+        <label>Element A <select id="diff-element-a"></select></label>
+        <label>Element B <select id="diff-element-b"></select></label>
+      </div>
+      <div id="diff-message" class="hint" hidden></div>
+      <div class="stack">
+        <div class="pane">
+          <div class="pane-title" id="diff-label-a"></div>
+          <pre id="diff-text-a" class="mono scroll"></pre>
+        </div>
+        <div class="pane">
+          <div class="pane-title" id="diff-label-b"></div>
+          <pre id="diff-text-b" class="mono scroll"></pre>
+        </div>
+      </div>
+      <div class="stack">
+        <div class="pane pane-secondary">
+          <div class="pane-title">Watch diff</div>
+          <pre id="watch-diff-text" class="mono scroll"></pre>
+        </div>
+        <div class="pane">
+          <div class="pane-title">Stage diff</div>
+          <pre id="stage-diff-text" class="mono scroll"></pre>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="help-dialog">
+    <h2>QisDebug — Help</h2>
+    <table id="help-table"></table>
+    <button id="btn-close-help" autofocus>Close</button>
+  </dialog>
+
+  <dialog id="image-lightbox">
+    <div class="lightbox-toolbar">
+      <span id="lightbox-title" class="hint"></span>
+      <span class="lightbox-spacer"></span>
+      <button id="lightbox-zoom-out" title="Zoom out">−</button>
+      <button id="lightbox-zoom-reset" title="Reset zoom">Reset</button>
+      <button id="lightbox-zoom-in" title="Zoom in">+</button>
+      <button id="btn-close-lightbox" class="ghost" title="Close">✕</button>
+    </div>
+    <div class="lightbox-viewport" id="lightbox-viewport">
+      <img id="lightbox-img" alt="" draggable="false" />
+    </div>
+    <div class="hint lightbox-hint">Scroll or +/− to zoom · drag to pan</div>
+  </dialog>
+
+  <script>//__SCRIPT__//</script>
+</body>
+</html>

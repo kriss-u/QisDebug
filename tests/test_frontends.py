@@ -3,11 +3,11 @@
 import builtins
 
 import pytest
-from _helpers import build_gui_window, traced_bell as _traced_bell
+from _helpers import build_bridge, traced_bell as _traced_bell
 
 from qisdebug._frontends import detect_environment, get_frontend
 from qisdebug._frontends.cli import CLIFrontend
-from qisdebug._frontends.gui import QtFrontend
+from qisdebug._frontends.gui import WebviewFrontend
 
 
 def test_detect_environment_prefers_gui(monkeypatch):
@@ -80,15 +80,19 @@ def test_cli_frontend_handles_eof(debug, monkeypatch):
 
 
 @pytest.mark.skipif(
-    not QtFrontend().is_available(), reason="no display available for Qt"
+    not WebviewFrontend().is_available(), reason="no display available for pywebview"
 )
 def test_gui_frontend_builds_window_without_mainloop(debug, monkeypatch):
     """Smoke-test window construction without entering the blocking event loop."""
-    from PySide6.QtWidgets import QApplication
+    import webview
+
+    calls = []
+    monkeypatch.setattr(webview, "create_window", lambda *a, **k: calls.append((a, k)))
+    monkeypatch.setattr(webview, "start", lambda: None)
 
     timeline = _traced_bell(debug)
-    monkeypatch.setattr(QApplication, "exec", lambda self: None)
-    QtFrontend().show([timeline])
+    WebviewFrontend().show([timeline])
+    assert len(calls) == 1
 
 
 def test_cli_frontend_mark_and_diff_appear_after_both_slots_set(
@@ -123,103 +127,62 @@ def test_cli_frontend_unmark_clears_diff_panel(debug, monkeypatch, capsys):
     assert out.rsplit("cleared all marks", 1)[1].count("diff ready --") == 0
 
 
-@pytest.mark.skipif(
-    not QtFrontend().is_available(), reason="no display available for Qt"
-)
-def test_gui_frontend_mark_and_diff_panel(debug, monkeypatch):
-    """Mark A / Mark B populate the status label and diff text; clearing resets both.
-
-    protected-access: this test exercises the GUI module's own mark/diff
-    internals, which have no public API surface.
-    """
-    # pylint: disable=protected-access
+def test_gui_bridge_mark_and_diff_panel(debug):
+    """Mark A / Mark B populate the mark labels and diff text; clearing resets both."""
     timeline = _traced_bell(debug)
-    app, window = build_gui_window(monkeypatch, timeline)
+    bridge = build_bridge(timeline)
 
-    assert "(unmarked)" in window.mark_status.text()
-    assert window.tabs.indexOf(window._diff_panel) < 0
-    assert window.show_diff_button.isHidden()
+    state = bridge.state()
+    assert state["marks"]["label_a"] == "(unmarked)"
+    assert state["marks"]["both_marked"] is False
 
-    window._mark_a()
-    assert window.tabs.indexOf(window._diff_panel) < 0
-    assert window.show_diff_button.isHidden()
+    state = bridge.mark("a")
+    assert state["marks"]["both_marked"] is False
 
-    window._goto(1)
-    window._mark_b()
+    bridge.goto(1)
+    state = bridge.mark("b")
 
-    assert "(unmarked)" not in window.mark_status.text()
-    assert window.tabs.indexOf(window._diff_panel) >= 0
-    assert "gates:" in window.diff_text.toPlainText()
-    assert not window.show_diff_button.isHidden()
+    assert state["marks"]["label_a"] != "(unmarked)"
+    assert state["marks"]["both_marked"] is True
+    assert "gates:" in state["marks"]["diff"]["stage_diff"]
 
-    timeline_tab = window.tabs.widget(0)
-    assert timeline_tab is not None
-    window.tabs.setCurrentWidget(timeline_tab)
-    window._show_diff()
-    assert window.tabs.currentWidget() is window._diff_panel
-
-    window._clear_marks()
-    assert window.marks == {"a": None, "b": None}
-    assert window.tabs.indexOf(window._diff_panel) < 0
-    del app
+    state = bridge.clear_marks()
+    assert state["marks"]["both_marked"] is False
+    assert bridge.marks == {"a": None, "b": None}
 
 
-@pytest.mark.skipif(
-    not QtFrontend().is_available(), reason="no display available for Qt"
-)
-def test_gui_frontend_question_mark_opens_help(debug, monkeypatch):
+def test_gui_bridge_help_entries_include_question_mark():
     """Regression test: the "?" shortcut previously didn't exist at all."""
-    # pylint: disable=protected-access
-    from PySide6.QtWidgets import QMessageBox
+    from qisdebug._frontends.bridge import HELP_ENTRIES
 
-    timeline = _traced_bell(debug)
-    app, window = build_gui_window(monkeypatch, timeline)
-
-    calls = []
-    monkeypatch.setattr(
-        QMessageBox, "information", lambda *args, **kwargs: calls.append(args)
-    )
-    # See the matching disable in gui.py: astroid can't introspect a Qt
-    # Signal's C-extension members, so `.emit` looks unknown to pylint.
-    window._help_shortcut.activated.emit()  # pylint: disable=no-member
-    assert len(calls) == 1
-    del app
+    assert any(key == "?" for key, _ in HELP_ENTRIES)
 
 
-@pytest.mark.skipif(
-    not QtFrontend().is_available(), reason="no display available for Qt"
-)
-def test_gui_frontend_collapses_to_active_circuit_by_default(debug, monkeypatch):
+def test_gui_bridge_collapses_to_active_circuit_by_default(debug):
     """Only the circuit relevant to the current event is drawn until "Show
-    all circuits" is checked."""
-    # pylint: disable=protected-access
+    all circuits" is toggled on."""
     timeline = _traced_bell(debug)
-    app, window = build_gui_window(monkeypatch, timeline)
+    bridge = build_bridge(timeline)
 
-    assert window.show_all_circuits_checkbox.isChecked() is False
-    assert "(no circuit recorded yet)" not in window.text.toPlainText()
+    state = bridge.state()
+    assert state["show_all_circuits"] is False
+    assert "(no circuit recorded yet)" not in state["circuit_text"]
 
-    window.show_all_circuits_checkbox.setChecked(True)
-    assert window._show_all_circuits is True
+    state = bridge.set_show_all_circuits(True)
+    assert state["show_all_circuits"] is True
 
-    window.show_all_circuits_checkbox.setChecked(False)
-    assert window._show_all_circuits is False
-    del app
+    state = bridge.set_show_all_circuits(False)
+    assert state["show_all_circuits"] is False
 
 
-@pytest.mark.skipif(
-    not QtFrontend().is_available(), reason="no display available for Qt"
-)
-def test_gui_frontend_zoom_changes_circuit_font_size(debug, monkeypatch):
-    """Zooming the circuit view in and out adjusts its font size by one point."""
-    # pylint: disable=protected-access
+def test_gui_bridge_zoom_changes_circuit_font_size(debug):
+    """Zooming the circuit view in and out adjusts its font size by one step."""
     timeline = _traced_bell(debug)
-    app, window = build_gui_window(monkeypatch, timeline)
+    bridge = build_bridge(timeline)
 
-    default_size = window.text.font().pointSize()
-    window._zoom_in()
-    assert window.text.font().pointSize() == default_size + 1
-    window._zoom_reset()
-    assert window.text.font().pointSize() == default_size
-    assert window.show_diff_button.isHidden()
-    del app
+    default_size = bridge.state()["circuit_zoom"]
+    state = bridge.zoom_in()
+    assert state["circuit_zoom"] == default_size + 1
+    state = bridge.zoom_reset()
+    assert state["circuit_zoom"] == default_size
+    assert state["marks"]["both_marked"] is False

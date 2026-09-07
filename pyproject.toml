@@ -29,7 +29,7 @@ dependencies = [
 [project.optional-dependencies]
 aer = ["qiskit-aer>=0.14"]
 viz = ["matplotlib>=3.5"]
-gui = ["PySide6>=6.5"]
+gui = ["pywebview>=5.0"]
 mcp = ["mcp>=1.0"]
 dev = [
     "pytest>=7",
@@ -38,7 +38,7 @@ dev = [
     "qiskit-aer>=0.14",
     "pylint>=3",
     "pylint-pydantic>=0.3",
-    "PySide6>=6.5",
+    "pywebview>=5.0",
     "mcp>=1.0",
 ]
 docs = ["sphinx>=7", "furo>=2024.1", "myst-parser>=2", "sphinx-autodoc-typehints>=1.25"]
@@ -53,16 +53,15 @@ qisdebug-mcp = "qisdebug._mcp.server:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+"qisdebug._frontends._web" = ["*.html", "*.css", "*.js"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 
 [tool.pylint.MASTER]
 load-plugins = ["pylint_pydantic"]
-# PySide6's QtWidgets/QtCore/QtGui are shiboken6-generated C extensions with
-# no introspectable Python source, so pylint can't see their members and
-# reports every Qt class as a false-positive no-name-in-module otherwise.
-extension-pkg-allow-list = ["PySide6.QtWidgets", "PySide6.QtCore", "PySide6.QtGui"]
 
 [tool.pylint."MESSAGES CONTROL"]
 disable = [

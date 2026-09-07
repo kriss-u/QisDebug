@@ -8,7 +8,7 @@ QisDebug is not yet published to PyPI. For now, install from source.
 - [Qiskit](https://www.ibm.com/quantum/qiskit) >= 1.0
 - `qiskit-aer` >= 0.14, if you want statevector capture during execution
 - `matplotlib`, if you want histogram/Bloch-sphere image rendering
-- `PySide6`, if you want the native GUI timeline viewer
+- `pywebview`, if you want the native GUI timeline viewer
 - `mcp`, if you want the `qisdebug-mcp` server for AI-agent debugging
 
 ## From source

@@ -2,8 +2,7 @@
 
 import builtins
 
-import pytest
-from _helpers import bell_circuit, build_gui_window
+from _helpers import bell_circuit, build_bridge
 from qiskit import transpile
 from qiskit.circuit.quantumcircuit import QuantumCircuit
 from qiskit.circuit import ClassicalRegister, QuantumRegister
@@ -11,7 +10,6 @@ from qiskit_aer import AerSimulator
 
 from qisdebug._frontends import _render
 from qisdebug._frontends.cli import CLIFrontend
-from qisdebug._frontends.gui import QtFrontend
 
 
 def _traced_bell_with_registers(debug):
@@ -247,22 +245,16 @@ def test_cli_complete_unwatch_suggests_only_active_watches(debug):
     assert session.unwatch_completions(["all"]) == []
 
 
-@pytest.mark.skipif(
-    not QtFrontend().is_available(), reason="no display available for Qt"
-)
-def test_gui_frontend_add_and_remove_watch(debug, monkeypatch):
-    """Adding a watch through the combo boxes updates the watch text; removing clears it."""
+def test_gui_bridge_add_and_remove_watch(debug):
+    """Adding a watch produces a card for it; removing it clears the list back out."""
     timeline = _traced_bell_with_registers(debug)
-    app, window = build_gui_window(monkeypatch, timeline)
+    bridge = build_bridge(timeline)
 
-    window.watch_kind.setCurrentText("qubit")
-    window.watch_ref.setCurrentText("0")
-    window._add_watch()  # pylint: disable=protected-access
-    assert len(window.watches) == 1
-    assert "viz — qubit 0" in window.watch_text.toPlainText()
+    state = bridge.add_watch("qubit", "0")
+    assert len(bridge.watches) == 1
+    assert state["watches"]["list"][0]["label"] == "viz — qubit 0"
+    assert state["watches"]["list"][0]["kind"] == "qubit"
 
-    window.watch_list.setCurrentRow(0)
-    window._remove_selected_watch()  # pylint: disable=protected-access
-    assert not window.watches
-    assert window.watch_text.toPlainText() == ""
-    del app
+    state = bridge.remove_watch(0)
+    assert not bridge.watches
+    assert state["watches"]["list"] == []

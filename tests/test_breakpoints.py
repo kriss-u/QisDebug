@@ -6,7 +6,7 @@ import builtins
 import threading
 
 import pytest
-from _helpers import bell_circuit, build_gui_window, traced_bell
+from _helpers import bell_circuit, build_bridge, traced_bell
 from qiskit.circuit import QuantumCircuit
 
 from qisdebug._breakpoints import (
@@ -28,7 +28,6 @@ from qisdebug._events import (
 from qisdebug._frontends import _breakpoints as frontend_bp
 from qisdebug._frontends import _render
 from qisdebug._frontends.cli import CLIFrontend
-from qisdebug._frontends.gui import QtFrontend
 from qisdebug._store import BreakpointStopped
 
 # -- Pure predicate matching --------------------------------------------
@@ -616,97 +615,63 @@ def test_cli_complete_unbreak_suggests_handles_and_all(debug):
 # -- GUI integration --------------------------------------------------------
 
 
-@pytest.mark.skipif(
-    not QtFrontend().is_available(), reason="no display available for Qt"
-)
-def test_gui_frontend_add_breakpoint_and_hit_navigation(debug, monkeypatch):
-    """Gui frontend add breakpoint and hit navigation."""
+def test_gui_bridge_add_breakpoint_and_hit_navigation(debug):
+    """Gui bridge add breakpoint and hit navigation."""
     timeline = traced_bell(debug, shots=5)
-    app, window = build_gui_window(monkeypatch, timeline)
+    bridge = build_bridge(timeline)
 
-    window.breakpoint_kind.setCurrentText("gate")
-    window.bp_gate_name.setText("cx")
-    window._add_breakpoint()  # pylint: disable=protected-access
-    assert len(window.breakpoints) == 1
-    assert window.breakpoint_list.count() == 1
+    state = bridge.add_breakpoint("gate", ["cx"], "")
+    assert len(bridge.breakpoints) == 1
+    assert len(state["breakpoints"]["list"]) == 1
 
-    assert window.controller is not None
-
-    window._goto_next_hit()  # pylint: disable=protected-access
-    _source, event = window.controller.current
+    state = bridge.goto_hit("next")
+    _source, event = bridge.current
     assert event.describe().startswith("cx")
 
-    window._goto_first_hit()  # pylint: disable=protected-access
-    _source, first_event = window.controller.current
+    state = bridge.goto_hit("first")
+    _source, first_event = bridge.current
     assert first_event.describe().startswith("cx")
 
-    window._goto_last_hit()  # pylint: disable=protected-access
-    _source, last_event = window.controller.current
+    state = bridge.goto_hit("last")
+    _source, last_event = bridge.current
     assert last_event.describe().startswith("cx")
 
-    window._goto(0)  # pylint: disable=protected-access
-    window._goto_prev_hit()  # pylint: disable=protected-access
-    assert window.controller.index == 0  # nothing matches before index 0
+    bridge.goto(0)
+    bridge.goto_hit("prev")
+    assert bridge.index == 0  # nothing matches before index 0
 
-    window.breakpoint_list.setCurrentRow(0)
-    window._remove_selected_breakpoint()  # pylint: disable=protected-access
-    assert not window.breakpoints
-    del app
+    handle = state["breakpoints"]["list"][0]["handle"]
+    state = bridge.remove_breakpoint(handle)
+    assert not bridge.breakpoints
 
 
-@pytest.mark.skipif(
-    not QtFrontend().is_available(), reason="no display available for Qt"
-)
-def test_gui_frontend_expectation_breakpoint(debug, monkeypatch):
-    """Gui frontend expectation breakpoint."""
+def test_gui_bridge_expectation_breakpoint(debug):
+    """Gui bridge expectation breakpoint."""
     timeline = traced_bell(debug, shots=5)
-    app, window = build_gui_window(monkeypatch, timeline)
+    bridge = build_bridge(timeline)
 
-    window.breakpoint_kind.setCurrentText("expect")
-    window.bp_expect_pauli.setCurrentText("Z")
-    window.bp_expect_qubit.setCurrentText("0")
-    window.bp_expect_cmp.setCurrentText(">=")
-    window.bp_expect_threshold.setValue(0.9)
-    window._add_breakpoint()  # pylint: disable=protected-access
-    assert len(window.breakpoints) == 1
-    _handle, condition = window.breakpoints.items()[0]
+    bridge.add_breakpoint("expect", ["Z", "0", ">=", "0.9"], "")
+    assert len(bridge.breakpoints) == 1
+    _handle, condition = bridge.breakpoints.items()[0]
     assert condition.kind == "expectation"
     assert condition.circuit_id == timeline.circuit_id
-    del app
 
 
-@pytest.mark.skipif(
-    not QtFrontend().is_available(), reason="no display available for Qt"
-)
-def test_gui_frontend_add_breakpoint_rejects_bad_args(debug, monkeypatch):
-    """Gui frontend add breakpoint rejects bad args."""
+def test_gui_bridge_add_breakpoint_rejects_bad_args(debug):
+    """Gui bridge add breakpoint rejects bad args."""
     timeline = traced_bell(debug, shots=5)
-    app, window = build_gui_window(monkeypatch, timeline)
+    bridge = build_bridge(timeline)
 
-    window.breakpoint_kind.setCurrentText("gate")
-    window.bp_gate_name.setText("cx")
-    window.bp_gate_qubits.setText("not-a-number")
-    window._add_breakpoint()  # pylint: disable=protected-access
-    assert not window.breakpoints
-    del app
+    state = bridge.add_breakpoint("gate", ["cx", "not-a-number"], "")
+    assert not bridge.breakpoints
+    assert "breakpoint_error" in state
 
 
-@pytest.mark.skipif(
-    not QtFrontend().is_available(), reason="no display available for Qt"
-)
-def test_gui_frontend_breakpoint_fields_refresh_for_current_circuit(debug, monkeypatch):
-    """Gui frontend breakpoint fields refresh for current circuit."""
+def test_gui_bridge_breakpoint_fields_refresh_for_current_circuit(debug):
+    """Gui bridge breakpoint field choices reflect the circuit on screen."""
     timeline = traced_bell(debug, shots=5)
-    app, window = build_gui_window(monkeypatch, timeline)
+    bridge = build_bridge(timeline)
 
-    window.breakpoint_kind.setCurrentText("watch")
-    assert [
-        window.bp_watch_ref.itemText(i) for i in range(window.bp_watch_ref.count())
-    ] == ["0", "1"]
-
-    window.breakpoint_kind.setCurrentText("watch")  # kept on watch, ref stays cascaded
-    window.bp_watch_kind.setCurrentText("clbit")
-    assert [
-        window.bp_watch_ref.itemText(i) for i in range(window.bp_watch_ref.count())
-    ] == ["0", "1"]
-    del app
+    choices = bridge.breakpoint_field_choices()
+    assert choices["qubits"] == ["0", "1"]
+    assert choices["clbits"] == ["0", "1"]

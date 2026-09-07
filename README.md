@@ -160,7 +160,7 @@ debug.show(qc)              # just this circuit's timeline
 debug.show([qc1, qc2])      # several circuits, merged into one view
 ```
 
-Auto-detects a native GUI window (PySide6) when a display is available, or falls
+Auto-detects a native GUI window (HTML/CSS rendered via pywebview) when a display is available, or falls
 back to a text-based interactive CLI otherwise — force either with
 `debug.show(frontend="gui"|"cli")` or the `QISDEBUG_FRONTEND` environment
 variable. Either way, a slider/stepper walks the full event sequence; each

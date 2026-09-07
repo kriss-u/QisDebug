@@ -90,7 +90,7 @@ def collect_version_info() -> VersionInfo:
     debug.end()
     extras = {
         "aer": _extra_available("qiskit_aer"),
-        "gui": _extra_available("PySide6"),
+        "gui": _extra_available("webview"),
         "mcp": _extra_available("mcp"),
     }
     return VersionInfo(

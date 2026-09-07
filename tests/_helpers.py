@@ -1,4 +1,4 @@
-"""Circuit-building and GUI-window helpers shared across the test suite."""
+"""Circuit-building and GUI-bridge helpers shared across the test suite."""
 
 from qiskit.circuit.quantumcircuit import QuantumCircuit
 from qiskit_aer import AerSimulator
@@ -21,27 +21,21 @@ def traced_bell(debug, name="viz", shots=10, **run_kwargs):
     return debug.get(qc)
 
 
-def build_gui_window(monkeypatch, timeline, name="viz"):
-    """Construct a ``_TimelineWindow`` directly, bypassing the blocking Qt event loop.
+def build_bridge(timeline, name="viz"):
+    """Construct a :class:`~qisdebug._frontends.bridge.TimelineBridge` directly.
 
-    Returns ``(app, window)``; callers are responsible for ``del app`` once done,
-    matching the cleanup every direct-construction GUI test already performs.
+    The bridge is plain Python (no webview, no event loop), so unlike the
+    old Qt ``_TimelineWindow`` this needs no app instance or teardown --
+    callers just build one and call its methods directly.
     """
-    from PySide6.QtWidgets import QApplication
-
     from qisdebug._frontends import _render
-    from qisdebug._frontends import gui as gui_module
+    from qisdebug._frontends.bridge import TimelineBridge
 
-    monkeypatch.setattr(QApplication, "exec", lambda self: None)
-    app = QApplication.instance() or QApplication([])
     merged, tracks, active_labels = _render.merge_timelines([timeline])
-    # protected-access: this helper exists only for the frontend module's own
-    # tests, which have no public constructor or API for these internals.
-    view = gui_module._TimelineView(  # pylint: disable=protected-access
+    return TimelineBridge(
+        title=name,
         merged=merged,
         tracks=tracks,
         active_labels=active_labels,
         timelines_by_id={timeline.circuit_id: timeline},
     )
-    window = gui_module._TimelineWindow(name, view)  # pylint: disable=protected-access
-    return app, window

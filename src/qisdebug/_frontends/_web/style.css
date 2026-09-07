@@ -1,0 +1,513 @@
+:root {
+  --bg: #f8fafc;
+  --bg-raised: #ffffff;
+  --bg-sunken: #eef1f6;
+  --border: #dbe1e8;
+  --text: #1a2130;
+  --text-dim: #667085;
+  --accent: #1d4ed8;
+  --accent-soft: #e8efff;
+  --mono: "SF Mono", "JetBrains Mono", "Cascadia Code", ui-monospace, Menlo, Consolas, monospace;
+  --sans: -apple-system, "Segoe UI", "Inter", Roboto, sans-serif;
+  --diff-removed-bg: #fecaca;
+  --diff-removed-text: #b91c1c;
+  --diff-added-bg: #bbf7d0;
+  --diff-added-text: #15803d;
+  --active-border: #1d4ed8;
+  --radius: 7px;
+  --circuit-size: 13px;
+  --badge-qubit: #1d4ed8;
+  --badge-clbit: #9333ea;
+  --badge-register: #b45309;
+  --badge-track: #0f766e;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14171f;
+    --bg-raised: #1b1f29;
+    --bg-sunken: #1f2430;
+    --border: #2b3040;
+    --text: #e6e9f0;
+    --text-dim: #8b93a7;
+    --accent: #60a5fa;
+    --accent-soft: #1e2b4a;
+    --diff-removed-bg: #4a1414;
+    --diff-removed-text: #f87171;
+    --diff-added-bg: #113322;
+    --diff-added-text: #4ade80;
+    --active-border: #60a5fa;
+    --badge-qubit: #60a5fa;
+    --badge-clbit: #c084fc;
+    --badge-register: #fbbf24;
+    --badge-track: #2dd4bf;
+  }
+}
+
+* { box-sizing: border-box; }
+
+html, body { height: 100%; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 13px;
+  line-height: 1.4;
+  display: flex;
+  flex-direction: column;
+}
+
+.mono { font-family: var(--mono); }
+
+/* -- Sticky control cluster: tabs, the header info line, and the transport
+   controls all stay pinned at the top while the dock below scrolls, so
+   nothing the user is actively using ever moves or scrolls out of view. -- */
+.app-header {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: var(--bg);
+  flex: 0 0 auto;
+}
+
+.tabs {
+  display: flex;
+  gap: 2px;
+  padding: 8px 12px 0;
+}
+
+.tab-button {
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  border-bottom: none;
+  border-radius: 7px 7px 0 0;
+  color: var(--text-dim);
+  padding: 6px 16px;
+  font-size: 12.5px;
+  cursor: pointer;
+  position: relative;
+  top: 1px;
+}
+
+.tab-button.active {
+  background: var(--bg-raised);
+  color: var(--text);
+  font-weight: 600;
+  border-color: var(--border);
+}
+
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 14px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-raised);
+}
+
+.topbar-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+#header {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 18px;
+  height: 36px;
+  word-break: break-word;
+  /* A fixed height (not min-height) for exactly 2 lines, always reserved
+     regardless of actual content length -- a 1-line vs. 2-line event
+     description must not change the sticky header's total height, or the
+     transport row below it shifts. Longer text still gets clamped with an
+     ellipsis instead of pushing past that height. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#other-circuits {
+  height: 16px;
+  line-height: 16px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  font-size: 12.5px;
+}
+
+.hint { color: var(--text-dim); font-size: 11.5px; }
+
+main {
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px 14px 16px;
+}
+
+.split {
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  gap: 8px;
+  margin-bottom: 8px;
+  height: 44vh;
+  min-height: 220px;
+}
+
+/* Diff panes stack top-down (A above B) rather than side by side -- a
+   circuit diagram diff reads left-to-right already, so putting the two
+   sides in columns doubles up on that direction for no benefit and just
+   squeezes each one's width in half. */
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 8px;
+  height: 30vh;
+  min-height: 160px;
+}
+
+.pane {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.pane-title {
+  font-weight: 700;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  padding: 5px 9px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-sunken);
+  flex: 0 0 auto;
+}
+
+.scroll {
+  margin: 0;
+  padding: 9px;
+  overflow: auto;
+  flex: 1;
+  min-height: 0;
+  white-space: pre;
+  font-size: var(--circuit-size);
+}
+
+#circuit-text { font-size: var(--circuit-size); }
+
+.active-span {
+  display: block;
+  border: 1.5px solid var(--active-border);
+  border-radius: 4px;
+  padding: 2px 4px;
+  margin: -2px -4px;
+}
+
+/* -- Transport: one compact row, no auto-margin gaps -- items sit together
+   left-to-right instead of the ms/step field being flung to the far right
+   with empty space in between. -- */
+.transport {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-raised);
+}
+
+.slider {
+  width: 220px;
+  flex: 0 0 auto;
+  accent-color: var(--accent);
+}
+
+.interval-label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-dim);
+  font-size: 11.5px;
+}
+
+#interval-ms { width: 62px; }
+
+button {
+  font-family: var(--sans);
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-raised);
+  color: var(--text);
+  cursor: pointer;
+  transition: background-color 0.12s ease, border-color 0.12s ease;
+}
+
+button:hover:not(:disabled) { background: var(--accent-soft); border-color: var(--accent); }
+button:active:not(:disabled) { transform: translateY(0.5px); }
+button:disabled { opacity: 0.4; cursor: default; }
+button.ghost { background: transparent; color: var(--text-dim); }
+#btn-play { background: var(--accent); border-color: var(--accent); color: white; font-weight: 600; }
+#btn-play:hover { filter: brightness(1.08); }
+
+select, input[type="number"], input[type="text"] {
+  font-family: var(--sans);
+  font-size: 12px;
+  padding: 3px 6px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-raised);
+  color: var(--text);
+}
+
+/* -- Dock: watch / mark / break, as light dividers instead of nested boxes -- */
+.dock {
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+
+.dock-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 5px 0;
+}
+
+.dock-row + .dock-row { border-top: 1px solid var(--border); }
+
+.dock-label {
+  font-weight: 700;
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--accent);
+  width: 46px;
+  flex: 0 0 auto;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.bp-fields { display: flex; gap: 6px; flex-wrap: wrap; }
+.bp-fields input, .bp-fields select { min-width: 64px; }
+
+.error {
+  color: var(--diff-removed-text);
+  font-size: 11.5px;
+  padding: 2px 0 4px;
+}
+
+/* -- Watch cards: a real graphical row per watch (badge + label + detail
+   lines + remove button) instead of a plain-text terminal transcript. -- */
+.cards {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 2px 0 8px;
+}
+
+.cards:empty::before {
+  content: "no watches yet";
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.card {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-raised);
+  padding: 7px 9px;
+}
+
+.card-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.badge {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 1px 7px;
+  border-radius: 999px;
+  color: white;
+  flex: 0 0 auto;
+}
+
+.badge-qubit { background: var(--badge-qubit); }
+.badge-clbit { background: var(--badge-clbit); }
+.badge-register { background: var(--badge-register); }
+.badge-track { background: var(--badge-track); }
+
+.card-title { font-weight: 600; flex: 1; }
+
+.card-remove {
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 15px;
+  line-height: 1;
+  padding: 0 2px;
+  cursor: pointer;
+}
+
+.card-remove:hover { color: var(--diff-removed-text); background: transparent; }
+
+.card-body {
+  margin-top: 5px;
+  padding-top: 5px;
+  border-top: 1px solid var(--border);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+
+.card-body-line { padding: 1px 0; }
+
+/* -- Breakpoint rows: same idea as watch cards, one row per condition -- */
+.rows {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 140px;
+  overflow-y: auto;
+  padding: 2px 0 8px;
+}
+
+.rows:empty::before {
+  content: "no breakpoints yet";
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.bp-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-raised);
+  padding: 5px 9px;
+  font-size: 12px;
+}
+
+.bp-row-label { flex: 1; font-family: var(--mono); }
+
+/* Bra-ket / quantum notation styling shared by circuit + info panes */
+.ket { color: var(--accent); font-weight: 600; }
+.amp { color: var(--text); }
+.prob { color: var(--text-dim); }
+
+.diff-added { background: var(--diff-added-bg); color: var(--diff-added-text); border-radius: 2px; }
+.diff-removed { background: var(--diff-removed-bg); color: var(--diff-removed-text); border-radius: 2px; }
+.diff-line-added { color: var(--diff-added-text); }
+.diff-line-removed { color: var(--diff-removed-text); }
+
+dialog {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+  color: var(--text);
+  padding: 16px 20px;
+}
+
+dialog::backdrop { background: rgba(0, 0, 0, 0.35); }
+
+#help-table { border-collapse: collapse; margin: 10px 0 16px; }
+#help-table td { padding: 3px 10px 3px 0; font-size: 12.5px; }
+#help-table td:first-child { font-family: var(--mono); color: var(--accent); white-space: nowrap; }
+
+/* -- Info-panel figures (histogram / Bloch sphere): shown small inline,
+   click to open the lightbox at full size with zoom/pan. -- */
+.info-figure {
+  cursor: zoom-in;
+  border-radius: 6px;
+  margin-top: 4px;
+}
+
+#image-lightbox {
+  width: 92vw;
+  height: 88vh;
+  max-width: none;
+  max-height: none;
+  padding: 0;
+}
+
+/* The unconditional `display: flex` above would override the dialog's own
+   default `display: none` while closed (dialog only gets `display: block`
+   from `[open]`), leaving it visibly rendered, in normal flow, even before
+   showModal() -- so the layout-only styles must be scoped to [open]. */
+#image-lightbox[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+.lightbox-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+
+.lightbox-spacer { flex: 1; }
+
+.lightbox-viewport {
+  flex: 1;
+  overflow: hidden;
+  background: var(--bg-sunken);
+  cursor: grab;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.lightbox-viewport.dragging { cursor: grabbing; }
+
+#lightbox-img {
+  max-width: 100%;
+  max-height: 100%;
+  transform-origin: center center;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.lightbox-hint {
+  flex: 0 0 auto;
+  padding: 5px 10px;
+  border-top: 1px solid var(--border);
+}

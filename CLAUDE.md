@@ -184,18 +184,29 @@ the documentation listing which Qiskit versions have been tested.
 
 ### Visualizer
 
-There is no HTML/webserver/browser based viewer, and none should be
-reintroduced. Everything is shown through the `QisDebug` instance itself, not a
-separate visualizer object: `debug.show()` shows every timeline the instance
-has recorded, `debug.show(qc)` shows just one circuit's timeline, and
-`debug.show([qc1, qc2])` shows several merged into one view (each argument
-form accepts a live circuit, a circuit name, or a `Timeline`, resolved the same
-way as `debug.get()`). `QisDebug.show()` presents timelines through one of two
-interchangeable frontends, chosen by a factory:
+There is no standalone webserver and no viewer that opens in the user's
+browser -- the GUI frontend is always one native, single-process window that
+the library opens itself, never a URL the user is told to visit. Within that
+constraint, the GUI's content is HTML/CSS/JS rendered through the OS's own
+embedded webview (via `pywebview`, which wraps WKWebView on macOS, WebView2
+on Windows, and WebKitGTK on Linux -- no bundled Chromium, no extra system
+dependency beyond `pip install "qisdebug[gui]"`), with Python/JS calls going
+through pywebview's in-process JS API bridge, not a socket. This replaced an
+earlier pure-PySide6/Qt-widgets implementation; the reason for the switch is
+that HTML/CSS gives the timeline view (typography, unicode math notation,
+layout, theming) far more expressive room than hand-rolled Qt widget styling
+without paying for a server or a browser tab. Everything is shown through the
+`QisDebug` instance itself, not a separate visualizer object: `debug.show()`
+shows every timeline the instance has recorded, `debug.show(qc)` shows just
+one circuit's timeline, and `debug.show([qc1, qc2])` shows several merged
+into one view (each argument form accepts a live circuit, a circuit name, or
+a `Timeline`, resolved the same way as `debug.get()`). `QisDebug.show()`
+presents timelines through one of two interchangeable frontends, chosen by a
+factory:
 
-- A native GUI window (PySide6, whose wheels bundle the Qt binaries they
-  need, so `pip install "qisdebug[gui]"` is enough on its own with no extra
-  dependency), when a display is available, including inside a notebook
+- A native GUI window (`pywebview`, rendering local HTML/CSS/JS through the
+  OS's embedded webview, no server process and no browser tab involved) when
+  a display is available, including inside a notebook
 - A text based interactive CLI, the universal fallback for environments with
   no display, such as an SSH session or a notebook with no display
 
@@ -329,17 +340,21 @@ regardless of which of the three hooks recorded the event.
 
 ### Visual polish
 
-Both the GUI's buttons/labels and the CLI's prompt/output are currently
-unstyled defaults (`QPushButton`/`QLabel` with no stylesheet in `gui.py`; the
-CLI leans on raw `print()`). A small QSS stylesheet in `gui.py` (spacing,
-button hover/pressed states, a consistent type scale between the header and
-the monospace timeline body) that respects the light/dark palette rather than
-hardcoding colors, the way `_active_track_border_color` already does
-correctly for the highlight border; and for the CLI, consistent prompt
-styling and column alignment for tabular output (event lists, watch reports)
-using `shutil.get_terminal_size()` rather than fixed-width formatting. This is
-presentation-only -- no `_render.py` changes -- so it can land independently
-of conditional breakpoints above.
+The GUI frontend was rewritten from PySide6/Qt widgets to `pywebview`
+rendering local HTML/CSS/JS (see Visualizer above), specifically so this pass
+could use real CSS -- a type scale, spacing, hover/pressed states, unicode
+math notation (bra-ket, dagger, tensor product, etc. in circuit and state
+labels) -- instead of hand-rolled Qt widget styling. The stylesheet must
+respect the light/dark palette via CSS custom properties rather than
+hardcoding colors, the same principle `_active_track_border_color` already
+applied to the highlight border in the old Qt implementation. The CLI's
+prompt/output styling (consistent prompt styling and column alignment for
+tabular output such as event lists and watch reports, using
+`shutil.get_terminal_size()` rather than fixed-width formatting) is a
+separate, frontend-local effort and must still land so the two frontends stay
+equivalent in polish, not just capability. This is presentation-only -- no
+`_render.py` data-shape changes -- so it can land independently of
+conditional breakpoints above.
 
 ## Build Order
 

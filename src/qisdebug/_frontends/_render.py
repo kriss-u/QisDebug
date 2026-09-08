@@ -340,12 +340,20 @@ def _ensure_agg_backend() -> None:
 
 
 def _figure_to_png_bytes(fig: Any) -> bytes:
-    """Render a matplotlib figure to raw PNG bytes, then close it."""
+    """Render a matplotlib figure to raw PNG bytes, then close it.
+
+    The close is in a ``finally`` so a failure partway through ``savefig``
+    still releases the figure -- otherwise it leaks silently, since every
+    caller wraps this in a broad ``except Exception: return None`` that
+    would swallow the error without ever reaching an un-guarded close.
+    """
     import matplotlib.pyplot as plt
 
     buffer = io.BytesIO()
-    fig.savefig(buffer, format="png", bbox_inches="tight")
-    plt.close(fig)
+    try:
+        fig.savefig(buffer, format="png", bbox_inches="tight")
+    finally:
+        plt.close(fig)
     return buffer.getvalue()
 
 

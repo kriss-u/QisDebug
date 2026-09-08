@@ -16,10 +16,11 @@ over and reinventing one would add a layer for no benefit.
 
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, Literal
 
-from .._events import Timeline
+from .._events import TelemetryEvent, Timeline
 from . import _breakpoints as _bp
 from . import _circuit_diff, _render
 
@@ -71,6 +72,9 @@ class TimelineBridge:  # pylint: disable=too-many-instance-attributes
         default_factory=lambda: {"a": None, "b": None}, init=False
     )
     hit_status: str = field(default="", init=False)
+    _extra_visual_cache: dict[int, dict[str, str]] = field(
+        default_factory=dict, init=False
+    )
 
     # -- Navigation ----------------------------------------------------
 
@@ -140,17 +144,6 @@ class TimelineBridge:  # pylint: disable=too-many-instance-attributes
             )
             active_span = None
 
-        label, png_bytes = _render.render_extra_visual_bytes(event)
-        extra_visual = None
-        if png_bytes:
-            import base64
-
-            extra_visual = {
-                "label": label,
-                "data_uri": "data:image/png;base64,"
-                + base64.b64encode(png_bytes).decode("ascii"),
-            }
-
         return {
             "title": self.title,
             "header": header,
@@ -164,7 +157,7 @@ class TimelineBridge:  # pylint: disable=too-many-instance-attributes
             "show_all_circuits": self.show_all_circuits,
             "other_circuits": other_circuits,
             "info_text": _render.render_event(source, event),
-            "extra_visual": extra_visual,
+            "extra_visual": self._extra_visual(event),
             "watches": self._watch_state(),
             "marks": self._mark_state(),
             "breakpoints": self._breakpoint_state(),
@@ -174,6 +167,30 @@ class TimelineBridge:  # pylint: disable=too-many-instance-attributes
     def help_entries(self) -> list[tuple[str, str]]:
         """Keyboard shortcut table for the help overlay."""
         return HELP_ENTRIES
+
+    def _extra_visual(self, event: TelemetryEvent) -> dict[str, str] | None:
+        """The current event's histogram/Bloch-sphere figure, if any, as a
+        label + base64 data URI -- cached per ``event.seq`` so that the many
+        bridge calls unrelated to navigation (add/remove watch, zoom, mark,
+        ...) which all end by rebuilding the full :meth:`state` don't each
+        re-run matplotlib for an image that hasn't changed. Repeatedly
+        regenerating (and, in practice, occasionally failing to close) a
+        fresh figure on every such call is what was driving matplotlib's
+        "more than 20 figures have been opened" warning under normal
+        interactive use, not a fixed one-time cost.
+        """
+        cached = self._extra_visual_cache.get(event.seq)
+        if cached is not None:
+            return cached
+        label, png_bytes = _render.render_extra_visual_bytes(event)
+        if not png_bytes:
+            return None
+        result = {
+            "label": label,
+            "data_uri": "data:image/png;base64," + base64.b64encode(png_bytes).decode("ascii"),
+        }
+        self._extra_visual_cache[event.seq] = result
+        return result
 
     # -- Watches -----------------------------------------------------------
 

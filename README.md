@@ -1,5 +1,11 @@
 # QisDebug
 
+[![PyPI](https://img.shields.io/pypi/v/qisdebug)](https://pypi.org/project/qisdebug/)
+[![Python versions](https://img.shields.io/pypi/pyversions/qisdebug)](https://pypi.org/project/qisdebug/)
+[![Release](https://github.com/kriss-u/QisDebug/actions/workflows/release.yml/badge.svg)](https://github.com/kriss-u/QisDebug/actions/workflows/release.yml)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23373538.svg)](https://doi.org/10.5281/zenodo.23373538)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/kriss-u/QisDebug/blob/main/LICENSE)
+
 Zero-touch instrumentation and timeline debugging for
 [Qiskit](https://www.ibm.com/quantum/qiskit).
 
@@ -366,6 +372,26 @@ transpiler stage. CircInspect provides step-through debugging for PennyLane.
 QisDebug's distinction is passive, near-zero-setup attachment with full
 lifecycle coverage — construction through transpilation to execution — on
 unmodified Qiskit code.
+
+## Citing
+
+If QisDebug helps your research, please cite it. The metadata lives in
+[`CITATION.cff`](https://github.com/kriss-u/QisDebug/blob/main/CITATION.cff),
+so GitHub's "Cite this repository" button gives a ready-made BibTeX or APA
+entry. The DOI [10.5281/zenodo.23373538](https://doi.org/10.5281/zenodo.23373538)
+always resolves to the latest release; Zenodo also lists a DOI for each
+individual version, which is the one to cite if you need to pin the exact
+release you used.
+
+```bibtex
+@software{upadhyay_qisdebug,
+  author  = {Upadhyay, Krishna},
+  title   = {{QisDebug: Zero-Touch Instrumentation and Timeline Debugging for Qiskit}},
+  doi     = {10.5281/zenodo.23373538},
+  url     = {https://github.com/kriss-u/QisDebug},
+  license = {MIT}
+}
+```
 
 ## License
 

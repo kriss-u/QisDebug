@@ -1,0 +1,32 @@
+cff-version: 1.2.0
+message: >-
+  If you use QisDebug in your research, please cite it using the metadata
+  below. The DOI always resolves to the latest release; cite the
+  version-specific DOI shown on Zenodo if you need to pin an exact release.
+type: software
+title: "QisDebug: Zero-Touch Instrumentation and Timeline Debugging for Qiskit"
+abstract: >-
+  QisDebug attaches construction, transpilation and execution tracing to
+  existing Qiskit code with a single start() call, records everything that
+  happens to each circuit on one timeline (including mid-execution
+  statevectors on Aer), and explores that timeline in a native GUI, a
+  terminal viewer, or through an MCP server for coding agents.
+authors:
+  - given-names: Krishna
+    family-names: Upadhyay
+doi: 10.5281/zenodo.23373538
+identifiers:
+  - type: doi
+    value: 10.5281/zenodo.23373538
+    description: Concept DOI, resolving to the latest release
+repository-code: https://github.com/kriss-u/QisDebug
+url: https://github.com/kriss-u/QisDebug
+license: MIT
+keywords:
+  - qiskit
+  - quantum computing
+  - debugging
+  - instrumentation
+  - telemetry
+version: 0.1.1
+date-released: "2026-10-14"

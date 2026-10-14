@@ -1,0 +1,28 @@
+default_install_hook_types:
+  - pre-commit
+  - commit-msg
+
+repos:
+  - repo: https://github.com/compilerla/conventional-pre-commit
+    rev: v4.4.0
+    hooks:
+      - id: conventional-pre-commit
+        stages: [commit-msg]
+        args: [--strict]
+
+  - repo: local
+    hooks:
+      # Same invocations as CI (.github/workflows/test.yml); passing pre-commit's
+      # file batches to pylint changes its cross-module inference.
+      - id: pylint
+        name: pylint
+        entry: pylint src tests
+        language: system
+        files: ^(src|tests)/.*\.py$
+        pass_filenames: false
+      - id: pyright
+        name: pyright
+        entry: pyright src tests
+        language: system
+        files: ^(src|tests)/.*\.py$
+        pass_filenames: false

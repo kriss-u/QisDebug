@@ -1,0 +1,158 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+      - beta
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Check for releasable commits
+    runs-on: ubuntu-latest
+    outputs:
+      next: ${{ steps.next.outputs.version }}
+      last: ${{ steps.next.outputs.last }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v10.3.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: pyproject.toml
+
+      - name: Compute next version
+        id: next
+        run: |
+          echo "version=$(uvx --from 'python-semantic-release>=10.7,<11' semantic-release --noop version --print 2>/dev/null)" >> "$GITHUB_OUTPUT"
+          echo "last=$(uvx --from 'python-semantic-release>=10.7,<11' semantic-release --noop version --print-last-released 2>/dev/null)" >> "$GITHUB_OUTPUT"
+
+  test:
+    name: Test
+    needs: check
+    if: needs.check.outputs.next != needs.check.outputs.last
+    uses: ./.github/workflows/test.yml
+
+  release:
+    name: Semantic release
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+    steps:
+      # The release commit is pushed straight to the protected main branch,
+      # which only a ruleset bypass actor can do. GITHUB_TOKEN's bot can't be
+      # one on a personal repo, so pushes use a token minted from the
+      # repository's release GitHub App, which is a bypass actor.
+      - name: Create release app token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+
+      - name: Resolve release app identity
+        id: app-user
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+        run: echo "id=$(gh api "/users/${APP_SLUG}[bot]" --jq .id)" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+
+      # A newer commit may have landed on the branch since this run was queued;
+      # release exactly the commit that was tested, not the branch tip.
+      - name: Pin branch to the tested commit
+        run: git reset --hard ${{ github.sha }}
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v10.3.0
+        with:
+          python-version: "3.14"
+          activate-environment: true
+          enable-cache: true
+          cache-dependency-glob: pyproject.toml
+
+      - name: Install release tooling
+        run: uv pip install "python-semantic-release>=10.7,<11" build
+
+      - name: Version, changelog, tag, build and GitHub release
+        id: release
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+          APP_USER_ID: ${{ steps.app-user.outputs.id }}
+        run: |
+          git config user.name "${APP_SLUG}[bot]"
+          git config user.email "${APP_USER_ID}+${APP_SLUG}[bot]@users.noreply.github.com"
+          semantic-release version
+          semantic-release publish
+          echo "tag=$(semantic-release version --print-last-released-tag)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload distributions
+        uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+          retention-days: 1
+
+  publish-testpypi:
+    name: Publish to TestPyPI
+    needs: release
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/project/qisdebug/
+    permissions:
+      id-token: write
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+  publish-pypi:
+    name: Publish to PyPI
+    needs: publish-testpypi
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/qisdebug/
+    permissions:
+      id-token: write
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish
+        uses: pypa/gh-action-pypi-publish@release/v1

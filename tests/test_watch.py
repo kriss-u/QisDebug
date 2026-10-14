@@ -257,4 +257,4 @@ def test_gui_bridge_add_and_remove_watch(debug):
 
     state = bridge.remove_watch(0)
     assert not bridge.watches
-    assert state["watches"]["list"] == []
+    assert not state["watches"]["list"]

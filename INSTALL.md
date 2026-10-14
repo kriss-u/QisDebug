@@ -1,6 +1,6 @@
 # Installing QisDebug
 
-QisDebug is not yet published to PyPI. For now, install from source.
+QisDebug is published on [PyPI](https://pypi.org/project/qisdebug/).
 
 ## Requirements
 
@@ -11,47 +11,50 @@ QisDebug is not yet published to PyPI. For now, install from source.
 - `pywebview`, if you want the native GUI timeline viewer
 - `mcp`, if you want the `qisdebug-mcp` server for AI-agent debugging
 
-## From source
-
-Clone the repository and install it in editable mode:
-
-```bash
-git clone https://github.com/nullvector/qisdebug.git
-cd qisdebug
-pip install -e .
-```
+## From PyPI
 
 A virtual environment is strongly recommended:
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate      # .venv\Scripts\activate on Windows
-pip install -e .
+pip install qisdebug
 ```
 
 ### Optional extras
 
-The core install only pulls in `qiskit` and `pydantic`. Enable extras
-depending on what you need:
+The core install pulls in `qiskit`, `pydantic`, and the terminal UI
+dependencies. Enable extras depending on what you need:
 
 ```bash
-pip install -e ".[aer]"        # statevector capture on Aer
-pip install -e ".[viz]"        # histogram/Bloch-sphere image rendering
-pip install -e ".[gui]"        # native GUI timeline viewer
-pip install -e ".[mcp]"        # MCP server (qisdebug-mcp) for AI-agent debugging
-pip install -e ".[dev]"        # test toolchain (pytest, hypothesis, pylint)
-pip install -e ".[docs]"       # Sphinx toolchain for building documentation
+pip install "qisdebug[aer]"    # statevector capture on Aer
+pip install "qisdebug[viz]"    # histogram/Bloch-sphere image rendering
+pip install "qisdebug[gui]"    # native GUI timeline viewer
+pip install "qisdebug[mcp]"    # MCP server (qisdebug-mcp) for AI-agent debugging
 ```
 
-Extras can be combined, e.g. `pip install -e ".[aer,viz,dev]"`.
+Extras can be combined, e.g. `pip install "qisdebug[aer,viz,gui]"`.
+
+## From source
+
+To work on QisDebug itself, or to try unreleased changes, clone the
+repository and install it in editable mode:
+
+```bash
+git clone https://github.com/kriss-u/QisDebug.git
+cd QisDebug
+pip install -e ".[dev]"        # test, lint and release toolchain
+pip install -e ".[docs]"       # Sphinx toolchain for building documentation
+```
 
 ## Verifying the install
 
 ```bash
-python -c "import qisdebug; qisdebug.activate(); print(qisdebug.is_active())"
+qisdebug --version
+python -c "import qisdebug; d = qisdebug.QisDebug(); print(d.start().active); d.end()"
 ```
 
-This should print `True` and exit cleanly.
+The second command should print `True` and exit cleanly.
 
 ## Running the test suite
 

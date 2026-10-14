@@ -1,0 +1,24 @@
+name: Commitlint
+
+on:
+  pull_request:
+    types:
+      - opened
+      - edited
+      - reopened
+
+permissions:
+  pull-requests: read
+
+jobs:
+  pr-title:
+    name: Conventional PR title
+    runs-on: ubuntu-latest
+    steps:
+      # Squash merges use the PR title as the commit message on main, so the
+      # title is the only message semantic-release ever parses; individual
+      # commit messages are checked locally by the pre-commit commit-msg hook.
+      - name: Validate PR title
+        uses: amannn/action-semantic-pull-request@v6
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

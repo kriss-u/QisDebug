@@ -68,4 +68,4 @@ def test_collect_version_info_reflects_a_real_activation_cycle():
     info = commands.collect_version_info()
     assert info.qisdebug_version
     assert info.activation.layers["construction"] is True
-    assert set(info.extras) == {"aer", "gui", "mcp"}
+    assert set(info.extras) == {"aer", "viz", "gui", "mcp"}

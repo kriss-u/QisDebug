@@ -90,6 +90,7 @@ def collect_version_info() -> VersionInfo:
     debug.end()
     extras = {
         "aer": _extra_available("qiskit_aer"),
+        "viz": _extra_available("matplotlib"),
         "gui": _extra_available("webview"),
         "mcp": _extra_available("mcp"),
     }

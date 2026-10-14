@@ -110,7 +110,9 @@ class CLIFrontend(TimelineFrontend):
         session = CliSession(timelines)
         names = ", ".join(str(t.name) for t in timelines)
 
-        if sys.stdin.isatty() and sys.stdout.isatty():
+        # Textual needs threads and termios, neither of which exists under
+        # Emscripten, so a browser host that fakes a tty still gets the text loop.
+        if sys.platform != "emscripten" and sys.stdin.isatty() and sys.stdout.isatty():
             from ._tui import TimelineApp  # pylint: disable=import-outside-toplevel
 
             TimelineApp(session, f"{names} ({len(session.merged)} events)").run()

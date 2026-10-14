@@ -12,10 +12,10 @@ Zero-touch instrumentation and timeline debugging for
 QisDebug attaches full circuit and execution visibility to your existing Qiskit
 code the way OpenTelemetry or Sentry attach to a web framework: one import, one
 activation call, and no changes to how you build, transpile, or run circuits.
-Everything that happens to a circuit — every gate appended, every transpiler
-pass, every statevector along the way, and the final results — is recorded onto
-a single per-circuit **timeline** you can inspect, export, or explore
-interactively in a notebook.
+Everything that happens to a circuit (every gate appended, every transpiler
+pass, every statevector along the way, and the final results) is recorded onto
+a single per-circuit timeline you can inspect, export, or explore in a native
+GUI window or an interactive terminal viewer.
 
 ```python
 import qisdebug
@@ -51,9 +51,10 @@ Timeline 'bell' (id=ae87255e3948, 2 qubits, 2 clbits, 42 events)
   execution_finished     1
 ```
 
-The three state snapshots are the actual simulator statevectors after each gate
-— `|00⟩`, then `(|00⟩+|01⟩)/√2`, then the Bell state — captured during the run
-you already made, and stripped from the results you see.
+The three state snapshots are the actual simulator statevectors after each
+gate: `|00⟩`, then `(|00⟩+|01⟩)/√2`, then the Bell state. QisDebug captured
+them during the run you already made and stripped them from the results you
+see.
 
 ## Install
 
@@ -65,21 +66,25 @@ pip install "qisdebug[gui]"        # + native GUI timeline viewer
 pip install "qisdebug[mcp]"        # + MCP server for AI-agent debugging
 ```
 
-See [INSTALL.md](https://github.com/kriss-u/QisDebug/blob/main/INSTALL.md)
-for installing from source and the development extras.
+Without an extra, the matching feature degrades instead of failing: the
+timeline still records, the viewer falls back to the terminal, and
+`qisdebug-mcp` prints what to install. `qisdebug version` shows which extras
+are installed. See
+[INSTALL.md](https://github.com/kriss-u/QisDebug/blob/main/INSTALL.md) for
+installing from source and the development extras.
 
 ## What gets recorded
 
-| Phase         | Event types                                                   | How                                                                                                                                                                                |
-| ------------- | ------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Construction  | `gate_added`                                                  | Wraps `QuantumCircuit.append`/`_append`; records each instruction with qubits, clbits, and params after broadcasting resolves                                                      |
-| Transpilation | `transpile_started`, `transpile_pass`, `transpile_finished`   | Wraps `PassManager.run` and injects a per-pass callback through Qiskit's own `callback` mechanism; `transpile_pass` carries a `property_changes` diff too                          |
-| Execution     | `execution_submitted`, `state_snapshot`, `execution_finished` | Wraps `AerBackend.run` and the Sampler/Estimator primitives; on Aer, runs an instrumented copy with `save_statevector` after every gate and strips the snapshots from your results |
-| Diagnostics   | `note`                                                        | QisDebug explains itself, e.g. why snapshot capture was skipped for a circuit                                                                                                      |
+| Phase         | Event types                                                   | How                                                                                                                                                                                                                                   |
+| ------------- | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Construction  | `gate_added`                                                  | Wraps `QuantumCircuit.append`/`_append` and in-place `compose`; records each instruction with qubits, clbits, and params after broadcasting resolves                                                                                 |
+| Transpilation | `transpile_started`, `transpile_pass`, `transpile_finished`   | Wraps `PassManager.run` and injects a per-pass callback through Qiskit's own `callback` mechanism; `transpile_pass` carries a `property_changes` diff too                                                                             |
+| Execution     | `execution_submitted`, `state_snapshot`, `execution_finished` | Wraps `AerBackend.run`, `BasicSimulator.run`, and the Sampler/Estimator primitives; on Aer, runs an instrumented copy with `save_statevector` after every gate and strips the snapshots from your results. Samplers record their counts |
+| Diagnostics   | `note`                                                        | QisDebug explains itself, e.g. why snapshot capture was skipped for a circuit                                                                                                                                                         |
 
-All three phases land on **one timeline per circuit**: transpiled outputs
-inherit the source circuit's hidden id, so the run of a transpiled circuit is
-recorded against the circuit you actually wrote.
+All three phases land on one timeline per circuit: transpiled outputs inherit
+the source circuit's hidden id, so the run of a transpiled circuit is recorded
+against the circuit you actually wrote.
 
 ## Public API
 
@@ -87,7 +92,7 @@ recorded against the circuit you actually wrote.
 independently scoped instrumentation session with its own telemetry and its own
 configuration, so more than one can be started at once (e.g. one scoped to a
 suspect region, another covering a whole script) without either seeing the
-other's timelines. The surface on it is intentionally small:
+other's timelines.
 
 | Method                  | Purpose                                                                                                   |
 | ----------------------- | --------------------------------------------------------------------------------------------------------- |
@@ -101,9 +106,9 @@ other's timelines. The surface on it is intentionally small:
 | `debug.configure(...)`  | Adjust limits and switches (validated; see below)                                                         |
 | `debug.diff(a, b, ...)` | Gate-alignment diff plus statevector/counts/depth deltas between two points in time; see below            |
 
-Importing `qisdebug` has **no side effects** — nothing is patched until
-`start()` is called, and `with QisDebug() as debug:` is an optional shorthand
-for `start()`/`end()` around a scoped block.
+Importing `qisdebug` has no side effects. Nothing is patched until `start()`
+is called, and `with QisDebug() as debug:` is an optional shorthand for
+`start()`/`end()` around a scoped block.
 
 ### Timeline
 
@@ -114,7 +119,7 @@ tl.gate_events            # construction events
 tl.transpile_events       # transpilation events
 tl.execution_events       # submission / snapshots / completion
 tl.snapshots              # state snapshots, each with .amplitudes() / .probabilities()
-tl.circuit_at(n)          # rebuild the circuit as it looked after its first n gates
+tl.circuit_at(n)          # rebuild the circuit, registers included, as it looked after its first n gates
 tl.summary()              # compact text overview
 ```
 
@@ -165,19 +170,20 @@ debug.show(qc)              # just this circuit's timeline
 debug.show([qc1, qc2])      # several circuits, merged into one view
 ```
 
-Auto-detects a native GUI window (HTML/CSS rendered via pywebview) when a display is available, or falls
-back to a text-based interactive CLI otherwise — force either with
-`debug.show(frontend="gui"|"cli")` or the `QISDEBUG_FRONTEND` environment
-variable. Either way, a slider/stepper walks the full event sequence; each
-position shows the circuit as it existed at that moment (drawn with Qiskit's own
-drawer), the statevector with amplitudes and probabilities, or per-pass
-transpiler statistics. Both frontends read only the public `Timeline` fields, so
-the instrumentation and the visualizer can evolve independently.
+`show()` opens a native GUI window (HTML/CSS rendered through the OS webview
+via pywebview) when a display is available, and falls back to a text-based
+interactive CLI otherwise. Force either with `debug.show(frontend="gui"|"cli")`
+or the `QISDEBUG_FRONTEND` environment variable. Either way, a slider/stepper
+walks the full event sequence; each position shows the circuit as it existed at
+that moment (drawn with Qiskit's own drawer), the statevector with amplitudes
+and probabilities, or per-pass transpiler statistics. Both frontends read only
+the public `Timeline` fields, so the instrumentation and the visualizer can
+evolve independently.
 
-Pin the event currently on screen as one side of a diff — "Mark A"/"Mark B" in
-the GUI, `mark a`/`mark b` in the CLI — and once both are pinned, the diff
-between them (the same comparison `debug.diff()` returns) renders automatically:
-a per-gate diff, a side-by-side circuit-drawing split view, a summary across
+Pin the event currently on screen as one side of a diff ("Mark A"/"Mark B" in
+the GUI, `mark a`/`mark b` in the CLI). Once both are pinned, the diff between
+them (the same comparison `debug.diff()` returns) renders automatically: a
+per-gate diff, a side-by-side circuit-drawing split view, a summary across
 every element common to both marked points, and a diff of any currently active
 watch.
 
@@ -189,41 +195,40 @@ can debug the _runtime behavior_ of your circuits instead of reasoning about the
 code blind:
 
 ```bash
-pip install -e ".[mcp,aer]"
+pip install "qisdebug[mcp,aer]"
 claude mcp add qisdebug -- qisdebug-mcp     # or the equivalent for your agent
 ```
 
 The division of labor is deliberate. QisDebug does not try to decide what a
-quantum program _should_ do — the agent does. QisDebug extracts the ground truth
+quantum program _should_ do; the agent does. QisDebug extracts the ground truth
 and does the arithmetic:
 
-- **Run under instrumentation** — `run_script` executes a script with QisDebug
+- **Run under instrumentation.** `run_script` executes a script with QisDebug
   active and reports every circuit's id, registers, and an anomaly scan in one
   shot. To focus on a suspect region, the agent has the script build its own
   scoped `qisdebug.QisDebug()` and call `start()`/`end()` around it, passing
   `auto_activate=false` so this server's own instance stays untouched.
-- **Extract mid-execution state** — `get_events` (filtered, paged),
+- **Extract mid-execution state.** `get_events` (filtered, paged),
   `get_state_snapshot` (raw amplitudes and probabilities at any captured step),
   `get_circuit_text` (the circuit as it looked after any gate), and
   `get_property_set` (the full layout/routing property_set a specific transpiler
-  pass wrote — `get_events` surfaces the added/removed/changed keys inline as
+  pass wrote; `get_events` surfaces the added/removed/changed keys inline as
   `property_changes`).
-- **Watch what matters** — `add_watch` pins qubits, clbits, or registers;
+- **Watch what matters.** `add_watch` pins qubits, clbits, or registers;
   `read_watches` reports their gate history, marginal P(1), and Bloch vector as
-  of any point in the sequence — the same watch feature the GUI and CLI expose
-  interactively.
-- **Compare two points in time** —
-  `diff_timelines(circuit_id_a, circuit_id_b,
-  seq_a=..., seq_b=...)` reports
-  the same gate-alignment plus statevector/counts/depth diff as `debug.diff()`,
-  for two different circuits or two moments of the same circuit's replay.
-- **Check an expectation** — the agent supplies the state or distribution it
+  of any point in the sequence. It is the same watch feature the GUI and CLI
+  expose interactively.
+- **Compare two points in time.** `diff_timelines(circuit_id_a, circuit_id_b,
+  seq_a=..., seq_b=...)` reports the same gate-alignment plus
+  statevector/counts/depth diff as `debug.diff()`, for two different circuits
+  or two moments of the same circuit's replay.
+- **Check an expectation.** The agent supplies the state or distribution it
   believes the program should produce; `compare_statevector` and
   `compare_counts` report fidelity, total variation distance, and exactly which
   basis states or outcomes diverge. `find_anomalies` is expectation-free and
   catches only impossible states (non-normalized or non-finite statevectors,
   failed runs, transpile blow-ups).
-- **Keep the evidence** — `save_timeline` writes the full JSON export to a file;
+- **Keep the evidence.** `save_timeline` writes the full JSON export to a file;
   `set_configuration` tunes capture depth before a run.
 
 The server is a thin protocol wrapper: every tool delegates to the same store,
@@ -232,12 +237,12 @@ rendering, and comparison code the GUI and CLI use.
 ## Conditional breakpoints
 
 Everything above is passive: it tells you what already happened. Conditional
-breakpoints pause a **live** run the instant a condition matches, so you can
+breakpoints pause a live run the instant a condition matches, so you can
 inspect state mid-execution instead of only replaying a finished timeline.
-See [`examples/breakpoints.py`](https://github.com/kriss-u/QisDebug/blob/main/examples/breakpoints.py) for a runnable,
-end-to-end example (`python examples/breakpoints.py`).
+See [`examples/breakpoints.py`](https://github.com/kriss-u/QisDebug/blob/main/examples/breakpoints.py)
+for a runnable, end-to-end example (`python examples/breakpoints.py`).
 
-A condition is one of a small closed set of kinds — never arbitrary code, so
+A condition is one of a small closed set of kinds, never arbitrary code, so
 there's no `eval`-style injection surface:
 
 | Kind      | Matches when...                                                           |
@@ -273,9 +278,9 @@ debug.list_breakpoints()
 
 ### MCP (agent-driven stepping)
 
-Live pausing needs the script to run in the background, since a pause blocks the
-thread — `run_script(..., background=True)` returns immediately with a `run_id`
-instead of waiting for the script to finish:
+Live pausing needs the script to run in the background, since a pause blocks
+the thread. `run_script(..., background=True)` returns immediately with a
+`run_id` instead of waiting for the script to finish:
 
 ```text
 add_breakpoint({"kind": "gate", "gate": "cx"})
@@ -288,8 +293,8 @@ stop_run(run_id)                                # best-effort; guaranteed only w
 
 ### Interactive frontends
 
-Breakpoints also work as a navigation aid over an **already-captured** timeline
-— "jump to next hit" walks recorded events instead of blocking anything live:
+Breakpoints also work as a navigation aid over an already-captured timeline:
+"jump to next hit" walks recorded events instead of blocking anything live.
 
 - **CLI**: `break gate cx`, `break seq 40`, `break watch qubit 0 gt 0.9`,
   `break anomaly warning`; `breakpoints` lists them, `unbreak <handle>` removes
@@ -298,24 +303,16 @@ Breakpoints also work as a navigation aid over an **already-captured** timeline
   as the CLI) next to the watch row, a list of active breakpoints, and a "Run to
   next breakpoint →" button.
 
-## Roadmap
-
-Planned next, on top of what's above — see `CLAUDE.md` for the full design:
-
-- **Visual polish** — a proper stylesheet for the GUI (buttons, spacing, type
-  scale) and consistent prompt/column formatting for the CLI; both are currently
-  unstyled toolkit defaults.
-
 ## Version compatibility
 
 Every patch target is checked for existence before patching; a missing internal
-downgrades that layer with a logged warning instead of an error, and
-`activate()` reports exactly which layers attached.
+downgrades that layer with a logged warning instead of an error, and `start()`
+reports exactly which layers attached.
 
-| Python | Qiskit | qiskit-aer | Status                                      |
-| ------ | ------ | ---------- | ------------------------------------------- |
-| 3.14   | 2.4.2  | 0.17.2     | Tested (full suite)                         |
-| ≥3.10  | ≥1.0   | ≥0.14      | Expected to work; layers degrade gracefully |
+| Python    | Qiskit | qiskit-aer | Status                                                                                      |
+| --------- | ------ | ---------- | ------------------------------------------------------------------------------------------- |
+| 3.10–3.14 | latest | latest     | Tested in CI on every pull request: Linux on all five, macOS and Windows on 3.10 and 3.14 |
+| ≥3.10     | ≥1.0   | ≥0.14      | Expected to work; layers degrade gracefully                                                 |
 
 ## Limitations
 
@@ -324,16 +321,14 @@ downgrades that layer with a logged warning instead of an error, and
   measurement, control flow, noise instructions, or `parameter_binds`, and for
   circuits wider than `max_statevector_qubits`. Counts and timing are still
   recorded.
-- `QuantumCircuit.compose(..., inplace=True)` writes to circuit data without
-  passing through any append method, so composed instructions are not recorded
-  as gate events.
 - Per-pass transpile telemetry applies to single-circuit runs; transpiling a
   list of circuits records start/finish boundaries only (multi-circuit runs may
   fan out to worker processes).
-- Primitives (`StatevectorSampler`, Aer `SamplerV2`, …) record submission and
-  completion timing; statevector capture happens when a primitive delegates to
-  an instrumented Aer backend.
-- Circuits built before `activate()` only record events from that point on.
+- Primitives (`StatevectorSampler`, Aer `SamplerV2`, …) record submission,
+  completion timing, and, for samplers, each circuit's counts, but no
+  statevector snapshots. A sampler that runs through a backend, like Aer's
+  `SamplerV2`, is recorded once as the primitive call you made.
+- Circuits built before `start()` only record events from that point on.
 - `qc.copy()` carries the hidden id with it, so a copy reports onto the same
   timeline as its source.
 
@@ -341,6 +336,7 @@ downgrades that layer with a logged warning instead of an error, and
 
 ```bash
 pip install -e ".[dev]"
+pre-commit install
 pytest
 ```
 
@@ -349,8 +345,8 @@ transpilation), the telemetry store, and the activation lifecycle, including
 hypothesis property tests that any random gate sequence is recorded exactly and
 the store never exceeds its cap.
 
-See [CONTRIBUTING.md](https://github.com/kriss-u/QisDebug/blob/main/CONTRIBUTING.md) for the contribution workflow and ground
-rules.
+See [CONTRIBUTING.md](https://github.com/kriss-u/QisDebug/blob/main/CONTRIBUTING.md)
+for the contribution workflow, the commit convention, and how releases work.
 
 ## Documentation
 
@@ -369,9 +365,9 @@ Open `docs/_build/html/index.html` in a browser.
 [Qiskit Trebugger](https://github.com/TheGupta2012/qiskit-timeline-debugger)
 requires replacing `transpile` with a special debug call and covers only the
 transpiler stage. CircInspect provides step-through debugging for PennyLane.
-QisDebug's distinction is passive, near-zero-setup attachment with full
-lifecycle coverage — construction through transpilation to execution — on
-unmodified Qiskit code.
+QisDebug attaches passively, with near-zero setup, to unmodified Qiskit code
+and covers the full lifecycle, from construction through transpilation to
+execution.
 
 ## Citing
 

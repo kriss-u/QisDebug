@@ -379,8 +379,8 @@ def pauli_expectation(
     condition (:mod:`qisdebug._breakpoints`), mirroring
     :func:`qubit_probability_one`. Only single-qubit Pauli operators are
     supported -- multi-qubit Pauli strings are a possible future extension,
-    not needed for the common "is this qubit near |0>/|1> or a superposition
-    in this basis" checks the breakpoint condition targets.
+    not needed for the common "is this qubit near ``|0>``/``|1>`` or a
+    superposition in this basis" checks the breakpoint condition targets.
     """
     total = 0.0
     for basis, amp0 in enumerate(amplitudes):

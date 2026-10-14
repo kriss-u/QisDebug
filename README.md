@@ -6,6 +6,8 @@
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23373538.svg)](https://doi.org/10.5281/zenodo.23373538)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/kriss-u/QisDebug/blob/main/LICENSE)
 
+<!-- docs-intro-start -->
+
 Zero-touch instrumentation and timeline debugging for
 [Qiskit](https://www.ibm.com/quantum/qiskit).
 
@@ -56,6 +58,8 @@ gate: `|00⟩`, then `(|00⟩+|01⟩)/√2`, then the Bell state. QisDebug captu
 them during the run you already made and stripped them from the results you
 see.
 
+<!-- docs-intro-end -->
+
 ## Install
 
 ```bash
@@ -72,6 +76,8 @@ timeline still records, the viewer falls back to the terminal, and
 are installed. See
 [INSTALL.md](https://github.com/kriss-u/QisDebug/blob/main/INSTALL.md) for
 installing from source and the development extras.
+
+<!-- docs-guide-start -->
 
 ## What gets recorded
 
@@ -331,6 +337,8 @@ reports exactly which layers attached.
 - Circuits built before `start()` only record events from that point on.
 - `qc.copy()` carries the hidden id with it, so a copy reports onto the same
   timeline as its source.
+
+<!-- docs-guide-end -->
 
 ## Development
 

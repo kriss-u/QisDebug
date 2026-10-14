@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import os
 import pkgutil
 import sys
 from pathlib import Path
@@ -63,6 +64,9 @@ intersphinx_mapping = {
 
 html_theme = "furo"
 html_title = f"QisDebug {version}"
+# Read the Docs sets this to the project's canonical domain, so every version
+# points search engines at one URL; empty for local builds.
+html_baseurl = os.environ.get("READTHEDOCS_CANONICAL_URL", "")
 
 REFERENCE_DIR = DOCS_DIR / "reference"
 # Documented on api.md from their __all__; also listing them here would

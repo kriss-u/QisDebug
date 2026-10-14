@@ -3,6 +3,7 @@
 [![PyPI](https://img.shields.io/pypi/v/qisdebug)](https://pypi.org/project/qisdebug/)
 [![Python versions](https://img.shields.io/pypi/pyversions/qisdebug)](https://pypi.org/project/qisdebug/)
 [![Release](https://github.com/kriss-u/QisDebug/actions/workflows/release.yml/badge.svg)](https://github.com/kriss-u/QisDebug/actions/workflows/release.yml)
+[![Documentation](https://readthedocs.org/projects/qisdebug/badge/?version=stable)](https://qisdebug.readthedocs.io)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23373538.svg)](https://doi.org/10.5281/zenodo.23373538)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/kriss-u/QisDebug/blob/main/LICENSE)
 
@@ -358,7 +359,9 @@ for the contribution workflow, the commit convention, and how releases work.
 
 ## Documentation
 
-Full API documentation is built with Sphinx:
+The full documentation, including an API reference for every module, is at
+[qisdebug.readthedocs.io](https://qisdebug.readthedocs.io), with a version
+for each release. To build it locally with Sphinx:
 
 ```bash
 pip install -e ".[docs]"

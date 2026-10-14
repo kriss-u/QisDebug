@@ -24,12 +24,16 @@ See [CLAUDE.md](CLAUDE.md) for the full design rationale and build order.
 ## Getting set up
 
 ```bash
-git clone https://github.com/nullvector/qisdebug.git
-cd qisdebug
+git clone https://github.com/kriss-u/QisDebug.git
+cd QisDebug
 python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
+pre-commit install
 ```
+
+`pre-commit install` sets up the commit-message check and runs pylint and
+pyright on each commit, so problems surface locally before CI.
 
 See [INSTALL.md](INSTALL.md) for details on optional extras.
 
@@ -45,13 +49,36 @@ See [INSTALL.md](INSTALL.md) for details on optional extras.
 
    ```bash
    pytest
-   pylint src/qisdebug
+   pylint src tests
+   pyright src tests
    ```
 
 5. If you touched the public API or a hook's behavior, update the relevant
    section of `README.md`.
 6. Open a pull request describing what changed and why. Reference the Qiskit
    version(s) you tested against, especially if you touched a hook.
+
+## Commit messages and releases
+
+Commits and pull request titles follow
+[Conventional Commits](https://www.conventionalcommits.org/). Releases are
+fully automated: every push to `main` runs
+[python-semantic-release](https://python-semantic-release.readthedocs.io/),
+which reads the commits since the last tag, picks the next version, updates
+`CHANGELOG.md`, tags the release, and publishes it to PyPI. Nobody edits the
+version number by hand.
+
+| Commit                                   | Effect on version         |
+| ---------------------------------------- | ------------------------- |
+| `fix: ...`, `perf: ...`                  | patch (`0.1.0` → `0.1.1`) |
+| `feat: ...`                              | minor (`0.1.0` → `0.2.0`) |
+| `feat!: ...` or a `BREAKING CHANGE:` footer | minor while on `0.x`, major from `1.0` on |
+| `docs:`, `chore:`, `refactor:`, `test:`, `ci:`, `build:`, `style:` | no release |
+
+Pull requests are squash-merged, so the PR title becomes the commit on
+`main` and is what decides the release; CI rejects titles that don't follow
+the convention. Pushing to the `beta` branch publishes prereleases such as
+`0.2.0b1`.
 
 ## Testing against multiple Qiskit versions
 

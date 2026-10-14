@@ -51,17 +51,16 @@ you already made, and stripped from the results you see.
 
 ## Install
 
-QisDebug is currently installed from source; see [INSTALL.md](INSTALL.md) for
-full instructions.
-
 ```bash
-pip install -e .              # core (requires qiskit>=1.0)
-pip install -e ".[aer]"       # + statevector capture on Aer
-pip install -e ".[viz]"       # + histogram/Bloch-sphere image rendering
-pip install -e ".[mcp]"       # + MCP server for AI-agent debugging
-pip install -e ".[dev]"       # + test toolchain
-pip install -e ".[docs]"      # + Sphinx documentation toolchain
+pip install qisdebug               # core (requires qiskit>=1.0)
+pip install "qisdebug[aer]"        # + statevector capture on Aer
+pip install "qisdebug[viz]"        # + histogram/Bloch-sphere image rendering
+pip install "qisdebug[gui]"        # + native GUI timeline viewer
+pip install "qisdebug[mcp]"        # + MCP server for AI-agent debugging
 ```
+
+See [INSTALL.md](https://github.com/kriss-u/QisDebug/blob/main/INSTALL.md)
+for installing from source and the development extras.
 
 ## What gets recorded
 
@@ -229,7 +228,7 @@ rendering, and comparison code the GUI and CLI use.
 Everything above is passive: it tells you what already happened. Conditional
 breakpoints pause a **live** run the instant a condition matches, so you can
 inspect state mid-execution instead of only replaying a finished timeline.
-See [`examples/breakpoints.py`](examples/breakpoints.py) for a runnable,
+See [`examples/breakpoints.py`](https://github.com/kriss-u/QisDebug/blob/main/examples/breakpoints.py) for a runnable,
 end-to-end example (`python examples/breakpoints.py`).
 
 A condition is one of a small closed set of kinds — never arbitrary code, so
@@ -344,7 +343,7 @@ transpilation), the telemetry store, and the activation lifecycle, including
 hypothesis property tests that any random gate sequence is recorded exactly and
 the store never exceeds its cap.
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the contribution workflow and ground
+See [CONTRIBUTING.md](https://github.com/kriss-u/QisDebug/blob/main/CONTRIBUTING.md) for the contribution workflow and ground
 rules.
 
 ## Documentation

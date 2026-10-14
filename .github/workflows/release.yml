@@ -105,6 +105,9 @@ jobs:
         run: |
           git config user.name "${APP_SLUG}[bot]"
           git config user.email "${APP_USER_ID}+${APP_SLUG}[bot]@users.noreply.github.com"
+          # semantic-release authors its commit from this variable, not from
+          # git config, and falls back to "semantic-release" without it.
+          export GIT_COMMIT_AUTHOR="${APP_SLUG}[bot] <${APP_USER_ID}+${APP_SLUG}[bot]@users.noreply.github.com>"
           semantic-release version
           semantic-release publish
           echo "tag=$(semantic-release version --print-last-released-tag)" >> "$GITHUB_OUTPUT"

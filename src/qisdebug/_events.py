@@ -372,7 +372,13 @@ class Timeline(BaseModel):
         objects are missing (e.g. on a timeline restored from an export).
         """
         try:
-            from qiskit.circuit import QuantumCircuit
+            from qiskit.circuit import (
+                ClassicalRegister,
+                Clbit,
+                QuantumCircuit,
+                QuantumRegister,
+                Qubit,
+            )
         except ImportError:
             return None
         gates = self.gate_events
@@ -382,9 +388,20 @@ class Timeline(BaseModel):
             return None
 
         def build() -> Any:
-            circuit = QuantumCircuit(
-                self.num_qubits, self.num_clbits, name=self.name or "qisdebug"
-            )
+            # Bits are created first and registers laid over them by flat
+            # index, so register names, bits outside any register, and bits
+            # shared between registers all come back as the original had them.
+            qubits = [Qubit() for _ in range(self.num_qubits)]
+            clbits = [Clbit() for _ in range(self.num_clbits)]
+            circuit = QuantumCircuit(qubits, clbits, name=self.name or "qisdebug")
+            for name, indices in self.qregs.items():
+                circuit.add_register(
+                    QuantumRegister(name=name, bits=[qubits[i] for i in indices])
+                )
+            for name, indices in self.cregs.items():
+                circuit.add_register(
+                    ClassicalRegister(name=name, bits=[clbits[i] for i in indices])
+                )
             for event in gates:
                 circuit.append(
                     event.operation,

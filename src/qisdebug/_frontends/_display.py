@@ -13,13 +13,20 @@ import importlib.util
 import os
 import sys
 
+from .._compat import install_hint
 
-def gui_available() -> bool:
-    """Return whether a native GUI window could actually be opened here."""
+
+def gui_unavailable_reason() -> str | None:
+    """Return why a native GUI window can't be opened here, or None if it can."""
     if importlib.util.find_spec("webview") is None:
-        return False
+        return f"pywebview is not installed ({install_hint('gui', 'pywebview')})"
     if sys.platform.startswith("linux") and not (
         os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
     ):
-        return False
-    return True
+        return "no display is available (DISPLAY and WAYLAND_DISPLAY are unset)"
+    return None
+
+
+def gui_available() -> bool:
+    """Return whether a native GUI window could actually be opened here."""
+    return gui_unavailable_reason() is None

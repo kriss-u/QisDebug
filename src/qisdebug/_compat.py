@@ -15,6 +15,18 @@ from typing import Any
 logger = logging.getLogger("qisdebug")
 
 
+def install_hint(extra: str, conda_package: str) -> str:
+    """Return how to install an optional feature with either pip or conda.
+
+    conda-forge has no extras, so a conda user installs the underlying
+    package next to qisdebug instead of naming the extra.
+    """
+    return (
+        f'pip install "qisdebug[{extra}]", '
+        f"or conda install -c conda-forge {conda_package}"
+    )
+
+
 def qiskit_version() -> str | None:
     """Return the installed Qiskit version string, or None if unavailable."""
     try:

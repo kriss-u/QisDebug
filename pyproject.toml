@@ -68,7 +68,7 @@ Changelog = "https://github.com/kriss-u/QisDebug/blob/main/CHANGELOG.md"
 
 [project.scripts]
 qisdebug = "qisdebug._cli.app:main"
-qisdebug-mcp = "qisdebug._mcp.server:main"
+qisdebug-mcp = "qisdebug._mcp:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

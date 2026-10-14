@@ -350,6 +350,36 @@ class TelemetryStore:
                 self.breakpoints.forget_circuit(evicted_id)
             return timeline
 
+    def grow_layout(self, timeline: Timeline, circuit: Any) -> None:
+        """Extend ``timeline``'s bit counts and registers to cover ``circuit``.
+
+        The layout captured when a timeline is created goes stale as soon as
+        the circuit gains registers mid-construction (``measure_all`` adding
+        ``meas``, an explicit ``add_register``), which leaves recorded events
+        pointing at bits the timeline doesn't know about. Only ever grows:
+        a transpiled copy shares its source's timeline, and shrinking to
+        whichever of the two was touched last would orphan events recorded
+        against the other.
+        """
+        num_qubits = getattr(circuit, "num_qubits", 0) or 0
+        num_clbits = getattr(circuit, "num_clbits", 0) or 0
+        qregs = getattr(circuit, "qregs", None) or ()
+        cregs = getattr(circuit, "cregs", None) or ()
+        with self._lock:
+            if (
+                num_qubits <= timeline.num_qubits
+                and num_clbits <= timeline.num_clbits
+                and all(register.name in timeline.qregs for register in qregs)
+                and all(register.name in timeline.cregs for register in cregs)
+            ):
+                return
+            timeline.num_qubits = max(timeline.num_qubits, num_qubits)
+            timeline.num_clbits = max(timeline.num_clbits, num_clbits)
+            for name, bits in _registers(circuit, "qregs").items():
+                timeline.qregs.setdefault(name, bits)
+            for name, bits in _registers(circuit, "cregs").items():
+                timeline.cregs.setdefault(name, bits)
+
     def _adopt_by_name(self, circuit: Any) -> Timeline | None:
         """Attach an id-less circuit to the newest timeline sharing its name."""
         name = getattr(circuit, "name", None)

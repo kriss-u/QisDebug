@@ -164,6 +164,7 @@ def _record_appended(listeners: list["QisDebug"], circuit: Any, before: int) -> 
         )
         if timeline is None:
             continue
+        debug.store.grow_layout(timeline, circuit)
         for instruction in appended:
             operation = getattr(instruction, "operation", None)
             if operation is None:

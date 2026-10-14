@@ -2,7 +2,7 @@
 
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
-from qiskit.circuit import CircuitInstruction
+from qiskit.circuit import ClassicalRegister, CircuitInstruction, QuantumRegister
 from qiskit.circuit.library import XGate
 from qiskit.circuit.quantumcircuit import QuantumCircuit
 
@@ -70,6 +70,46 @@ def _sub_circuit():
     sub.h(0)
     sub.cx(0, 1)
     return sub
+
+
+def _layout(qc):
+    """Return each instruction's name with its flat qubit and clbit indices."""
+    return [
+        (
+            instruction.operation.name,
+            [qc.find_bit(bit).index for bit in instruction.qubits],
+            [qc.find_bit(bit).index for bit in instruction.clbits],
+        )
+        for instruction in qc.data
+    ]
+
+
+def test_measure_all_grows_the_timeline_layout(debug):
+    """Registers added by measure_all after the first gate reach the timeline."""
+    debug.start()
+    qc = QuantumCircuit(2)
+    qc.h(0)
+    qc.cx(0, 1)
+    qc.measure_all()
+    timeline = debug.get(qc)
+    assert (timeline.num_qubits, timeline.num_clbits) == (2, 2)
+    assert timeline.cregs == {"meas": [0, 1]}
+    assert _layout(timeline.circuit_at()) == _layout(qc)
+
+
+def test_add_register_mid_construction_grows_the_timeline_layout(debug):
+    """Quantum and classical registers added mid-construction are both tracked."""
+    debug.start()
+    qc = QuantumCircuit(QuantumRegister(1, "a"))
+    qc.h(0)
+    qc.add_register(QuantumRegister(1, "b"), ClassicalRegister(1, "c"))
+    qc.cx(0, 1)
+    qc.measure(1, 0)
+    timeline = debug.get(qc)
+    assert (timeline.num_qubits, timeline.num_clbits) == (2, 1)
+    assert timeline.qregs == {"a": [0], "b": [1]}
+    assert timeline.cregs == {"c": [0]}
+    assert _layout(timeline.circuit_at()) == _layout(qc)
 
 
 def test_compose_inplace_records_merged_instructions(debug):

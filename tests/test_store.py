@@ -5,6 +5,7 @@ import json
 from _helpers import bell_circuit
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
+from qiskit.circuit import ClassicalRegister, QuantumRegister, Qubit
 from qiskit.circuit.quantumcircuit import QuantumCircuit
 
 from qisdebug._store import TelemetryStore
@@ -87,6 +88,26 @@ def test_circuit_at_rebuilds_partial_circuit(debug):
     full = debug.get(qc).circuit_at()
     assert full is not None
     assert [ci.operation.name for ci in full.data] == ["h", "cx"]
+
+
+def test_circuit_at_reproduces_the_original_registers(debug):
+    """Register names, unregistered bits and overlapping registers survive."""
+    debug.start()
+    data = QuantumRegister(2, "data")
+    loose = Qubit()
+    out = ClassicalRegister(2, "out")
+    qc = QuantumCircuit(data, [loose], out, name="registers")
+    qc.add_register(QuantumRegister(name="pair", bits=[data[1], loose]))
+    qc.h(data[0])
+    qc.cx(data[0], loose)
+    qc.measure(data[0], out[0])
+    qc.measure(loose, out[1])
+    timeline = debug.get(qc)
+    assert timeline.circuit_at() == qc
+    partial = timeline.circuit_at(2)
+    assert partial is not None
+    assert [register.name for register in partial.qregs] == ["data", "pair"]
+    assert [register.name for register in partial.cregs] == ["out"]
 
 
 @settings(

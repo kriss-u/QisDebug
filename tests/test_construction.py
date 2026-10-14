@@ -72,18 +72,6 @@ def _sub_circuit():
     return sub
 
 
-def _layout(qc):
-    """Return each instruction's name with its flat qubit and clbit indices."""
-    return [
-        (
-            instruction.operation.name,
-            [qc.find_bit(bit).index for bit in instruction.qubits],
-            [qc.find_bit(bit).index for bit in instruction.clbits],
-        )
-        for instruction in qc.data
-    ]
-
-
 def test_measure_all_grows_the_timeline_layout(debug):
     """Registers added by measure_all after the first gate reach the timeline."""
     debug.start()
@@ -94,7 +82,7 @@ def test_measure_all_grows_the_timeline_layout(debug):
     timeline = debug.get(qc)
     assert (timeline.num_qubits, timeline.num_clbits) == (2, 2)
     assert timeline.cregs == {"meas": [0, 1]}
-    assert _layout(timeline.circuit_at()) == _layout(qc)
+    assert timeline.circuit_at() == qc
 
 
 def test_add_register_mid_construction_grows_the_timeline_layout(debug):
@@ -109,7 +97,7 @@ def test_add_register_mid_construction_grows_the_timeline_layout(debug):
     assert (timeline.num_qubits, timeline.num_clbits) == (2, 1)
     assert timeline.qregs == {"a": [0], "b": [1]}
     assert timeline.cregs == {"c": [0]}
-    assert _layout(timeline.circuit_at()) == _layout(qc)
+    assert timeline.circuit_at() == qc
 
 
 def test_compose_inplace_records_merged_instructions(debug):

@@ -5,6 +5,7 @@ import pytest
 from _helpers import bell_circuit as _bell
 from qiskit.circuit.quantumcircuit import QuantumCircuit
 from qiskit.primitives import StatevectorSampler
+from qiskit.primitives.containers import SamplerPub
 from qiskit_aer import AerSimulator
 
 from qisdebug import EventType
@@ -201,6 +202,85 @@ def test_aer_sampler_records_events(debug):
         e.backend == "SamplerV2" for e in timeline.filter(EventType.EXECUTION_SUBMITTED)
     )
     assert timeline.filter(EventType.EXECUTION_FINISHED)
+
+
+def _deterministic(name, flip):
+    """Return a measured one-qubit circuit that always reads ``flip``."""
+    qc = QuantumCircuit(1, name=name)
+    if flip:
+        qc.x(0)
+    qc.measure_all()
+    return qc
+
+
+def test_sampler_counts_are_recorded_per_pub(debug):
+    """Each pub's counts and shots land on that pub's own timeline."""
+    debug.start()
+    zero, one = _deterministic("always-0", False), _deterministic("always-1", True)
+    StatevectorSampler().run([zero, SamplerPub(one, shots=40)], shots=24).result()
+    finished_zero = debug.get(zero).filter(EventType.EXECUTION_FINISHED)
+    finished_one = debug.get(one).filter(EventType.EXECUTION_FINISHED)
+    assert [(e.counts, e.shots) for e in finished_zero] == [({"0": 24}, 24)]
+    assert [(e.counts, e.shots) for e in finished_one] == [({"1": 40}, 40)]
+
+
+@pytest.mark.parametrize("primitive", ["aer", "backend"])
+def test_sampler_over_a_backend_records_one_run(debug, primitive):
+    """A sampler that executes via backend.run isn't also recorded as that run."""
+    if primitive == "aer":
+        sampler = pytest.importorskip("qiskit_aer.primitives").SamplerV2()
+        name = "SamplerV2"
+    else:
+        from qiskit.primitives import BackendSamplerV2
+
+        sampler = BackendSamplerV2(backend=AerSimulator())
+        name = "BackendSamplerV2"
+    debug.start()
+    qc = _deterministic(f"{primitive}-once", True)
+    sampler.run([qc], shots=16).result()
+    timeline = debug.get(qc)
+    execution = [
+        (e.type, e.backend)
+        for e in timeline.events
+        if e.type in (EventType.EXECUTION_SUBMITTED, EventType.EXECUTION_FINISHED)
+    ]
+    assert execution == [
+        (EventType.EXECUTION_SUBMITTED, name),
+        (EventType.EXECUTION_FINISHED, name),
+    ]
+    assert timeline.filter(EventType.EXECUTION_FINISHED)[0].counts == {"1": 16}
+    assert not timeline.filter(EventType.NOTE)
+
+
+def test_estimator_finishes_without_counts(debug):
+    """Estimator results have no bit arrays, so completion carries no counts."""
+    from qiskit.primitives import StatevectorEstimator
+    from qiskit.quantum_info import SparsePauliOp
+
+    debug.start()
+    qc = QuantumCircuit(1, name="expectation")
+    qc.h(0)
+    StatevectorEstimator().run([(qc, SparsePauliOp("X"))]).result()
+    finished = debug.get(qc).filter(EventType.EXECUTION_FINISHED)
+    assert [(e.backend, e.counts) for e in finished] == [("StatevectorEstimator", None)]
+
+
+def test_backend_runs_after_and_alongside_a_sampler_are_recorded(debug):
+    """Only a backend run made by a primitive is skipped, never the user's own."""
+    debug.start()
+    qc = _deterministic("shared", True)
+    StatevectorSampler().run([qc], shots=8).result()
+    sim = AerSimulator()
+    first = sim.run(qc, shots=8)
+    second = sim.run(qc, shots=8)
+    first.result()
+    second.result()
+    submitted = debug.get(qc).filter(EventType.EXECUTION_SUBMITTED)
+    assert [e.backend for e in submitted] == [
+        "StatevectorSampler",
+        "aer_simulator",
+        "aer_simulator",
+    ]
 
 
 def test_capture_can_be_disabled(debug):

@@ -6,8 +6,11 @@ gate, runs that copy instead of the original, then strips the snapshot data
 out of the result before the user sees it. ``BasicSimulator.run`` gets the
 same wrapper without instrumentation (it cannot execute Aer save
 instructions), and primitive classes (Sampler and Estimator flavors,
-including the Backend* wrappers) are patched for execution timing events
-only. Aer factory methods that mass-produce internal circuits
+including the Backend* wrappers) are patched for execution timing and, for
+samplers, per-circuit counts. A primitive that executes through a patched
+backend (Aer's ``SamplerV2`` calls ``AerSimulator.run``) is recorded once, as
+the primitive call the user made, not again as that inner backend run. Aer
+factory methods that mass-produce internal circuits
 (``from_backend``) run with recording suspended so they cannot flood the
 store.
 
@@ -26,6 +29,7 @@ sharing one physical execution across independently configured sessions.
 from __future__ import annotations
 
 import functools
+import threading
 import time
 from typing import TYPE_CHECKING, Any, Callable, NamedTuple
 
@@ -64,6 +68,46 @@ _PRIMITIVE_TARGETS = (
 )
 
 TimelineHandle = tuple["QisDebug", Timeline]
+
+# Circuit ids currently being executed by a recorded primitive call, counted
+# so overlapping calls on the same circuit nest. Kept apart from the store's
+# id suspension because the backend hook suspends ids for its own in-flight
+# jobs too, and treating those as "inside a primitive" would drop a second
+# backend.run(qc) submitted before the first one's result is read. Process
+# wide, since Aer runs a primitive's backend call on a worker thread.
+_primitive_owned: dict[str, int] = {}
+_primitive_owned_lock = threading.Lock()
+
+
+def _claim_for_primitive(circuit_ids: set[str]) -> None:
+    """Mark ``circuit_ids`` as being executed by a recorded primitive call."""
+    with _primitive_owned_lock:
+        for circuit_id in circuit_ids:
+            _primitive_owned[circuit_id] = _primitive_owned.get(circuit_id, 0) + 1
+
+
+def _release_from_primitive(circuit_ids: set[str]) -> None:
+    """Undo one :func:`_claim_for_primitive` call for each id given."""
+    with _primitive_owned_lock:
+        for circuit_id in circuit_ids:
+            remaining = _primitive_owned.get(circuit_id, 0) - 1
+            if remaining <= 0:
+                _primitive_owned.pop(circuit_id, None)
+            else:
+                _primitive_owned[circuit_id] = remaining
+
+
+def _inside_primitive(circuits: Any) -> bool:
+    """Return True when every circuit in a backend run belongs to a primitive call."""
+    selection = normalize_circuits(circuits)
+    if selection is None:
+        return False
+    items, _ = selection
+    with _primitive_owned_lock:
+        return bool(items) and all(
+            getattr(circuit, ID_ATTRIBUTE, None) in _primitive_owned
+            for circuit in items
+        )
 
 
 class SnapshotRef(BaseModel):
@@ -194,7 +238,7 @@ def _backend_run_wrapper(original: Callable, instrument: bool = True) -> Callabl
         listeners = [
             d for d in _dispatcher.active_instances() if not d.store.is_suspended()
         ]
-        if not listeners:
+        if not listeners or _inside_primitive(circuits):
             return original(self, circuits, *args, **run_options)
         try:
             plan = _plan_backend_run(self, circuits, run_options, instrument, listeners)
@@ -576,7 +620,8 @@ def _primitive_run_factory(primitive_name: str) -> Callable[[Callable], Callable
                 pubs = list(pubs)
             except TypeError:
                 return original(self, pubs, *args, **kwargs)
-            timelines = _pub_timelines(listeners, pubs)
+            pub_timelines = _pub_timelines(listeners, pubs)
+            timelines = [handle for handles in pub_timelines for handle in handles]
             shots = kwargs.get("shots")
             started = time.time()
             # Primitives bind and rework id-carrying copies of the pub
@@ -584,9 +629,11 @@ def _primitive_run_factory(primitive_name: str) -> Callable[[Callable], Callable
             # keeps that rework from being recorded as user construction.
             circuit_ids = {timeline.circuit_id for _, timeline in timelines}
             _suspend_ids(listeners, circuit_ids)
+            _claim_for_primitive(circuit_ids)
             try:
                 job = original(self, pubs, *args, **kwargs)
             except BaseException:
+                _release_from_primitive(circuit_ids)
                 _resume_ids(listeners, circuit_ids)
                 raise
             try:
@@ -602,7 +649,7 @@ def _primitive_run_factory(primitive_name: str) -> Callable[[Callable], Callable
                     instrumented=False,
                 )
                 submission = PrimitiveSubmission(
-                    timelines=timelines,
+                    pub_timelines=pub_timelines,
                     primitive_name=primitive_name,
                     started=started,
                     shots=shots,
@@ -614,6 +661,7 @@ def _primitive_run_factory(primitive_name: str) -> Callable[[Callable], Callable
                 logger.debug(
                     "qisdebug: failed to record primitive submission", exc_info=True
                 )
+                _release_from_primitive(circuit_ids)
                 _resume_ids(listeners, circuit_ids)
             return job
 
@@ -622,17 +670,22 @@ def _primitive_run_factory(primitive_name: str) -> Callable[[Callable], Callable
     return factory
 
 
-def _pub_timelines(listeners: list["QisDebug"], pubs: list) -> list[TimelineHandle]:
-    """Resolve one timeline handle per (listener, pub) whose circuit can be identified."""
+def _pub_timelines(
+    listeners: list["QisDebug"], pubs: list
+) -> list[list[TimelineHandle]]:
+    """Resolve each pub's timeline handles, one list per pub in submission order.
+
+    Kept per pub so the result's ``i``-th pub result can be matched back to
+    the timelines of the ``i``-th pub; a pub whose circuit can't be
+    identified gets an empty list rather than shifting the ones after it.
+    """
     circuit_cls = resolve("qiskit.circuit.quantumcircuit", "QuantumCircuit")
     if circuit_cls is None:
         return []
-    handles: list[TimelineHandle] = []
+    handles: list[list[TimelineHandle]] = []
     for pub in pubs:
         circuit = _pub_circuit(pub, circuit_cls)
-        if circuit is None:
-            continue
-        handles.extend(_timelines_for(listeners, circuit))
+        handles.append([] if circuit is None else _timelines_for(listeners, circuit))
     return handles
 
 
@@ -651,7 +704,7 @@ def _pub_circuit(pub: Any, circuit_cls: type) -> Any | None:
 class PrimitiveSubmission(NamedTuple):
     """Bookkeeping for one primitive ``run`` call, carried into its result callback."""
 
-    timelines: list[TimelineHandle]
+    pub_timelines: list[list[TimelineHandle]]
     primitive_name: str
     started: float
     shots: int | None
@@ -660,7 +713,7 @@ class PrimitiveSubmission(NamedTuple):
 
 
 def _intercept_primitive_result(job: Any, submission: PrimitiveSubmission) -> None:
-    """Override the primitive job's result to record completion timing.
+    """Override the primitive job's result to record completion per pub.
 
     Like the backend variant, this also releases the submission's circuit ids
     from suspension once results are in and the primitive's internal circuit
@@ -676,23 +729,44 @@ def _intercept_primitive_result(job: Any, submission: PrimitiveSubmission) -> No
         finally:
             if not state["resumed"]:
                 state["resumed"] = True
+                _release_from_primitive(submission.circuit_ids)
                 _resume_ids(submission.listeners, submission.circuit_ids)
         if not state["done"]:
             state["done"] = True
             duration = time.time() - submission.started
-            try:
-                _add_event(
-                    submission.timelines,
-                    ExecutionFinishedEvent,
-                    backend=submission.primitive_name,
-                    duration=duration,
-                    success=True,
-                    shots=submission.shots,
-                )
-            except Exception:
-                logger.debug(
-                    "qisdebug: failed to record primitive completion", exc_info=True
-                )
+            for index, handles in enumerate(submission.pub_timelines):
+                if not handles:
+                    continue
+                counts, shots = _pub_counts(outcome, index)
+                try:
+                    _add_event(
+                        handles,
+                        ExecutionFinishedEvent,
+                        backend=submission.primitive_name,
+                        duration=duration,
+                        success=True,
+                        shots=shots if shots is not None else submission.shots,
+                        counts=counts,
+                    )
+                except Exception:
+                    logger.debug(
+                        "qisdebug: failed to record primitive completion",
+                        exc_info=True,
+                    )
         return outcome
 
     job.result = result
+
+
+def _pub_counts(outcome: Any, index: int) -> tuple[dict[str, int] | None, int | None]:
+    """Return one sampler pub result's counts and shot count, or Nones.
+
+    ``join_data`` concatenates every classical register's bits, matching how
+    a backend run reports one bitstring per shot. Estimator pub results carry
+    no bit arrays, so they (and anything else unexpected) yield no counts.
+    """
+    try:
+        bits = outcome[index].join_data()
+        return dict(bits.get_counts()), int(bits.num_shots)
+    except Exception:
+        return None, None

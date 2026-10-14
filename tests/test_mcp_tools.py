@@ -569,3 +569,20 @@ def test_poll_run_unknown_run_id_raises():
         tools.resume_run("does-not-exist")
     with pytest.raises(ValueError, match="no background run"):
         tools.stop_run("does-not-exist")
+
+
+def test_launcher_without_mcp_exits_with_an_install_hint(monkeypatch, capsys):
+    """qisdebug-mcp explains how to install the SDK instead of a traceback."""
+    import sys
+
+    import qisdebug._mcp as launcher
+
+    monkeypatch.delitem(sys.modules, "qisdebug._mcp.server", raising=False)
+    for name in ("mcp", "mcp.server", "mcp.server.mcpserver"):
+        monkeypatch.setitem(sys.modules, name, None)
+    with pytest.raises(SystemExit) as excinfo:
+        launcher.main()
+    assert excinfo.value.code == 1
+    message = capsys.readouterr().err
+    assert 'pip install "qisdebug[mcp]"' in message
+    assert "conda install -c conda-forge mcp" in message

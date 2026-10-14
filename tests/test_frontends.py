@@ -1,6 +1,7 @@
 """Frontend factory: environment detection, forcing, and the CLI fallback."""
 
 import builtins
+import sys
 
 import pytest
 from _helpers import build_bridge, traced_bell as _traced_bell
@@ -31,12 +32,16 @@ def test_get_frontend_unknown_name_raises():
 def test_get_frontend_forced_unavailable_raises(monkeypatch):
     """Forcing GUI with no display raises RuntimeError explaining why."""
     monkeypatch.setattr("qisdebug._frontends.gui.gui_available", lambda: False)
+    monkeypatch.setattr(
+        "qisdebug._frontends.gui.gui_unavailable_reason",
+        lambda: "no display is available (DISPLAY and WAYLAND_DISPLAY are unset)",
+    )
     with pytest.raises(RuntimeError, match="no display is available"):
         get_frontend("gui")
 
 
-def test_gui_reason_without_pywebview_names_pip_and_conda(monkeypatch):
-    """A missing pywebview is reported as such, with both ways to install it."""
+def _hide_webview(monkeypatch):
+    """Make ``find_spec("webview")`` report the module as not installed."""
     from qisdebug._frontends import _display
 
     real_find_spec = _display.importlib.util.find_spec
@@ -45,6 +50,58 @@ def test_gui_reason_without_pywebview_names_pip_and_conda(monkeypatch):
         "find_spec",
         lambda name, *a: None if name == "webview" else real_find_spec(name, *a),
     )
+
+
+def test_gui_reason_in_a_browser_without_webview_skips_the_install_hint(monkeypatch):
+    """Under Emscripten pywebview can't be installed, so no pip/conda advice."""
+    _hide_webview(monkeypatch)
+    monkeypatch.setattr(sys, "platform", "emscripten")
+    reason = WebviewFrontend().unavailable_reason()
+    assert "browser host" in reason
+    assert "pip install" not in reason
+
+
+def test_gui_available_in_a_browser_with_a_host_webview_and_no_display(monkeypatch):
+    """A browser host's webview module is enough; the DISPLAY check is Linux-only."""
+    from qisdebug._frontends import _display
+
+    real_find_spec = _display.importlib.util.find_spec
+    monkeypatch.setattr(
+        _display.importlib.util,
+        "find_spec",
+        lambda name, *a: object() if name == "webview" else real_find_spec(name, *a),
+    )
+    monkeypatch.setattr(sys, "platform", "emscripten")
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    assert _display.gui_available() is True
+
+
+def test_cli_frontend_in_a_browser_uses_the_text_loop_even_with_a_fake_tty(
+    debug, monkeypatch, capsys
+):
+    """Textual needs threads and termios, so Emscripten never launches the TUI."""
+    from qisdebug._frontends import _tui
+
+    def _refuse_tui(*_args, **_kwargs):
+        raise AssertionError("the Textual TUI must not launch under Emscripten")
+
+    timeline = _traced_bell(debug)
+    monkeypatch.setattr(_tui, "TimelineApp", _refuse_tui)
+    monkeypatch.setattr(sys, "platform", "emscripten")
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr(builtins, "input", lambda prompt="": "q")
+
+    CLIFrontend().show([timeline])
+
+    assert "QisDebug timeline" in capsys.readouterr().out
+
+
+def test_gui_reason_without_pywebview_names_pip_and_conda(monkeypatch):
+    """A missing pywebview is reported as such, with both ways to install it."""
+    _hide_webview(monkeypatch)
+    monkeypatch.setattr(sys, "platform", "darwin")
     reason = WebviewFrontend().unavailable_reason()
     assert "pywebview is not installed" in reason
     assert 'pip install "qisdebug[gui]"' in reason

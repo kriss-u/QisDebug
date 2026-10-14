@@ -63,6 +63,7 @@ docs = ["sphinx>=7", "furo>=2024.1", "myst-parser>=2", "sphinx-autodoc-typehints
 [project.urls]
 Homepage = "https://github.com/kriss-u/QisDebug"
 Repository = "https://github.com/kriss-u/QisDebug"
+Documentation = "https://qisdebug.readthedocs.io"
 Issues = "https://github.com/kriss-u/QisDebug/issues"
 Changelog = "https://github.com/kriss-u/QisDebug/blob/main/CHANGELOG.md"
 

@@ -1,63 +1,20 @@
-# API Reference
+# Public API
 
-The entire public surface is re-exported from the top-level `qisdebug` package.
+Everything a user needs is exported from the top-level `qisdebug` package;
+this page is generated from its `__all__`, so it always matches what
+`from qisdebug import ...` provides. Start with {class}`qisdebug.QisDebug`.
 
-## Activation
+## `qisdebug`
 
 ```{eval-rst}
-.. autofunction:: qisdebug.activate
-.. autofunction:: qisdebug.deactivate
-.. autofunction:: qisdebug.is_active
-.. autoclass:: qisdebug.ActivationReport
+.. automodule:: qisdebug
    :members:
+   :show-inheritance:
 ```
 
-## Timelines
+## `qisdebug.visualizer`
 
 ```{eval-rst}
-.. autofunction:: qisdebug.timeline
-.. autofunction:: qisdebug.timelines
-.. autofunction:: qisdebug.clear
-.. autoclass:: qisdebug.Timeline
+.. automodule:: qisdebug.visualizer
    :members:
-```
-
-## Configuration
-
-```{eval-rst}
-.. autofunction:: qisdebug.configure
-.. autofunction:: qisdebug.get_config
-.. autoclass:: qisdebug.QisDebugConfig
-   :members:
-```
-
-## Events
-
-```{eval-rst}
-.. autoclass:: qisdebug.EventType
-   :members:
-.. autoclass:: qisdebug.TelemetryEvent
-   :members:
-.. autoclass:: qisdebug.GateEvent
-   :members:
-.. autoclass:: qisdebug.TranspileStartedEvent
-   :members:
-.. autoclass:: qisdebug.TranspilePassEvent
-   :members:
-.. autoclass:: qisdebug.TranspileFinishedEvent
-   :members:
-.. autoclass:: qisdebug.ExecutionSubmittedEvent
-   :members:
-.. autoclass:: qisdebug.StateSnapshotEvent
-   :members:
-.. autoclass:: qisdebug.ExecutionFinishedEvent
-   :members:
-.. autoclass:: qisdebug.NoteEvent
-   :members:
-```
-
-## Visualizer
-
-```{eval-rst}
-.. autofunction:: qisdebug.visualizer.show
 ```

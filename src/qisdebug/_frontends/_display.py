@@ -17,8 +17,17 @@ from .._compat import install_hint
 
 
 def gui_unavailable_reason() -> str | None:
-    """Return why a native GUI window can't be opened here, or None if it can."""
+    """Return why a native GUI window can't be opened here, or None if it can.
+
+    Under Emscripten (Python running in a browser, e.g. QisPlay) pywebview
+    can't be installed, but a host may provide its own ``webview`` module that
+    shows the GUI page in a dialog; with none, the pip/conda hint would be
+    advice the user can't follow. The display check below is Linux-only, so a
+    browser host's ``webview`` module is enough on its own.
+    """
     if importlib.util.find_spec("webview") is None:
+        if sys.platform == "emscripten":
+            return "this browser host doesn't provide a webview module to show windows"
         return f"pywebview is not installed ({install_hint('gui', 'pywebview')})"
     if sys.platform.startswith("linux") and not (
         os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")

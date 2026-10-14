@@ -19,7 +19,7 @@ way are especially welcome.
 - Keep the visualizer decoupled from the instrumentation layer. It should
   only read the public `Timeline` fields.
 
-See [CLAUDE.md](CLAUDE.md) for the full design rationale and build order.
+See [CLAUDE.md](https://github.com/kriss-u/QisDebug/blob/main/CLAUDE.md) for the full design rationale and build order.
 
 ## Getting set up
 
@@ -35,7 +35,7 @@ pre-commit install
 `pre-commit install` sets up the commit-message check and runs pylint and
 pyright on each commit, so problems surface locally before CI.
 
-See [INSTALL.md](INSTALL.md) for details on optional extras.
+See [INSTALL.md](https://github.com/kriss-u/QisDebug/blob/main/INSTALL.md) for details on optional extras.
 
 ## Development workflow
 
@@ -116,4 +116,4 @@ Open a GitHub issue with:
 ## License
 
 By contributing, you agree that your contributions will be licensed under the
-project's [MIT License](LICENSE).
+project's [MIT License](https://github.com/kriss-u/QisDebug/blob/main/LICENSE).

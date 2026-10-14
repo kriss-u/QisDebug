@@ -6,6 +6,19 @@ from Conventional Commit messages; do not edit released sections by hand.
 
 <!-- version list -->
 
+## v0.2.0 (2026-10-14)
+
+### Documentation
+
+- Add citation metadata and README badges ([#4](https://github.com/kriss-u/QisDebug/pull/4),
+  [`b3c5ffd`](https://github.com/kriss-u/QisDebug/commit/b3c5ffdf2e26201bd2b6f4d7179720f7f04bab13))
+
+### Features
+
+- Support browser hosts and document every module ([#5](https://github.com/kriss-u/QisDebug/pull/5),
+  [`9c21450`](https://github.com/kriss-u/QisDebug/commit/9c214503a04c125902d22a07e9fe72d1c66254f3))
+
+
 ## v0.1.1 (2026-10-14)
 
 ### Bug Fixes

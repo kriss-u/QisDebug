@@ -21,7 +21,7 @@ from typing import ClassVar
 
 from .._events import Timeline
 from . import _render
-from ._display import gui_available
+from ._display import gui_available, gui_unavailable_reason
 from .base import TimelineFrontend
 from .bridge import TimelineBridge
 
@@ -41,11 +41,8 @@ class WebviewFrontend(TimelineFrontend):
         return gui_available()
 
     def unavailable_reason(self) -> str:
-        return (
-            "no display is available for a native GUI window "
-            '(pywebview not installed -- pip install "qisdebug[gui]" -- '
-            "or DISPLAY/WAYLAND_DISPLAY unset)"
-        )
+        reason = gui_unavailable_reason()
+        return f"a native GUI window can't be opened: {reason or 'no display is available'}"
 
     def show(self, timelines: list[Timeline]) -> None:
         if not self.is_available():

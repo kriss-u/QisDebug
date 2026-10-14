@@ -35,6 +35,22 @@ def test_get_frontend_forced_unavailable_raises(monkeypatch):
         get_frontend("gui")
 
 
+def test_gui_reason_without_pywebview_names_pip_and_conda(monkeypatch):
+    """A missing pywebview is reported as such, with both ways to install it."""
+    from qisdebug._frontends import _display
+
+    real_find_spec = _display.importlib.util.find_spec
+    monkeypatch.setattr(
+        _display.importlib.util,
+        "find_spec",
+        lambda name, *a: None if name == "webview" else real_find_spec(name, *a),
+    )
+    reason = WebviewFrontend().unavailable_reason()
+    assert "pywebview is not installed" in reason
+    assert 'pip install "qisdebug[gui]"' in reason
+    assert "conda install -c conda-forge pywebview" in reason
+
+
 def test_get_frontend_respects_env_var(monkeypatch):
     """QISDEBUG_FRONTEND is honored when no explicit argument is given."""
     monkeypatch.setenv("QISDEBUG_FRONTEND", "cli")

@@ -6,6 +6,15 @@ from Conventional Commit messages; do not edit released sections by hand.
 
 <!-- version list -->
 
+## v0.1.1 (2026-10-14)
+
+### Bug Fixes
+
+- Correct timeline layout, sampler counts and missing-extra errors
+  ([#3](https://github.com/kriss-u/QisDebug/pull/3),
+  [`e6d8267`](https://github.com/kriss-u/QisDebug/commit/e6d8267f495e4d194be83d387736101d343ae8e5))
+
+
 ## v0.1.0 (2026-10-14)
 
 - Initial Release

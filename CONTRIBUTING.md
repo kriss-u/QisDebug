@@ -80,6 +80,15 @@ Pull requests are squash-merged, so the PR title becomes the commit on
 the convention. Pushing to the `beta` branch publishes prereleases such as
 `0.2.0b1`.
 
+The release job pushes its version-bump and changelog commit directly to the
+protected `main` branch, so instead of the default `GITHUB_TOKEN` it mints a
+short-lived token from a private GitHub App that is a bypass actor on the
+`main` ruleset. The App needs only the *Contents: Read and write* repository
+permission and is installed on this repository alone. The workflow reads its
+Client ID from the `RELEASE_APP_CLIENT_ID` repository variable and its private
+key from the `RELEASE_APP_PRIVATE_KEY` repository secret; if either is
+missing, the release job fails before changing anything.
+
 ## Testing against multiple Qiskit versions
 
 If you're changing a hook, test against both the pinned dev version and the

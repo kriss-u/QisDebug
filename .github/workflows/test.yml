@@ -2,11 +2,6 @@ name: Test
 
 on:
   pull_request:
-    paths-ignore:
-      - "**.md"
-      - "docs/**"
-      - "examples/**"
-      - "LICENSE"
   workflow_call:
 
 permissions:
